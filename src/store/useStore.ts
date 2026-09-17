@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { create } from 'zustand';
 import { SwipeApiResponse, slugifyPageTypeLabel } from '@/types';
@@ -30,14 +30,14 @@ function normalizeCheckoutModeOrUndefined(raw: unknown): CheckoutMode | undefine
   return raw === null || raw === undefined || raw === '' ? undefined : normalizeCheckoutMode(raw);
 }
 
-// ── checkout_mode persistence fallback ────────────────────────────────────
+// â”€â”€ checkout_mode persistence fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // When supabase-migration-funnel-pages-checkout-mode.sql hasn't been applied,
 // the write to `funnel_pages.checkout_mode` is rejected, supabase-operations
-// retries without the column, and the value comes back undefined — the
+// retries without the column, and the value comes back undefined â€” the
 // selector snaps back to "Standard". Where the operator can't run the
 // migration, we mirror the choice to two places that need no schema change:
 //
-//   /api/checkout-mode  server sidecar in the existing `settings` table —
+//   /api/checkout-mode  server sidecar in the existing `settings` table â€”
 //                       survives reload AND is shared across browsers/users
 //   localStorage        instant, offline, per-browser last resort
 //
@@ -69,7 +69,7 @@ function writeLocalCheckoutMode(pageId: string, mode: CheckoutMode): void {
     else delete all[pageId];
     window.localStorage.setItem(CHECKOUT_MODE_LS_KEY, JSON.stringify(all));
   } catch {
-    /* quota / private mode — the server sidecar still has it */
+    /* quota / private mode â€” the server sidecar still has it */
   }
 }
 
@@ -135,7 +135,7 @@ interface AppProject {
   backEnd: ProjectSectionData;
   complianceFunnel: ProjectSectionData;
   funnel: ProjectSectionData;
-  // Parsed multi-file payloads — same data as `marketResearch` / `brief`
+  // Parsed multi-file payloads â€” same data as `marketResearch` / `brief`
   // but normalised through parseSectionData() so consumers (e.g. the rewrite
   // proxy) can pick individual files instead of a giant concatenated blob.
   briefData: SectionData;
@@ -193,16 +193,16 @@ interface AppFunnelPage {
     mobileHtmlSkipped?: boolean;
     // URL pubblico Supabase Storage da cui recuperare l'HTML al boot.
     // Settato dalla pipeline `persistHtmlBlobs` quando l'html supera
-    // HTML_STORAGE_THRESHOLD (50 KB). Persiste cross-browser/device —
+    // HTML_STORAGE_THRESHOLD (50 KB). Persiste cross-browser/device â€”
     // l'IndexedDB resta solo come backup locale. Vedi rehydrate logic
     // in `initializeData` (Step 0).
     htmlUrl?: string;
     mobileHtmlUrl?: string;
     // Timestamp (ms) dell'ultimo Save del VisualHtmlEditor. Persistito nel
     // JSONB (pochi byte, sopravvive allo strip). Al boot lo confrontiamo con
-    // `savedAt` del blob IndexedDB: se l'IDB locale è >= editedAt, l'edit
-    // locale vince (anche se il write Supabase è fallito o la pagina è
-    // piccola e l'HTML nel JSONB è rimasto vecchio).
+    // `savedAt` del blob IndexedDB: se l'IDB locale Ã¨ >= editedAt, l'edit
+    // locale vince (anche se il write Supabase Ã¨ fallito o la pagina Ã¨
+    // piccola e l'HTML nel JSONB Ã¨ rimasto vecchio).
     editedAt?: number;
   };
   swipedData?: {
@@ -338,7 +338,7 @@ function dbTemplateToApp(t: SwipeTemplate): AppSwipeTemplate {
   };
 }
 
-// ── Persistenza HTML su Supabase Storage ────────────────────────────
+// â”€â”€ Persistenza HTML su Supabase Storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Per ognuno dei blob JSONB (cloned/swiped/extracted): se contiene un html
 // > 50 KB, lo carica su Storage (path: funnel-html/{pageId}/{kind}.html)
 // e ritorna:
@@ -348,7 +348,7 @@ function dbTemplateToApp(t: SwipeTemplate): AppSwipeTemplate {
 //     state locale senza toccare l'html in-memory
 // Best-effort: se Storage fallisce, restituiamo il blob originale e
 // lasciamo che `supabase-operations.stripHtmlFromJsonb` faccia il suo
-// strip senza salvataggio (l'HTML resterà solo in memoria e in IDB).
+// strip senza salvataggio (l'HTML resterÃ  solo in memoria e in IDB).
 const STORAGE_HTML_FIELDS: Array<['html' | 'mobileHtml', 'htmlUrl' | 'mobileHtmlUrl']> = [
   ['html', 'htmlUrl'],
   ['mobileHtml', 'mobileHtmlUrl'],
@@ -406,7 +406,7 @@ async function persistHtmlBlobs(
     const htmlVal = typeof blob.html === 'string' ? (blob.html as string) : '';
     const mobileVal = typeof blob.mobileHtml === 'string' ? (blob.mobileHtml as string) : '';
     // SERVER SOURCE OF TRUTH: carichiamo SEMPRE l'HTML su page_html (anche
-    // i piccoli), così `htmlUrl` è sempre presente e aggiornato e al reload
+    // i piccoli), cosÃ¬ `htmlUrl` Ã¨ sempre presente e aggiornato e al reload
     // si rilegge dal server. Lo strip dal JSONB resta limitato ai grandi
     // (per non sforare lo statement_timeout su Postgres); i piccoli restano
     // anche nel JSONB come fallback offline.
@@ -421,7 +421,7 @@ async function persistHtmlBlobs(
           hasHtml ? htmlVal : undefined,
           hasMobile ? mobileVal : undefined,
           // Solo per kind cloned/swiped (HTML "nostro"). 'extracted' resta
-          // raw — persistHtmlToStorage stesso fa lo skip se kind ===
+          // raw â€” persistHtmlToStorage stesso fa lo skip se kind ===
           // 'extracted', ma passiamo comunque il context per non
           // dipendere dall'implementation detail.
           {
@@ -457,11 +457,11 @@ async function persistHtmlBlobs(
             mobileVal || undefined,
           );
         } catch {
-          // silenziosa: IDB è solo backup
+          // silenziosa: IDB Ã¨ solo backup
         }
       } catch (err) {
-        // Storage upload failed — lasciamo il blob originale e
-        // `stripHtmlFromJsonb` farà il vecchio strip. Almeno IDB salva.
+        // Storage upload failed â€” lasciamo il blob originale e
+        // `stripHtmlFromJsonb` farÃ  il vecchio strip. Almeno IDB salva.
         console.warn(`[useStore.persistHtmlBlobs] Storage upload failed for ${kind} of page ${pageId}, falling back to strip:`, err);
         if (!storageError) storageError = err instanceof Error ? err.message : String(err);
         try {
@@ -683,7 +683,7 @@ export const useStore = create<Store>()((set, get) => ({
 
     try {
       // Boot must not wait on funnel_pages: those JSONB blobs are huge and
-      // used to trip a 12s hard timeout → "Connection Error" on every reload.
+      // used to trip a 12s hard timeout â†’ "Connection Error" on every reload.
       const [products, projects, templates, postPurchasePages] = await Promise.all([
         supabaseOps.fetchProducts(),
         supabaseOps.fetchProjects().catch(() => [] as Project[]),
@@ -719,213 +719,7 @@ export const useStore = create<Store>()((set, get) => ({
         console.warn('[store] funnel pages load failed:', (e as Error).message);
       }
 
-      // ── HTML REHYDRATE ────────────────────────────────────────────────
-      // `stripHtmlFromJsonb` rimuove l'HTML > 50KB da swiped_data /
-      // cloned_data prima del save Supabase per evitare statement_timeout
-      // 57014 sull'anon role. Senza reidratazione l'utente vede la riga
-      // "Completed / Rewrite OK" ma il preview HTML e' sparito al reload.
-      //
-      // Strategia in due livelli:
-      //   1) openclaw_messages.response (via jobId) — funziona per i flussi
-      //      rewrite/extract che producono HTML lato worker.
-      //   2) IndexedDB locale (html-blob-store) — funziona per il clone
-      //      Identical sincrono via /api/clone-funnel, e copre anche i
-      //      casi in cui openclaw_messages non e' raggiungibile o la
-      //      `response` e' stata pulita.
-      //
-      // Async non-blocking: la UI si vede subito senza HTML, poi quando
-      // arrivano le `response` la set aggiorna gli swipedData/clonedData
-      // e React rerenderizza con l'HTML completo.
-      void (async () => {
-        const { loadHtmlBlob } = await import('@/lib/html-blob-store');
-        const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-
-        // Tutte le pagine con HTML mancante in clonedData o swipedData,
-        // indipendentemente dalla presenza di jobId. Per ognuna proviamo
-        // nell'ordine: Storage URL → openclaw → IndexedDB.
-        const targets: Array<{
-          pageId: string;
-          target: 'swipedData' | 'clonedData';
-          jobId?: string;
-          htmlUrl?: string;
-          mobileHtmlUrl?: string;
-          // L'HTML è già presente nel JSONB (pagina piccola / non strippata)?
-          // Se sì NON serve fetch remoto: serve solo l'eventuale override
-          // dell'edit locale (IndexedDB) più recente.
-          htmlPresent: boolean;
-          // Timestamp dell'ultimo edit registrato sul server.
-          editedAt?: number;
-          // updated_at della pagina — usato per PRIORITIZZARE la
-          // reidratazione (le pagine su cui l'utente lavora ora prima).
-          pageUpdatedAt: number;
-        }> = [];
-        // IMPORTANTE: includiamo TUTTE le pagine con clonedData/swipedData,
-        // non solo quelle strippate. Motivo: l'edit dell'editor viene scritto
-        // SEMPRE in IndexedDB, ma il write su Supabase può fallire (RLS,
-        // sessione anonima, rete) o la pagina può essere piccola e mantenere
-        // nel JSONB l'HTML VECCHIO. In quei casi, senza controllare IndexedDB
-        // anche per le pagine con html presente, al reload si rivedrebbe la
-        // versione originale e l'edit andrebbe perso.
-        for (const p of appFunnelPages) {
-          const pageUpdatedAt = p.updatedAt instanceof Date ? p.updatedAt.getTime() : 0;
-          if (p.swipedData) {
-            targets.push({
-              pageId: p.id,
-              target: 'swipedData',
-              jobId: p.swipedData.jobId,
-              htmlUrl: p.swipedData.htmlUrl,
-              mobileHtmlUrl: p.swipedData.mobileHtmlUrl,
-              htmlPresent: !p.swipedData.htmlSkipped && !!p.swipedData.html,
-              editedAt: p.swipedData.editedAt,
-              pageUpdatedAt,
-            });
-          }
-          if (p.clonedData) {
-            targets.push({
-              pageId: p.id,
-              target: 'clonedData',
-              jobId: p.clonedData.jobId,
-              htmlUrl: p.clonedData.htmlUrl,
-              mobileHtmlUrl: p.clonedData.mobileHtmlUrl,
-              htmlPresent: !p.clonedData.htmlSkipped && !!p.clonedData.html,
-              editedAt: p.clonedData.editedAt,
-              pageUpdatedAt,
-            });
-          }
-        }
-        if (targets.length === 0) return;
-        // Le pagine toccate più di recente si reidratano PER PRIME: sono
-        // quelle che l'utente sta con ogni probabilità guardando adesso.
-        targets.sort((a, b) => b.pageUpdatedAt - a.pageUpdatedAt);
-        // eslint-disable-next-line no-console
-        console.log(`[store] tentativo reidratazione HTML per ${targets.length} target (IndexedDB → Storage URL → openclaw_messages)…`);
-
-        const applyHydratedHtml = (
-          pageId: string,
-          target: 'swipedData' | 'clonedData',
-          html: string,
-          mobileHtml?: string,
-        ) => {
-          set((state) => ({
-            funnelPages: state.funnelPages.map((p) => {
-              if (p.id !== pageId) return p;
-              const blob = p[target] as Record<string, unknown> | undefined;
-              if (!blob) return p;
-              const merged = {
-                ...blob,
-                html,
-                ...(mobileHtml ? { mobileHtml } : {}),
-                htmlSkipped: false,
-              };
-              return { ...p, [target]: merged } as typeof p;
-            }),
-          }));
-        };
-
-        const hydrateOne = async ({ pageId, target, jobId, htmlUrl, mobileHtmlUrl, htmlPresent }: (typeof targets)[number]) => {
-              const kind = target === 'swipedData' ? 'swiped' : 'cloned';
-
-              // 1) SERVER (tabella page_html via service role) — SORGENTE DI
-              //    VERITÀ per un'app online. L'editor ad ogni Save fa UPSERT su
-              //    page_html, quindi questa riga è sempre l'ULTIMA versione,
-              //    cross-device, indipendente dall'esito dell'UPDATE del JSONB
-              //    funnel_pages (che può fallire per RLS). L'URL è
-              //    deterministica per (pageId, kind, variant), così funziona
-              //    anche se il JSONB ha un htmlUrl vecchio o assente.
-              try {
-                const base = `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=${kind}`;
-                const html = await fetchHtmlFromStorage(`${base}&variant=desktop`);
-                if (html) {
-                  const mobileHtml = await fetchHtmlFromStorage(`${base}&variant=mobile`);
-                  applyHydratedHtml(pageId, target, html, mobileHtml || undefined);
-                  return;
-                }
-              } catch (err) {
-                // eslint-disable-next-line no-console
-                console.warn(`[store] page_html rehydrate fallita per page ${pageId}/${target}, provo le altre fonti:`, err);
-              }
-
-              // 1b) htmlUrl legacy (vecchio Supabase Storage) — copia
-              //     cross-device per pagine create prima di page_html.
-              if (htmlUrl) {
-                try {
-                  const html = await fetchHtmlFromStorage(htmlUrl);
-                  const mobileHtml = mobileHtmlUrl ? await fetchHtmlFromStorage(mobileHtmlUrl) : undefined;
-                  if (html) {
-                    applyHydratedHtml(pageId, target, html, mobileHtml || undefined);
-                    return;
-                  }
-                } catch (err) {
-                  // eslint-disable-next-line no-console
-                  console.warn(`[store] Storage rehydrate fallito per page ${pageId}/${target}, provo openclaw:`, err);
-                }
-              }
-
-              // 2) HTML già presente nel JSONB (in memoria): è il fallback per
-              //    le pagine piccole mai finite su page_html. Niente da fare.
-              if (htmlPresent) return;
-
-              // 3) openclaw_messages (solo se jobId) — risultato del worker
-              //    per i flussi rewrite/swipe non ancora editati a mano.
-              if (jobId) {
-                try {
-                  const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(jobId)}`);
-                  if (r.ok) {
-                    const data = (await r.json()) as { status?: string; response?: string | null };
-                    if (data.response) {
-                      let parsed: { html?: string; mobileHtml?: string; new_title?: string } | null = null;
-                      try { parsed = JSON.parse(data.response); } catch { /* nessuna fonte */ }
-                      if (parsed?.html) {
-                        applyHydratedHtml(pageId, target, parsed.html, parsed.mobileHtml);
-                        return;
-                      }
-                    }
-                  }
-                } catch (err) {
-                  // eslint-disable-next-line no-console
-                  console.warn(`[store] openclaw rehydrate fallito per page ${pageId} (job ${jobId.slice(0, 8)}):`, err);
-                }
-              }
-
-              // 4) IndexedDB — ULTIMA risorsa, solo offline. Se il server non
-              //    risponde (rete giù) e non c'è nient'altro, recuperiamo
-              //    l'ultima copia salvata su QUESTA macchina così l'utente non
-              //    perde il lavoro. Non vince mai sul server.
-              try {
-                const blob = await loadHtmlBlob(pageId, target);
-                if (blob?.html) {
-                  applyHydratedHtml(pageId, target, blob.html, blob.mobileHtml);
-                }
-              } catch (err) {
-                // eslint-disable-next-line no-console
-                console.warn(`[store] IndexedDB rehydrate (ultima risorsa) fallita per page ${pageId}/${target}:`, err);
-              }
-        };
-
-        // ── Due fasi per non congelare l'app ─────────────────────────────
-        // Con decine di pagine (multi-MB l'una) reidratare TUTTO a 4 in
-        // parallelo satura rete + main thread per minuti e l'app sembra
-        // morta ("ci mette un'eternità"). Quindi:
-        //   FASE 1 — le HOT_COUNT pagine toccate più di recente (quelle che
-        //            l'utente sta quasi certamente usando) a 4 in parallelo;
-        //   FASE 2 — tutto il resto in coda a 1 per volta, con una pausa tra
-        //            i fetch, così la banda resta libera per la navigazione.
-        // Le garanzie non cambiano: ogni pagina viene comunque reidratata,
-        // solo più tardi. I flussi (clone/translate/preview) hanno già i
-        // fallback IndexedDB/page_html per le pagine non ancora idratate.
-        const HOT_COUNT = 12;
-        const hot = targets.slice(0, HOT_COUNT);
-        const cold = targets.slice(HOT_COUNT);
-
-        const PARALLEL = 4;
-        for (let i = 0; i < hot.length; i += PARALLEL) {
-          await Promise.all(hot.slice(i, i + PARALLEL).map(hydrateOne));
-        }
-        for (const t of cold) {
-          await hydrateOne(t);
-          await new Promise((r) => setTimeout(r, 250));
-        }
-      })();
+      // Lists show screenshots only. Preview / Edit / Swipe fetch HTML from page_html on click.
     } catch (error) {
       console.error('Error initializing data from Supabase:', error);
       set({
@@ -1138,7 +932,7 @@ export const useStore = create<Store>()((set, get) => ({
     }
   },
 
-  // Custom page types — persisted in archive_page_types (shared with the extension)
+  // Custom page types â€” persisted in archive_page_types (shared with the extension)
   customPageTypes: [],
   loadCustomPageTypes: async () => {
     try {
@@ -1182,7 +976,7 @@ export const useStore = create<Store>()((set, get) => ({
         ),
       }));
     } catch {
-      /* sidecar unavailable — localStorage already applied what it had */
+      /* sidecar unavailable â€” localStorage already applied what it had */
     }
   },
   addCustomPageType: (label) => {
@@ -1274,8 +1068,8 @@ export const useStore = create<Store>()((set, get) => ({
     // Mirror the checkout flavour BEFORE the Supabase round-trip, and outside
     // the try/catch, because it must not depend on that write succeeding.
     // Observed in production: the funnel_pages UPDATE can come back
-    // PGRST116 ("the result contains 0 rows") — the row isn't writable by the
-    // current session — which throws, hits the catch below and reverts the
+    // PGRST116 ("the result contains 0 rows") â€” the row isn't writable by the
+    // current session â€” which throws, hits the catch below and reverts the
     // whole row. Anything mirrored after the await would never run. The
     // sidecar and localStorage only need the page id, so they are written
     // here and survive whatever the row write does.
@@ -1290,7 +1084,7 @@ export const useStore = create<Store>()((set, get) => ({
     }
 
     try {
-      // ── HTML PERSISTENCE (cross-session, cross-device) ──────────────
+      // â”€â”€ HTML PERSISTENCE (cross-session, cross-device) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // Prima del save Supabase: se i blob cloned/swiped/extracted hanno
       // html grossi (l'edit dell'editor produce facilmente 100-500 KB)
       // li carichiamo su Supabase Storage e nel JSONB mettiamo solo
@@ -1299,15 +1093,15 @@ export const useStore = create<Store>()((set, get) => ({
       // dell'app le edit dell'utente sparirebbero.
       //
       // `payload` = quello che va su DB (HTML strippato, solo URL).
-      // Lo state in memoria continua a tenere l'html completo PIÙ gli
-      // htmlUrl appena ottenuti (così la UI renderizza subito e al next
-      // save abbiamo già l'URL).
+      // Lo state in memoria continua a tenere l'html completo PIÃ™ gli
+      // htmlUrl appena ottenuti (cosÃ¬ la UI renderizza subito e al next
+      // save abbiamo giÃ  l'URL).
       // Context per l'auto-inject del Wasabi tracker: il `funnelId` esposto
       // come `data-funnel` nel <script> iniettato e' il project_id del
       // funnel (vedi commento sopra: `project_id` sul DB coincide col
       // concetto "funnel" lato analytics). Lo step type e' il pageType
       // della pagina. Entrambi possono venire dalla patch in arrivo o
-      // dallo state precedente — facciamo merge nel modo Zustand-style.
+      // dallo state precedente â€” facciamo merge nel modo Zustand-style.
       // Se entrambi sono mancanti l'inject viene saltato (fail-safe in
       // persistHtmlToStorage).
       const trackingFunnelId =
@@ -1333,7 +1127,7 @@ export const useStore = create<Store>()((set, get) => ({
 
       // See `addFunnelPage`: write the selected Project id on `project_id`.
       // We only touch `product_id` if the caller explicitly cleared it
-      // (page.productId === '') — otherwise the legacy value is preserved.
+      // (page.productId === '') â€” otherwise the legacy value is preserved.
       const updated = await supabaseOps.updateFunnelPage(id, {
         name: page.name,
         page_type: page.pageType,
@@ -1393,7 +1187,7 @@ export const useStore = create<Store>()((set, get) => ({
             // Same "merge, don't replace" rule as the html blobs above. When
             // funnel_pages.checkout_mode doesn't exist, supabase-operations
             // retried the write without it, so `updated` comes back with no
-            // checkout_mode and fromDb.checkoutMode is undefined — which used
+            // checkout_mode and fromDb.checkoutMode is undefined â€” which used
             // to clobber the value the user had just picked and snap the
             // selector back to "Standard". Keep what we have unless the DB
             // actually told us something.
@@ -1402,7 +1196,7 @@ export const useStore = create<Store>()((set, get) => ({
         }),
       }));
     } catch (error) {
-      // Revert on failure — but keep an explicitly chosen checkoutMode. It is
+      // Revert on failure â€” but keep an explicitly chosen checkoutMode. It is
       // already persisted in the sidecar/localStorage above, so reverting it
       // here would put the dropdown out of sync with what actually survives a
       // reload. Every other field goes back to its previous value as before.
@@ -1492,7 +1286,7 @@ export const useStore = create<Store>()((set, get) => ({
 
       await get().updateFunnelPage(id, {
         swipeStatus: 'completed',
-        swipeResult: `✓ Swipe completed: "${data.new_title || ''}" (${data.new_length || 0} chars, ${data.replacements || 0} replacements)`,
+        swipeResult: `âœ“ Swipe completed: "${data.new_title || ''}" (${data.new_length || 0} chars, ${data.replacements || 0} replacements)`,
         swipedData: {
           html: data.html,
           originalTitle: data.original_title || '',
@@ -1630,7 +1424,7 @@ export const useStore = create<Store>()((set, get) => ({
 
       await get().updatePostPurchasePage(id, {
         swipeStatus: 'completed',
-        swipeResult: `✓ Swipe completed: "${data.new_title || ''}" (${data.new_length || 0} chars, ${data.replacements || 0} replacements)`,
+        swipeResult: `âœ“ Swipe completed: "${data.new_title || ''}" (${data.new_length || 0} chars, ${data.replacements || 0} replacements)`,
         swipedData: {
           html: data.html,
           originalTitle: data.original_title || '',
@@ -1672,7 +1466,7 @@ export const useStore = create<Store>()((set, get) => ({
       //   (b) the master's shared library (rows flagged
       //       show_in_valchiria=true), each tagged with isShared.
       // If the endpoint fails for any reason we fall back to the direct
-      // Supabase query so the rest of the app keeps working — RLS will
+      // Supabase query so the rest of the app keeps working â€” RLS will
       // still scope rows to the caller, so this is a strict superset.
       try {
         const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
@@ -1695,9 +1489,9 @@ export const useStore = create<Store>()((set, get) => ({
         // Capture the REAL reason so the fallback can either succeed
         // (replacing it) or hand it back to the UI for display.
         apiReason = json?.error
-          ? `API /api/valchiria/funnels → HTTP ${res.status}: ${json.error}`
-          : `API /api/valchiria/funnels → HTTP ${res.status}${
-              raw ? ` — ${raw.slice(0, 180).replace(/\s+/g, ' ').trim()}` : ''
+          ? `API /api/valchiria/funnels â†’ HTTP ${res.status}: ${json.error}`
+          : `API /api/valchiria/funnels â†’ HTTP ${res.status}${
+              raw ? ` â€” ${raw.slice(0, 180).replace(/\s+/g, ' ').trim()}` : ''
             }`;
         console.warn('[loadArchivedFunnels]', apiReason);
       } catch (apiErr) {
@@ -1706,7 +1500,7 @@ export const useStore = create<Store>()((set, get) => ({
         }`;
         console.warn('[loadArchivedFunnels]', apiReason);
       }
-      // Direct Supabase fallback — RLS scopes rows; for the master this
+      // Direct Supabase fallback â€” RLS scopes rows; for the master this
       // returns everything via `is_master(auth.uid())`.
       try {
         const data = await supabaseOps.fetchArchivedFunnels();
@@ -1777,7 +1571,7 @@ export const useStore = create<Store>()((set, get) => ({
 
     // Optional subset: when the UI passes `pageIds`, save ONLY those
     // checked rows (preserving their original order). When omitted /
-    // empty, fall back to the legacy behaviour of saving every step —
+    // empty, fall back to the legacy behaviour of saving every step â€”
     // so existing call sites that don't pass the third argument keep
     // working exactly as before.
     const pages = (pageIds && pageIds.length > 0)
@@ -1791,7 +1585,7 @@ export const useStore = create<Store>()((set, get) => ({
     //   2) IndexedDB (backup locale dell'ultima edit)
     //   3) page_html via htmlUrl (snapshot server, sopravvive al reload)
     // Senza questo, le pagine ricaricate da una sessione precedente hanno
-    // solo `htmlUrl` (HTML offloaded) → lo step finiva in archivio SENZA
+    // solo `htmlUrl` (HTML offloaded) â†’ lo step finiva in archivio SENZA
     // `.html` e, sparito il link sorgente, non restava nulla da mostrare.
     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
     const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
@@ -1831,7 +1625,7 @@ export const useStore = create<Store>()((set, get) => ({
       const { html, mobileHtml } = await materializeHtml(p);
       // Riattacca l'HTML materializzato al blob che la pagina My Archive
       // legge (`swiped_data?.html || cloned_data?.html`). Preferiamo il
-      // bucket "swiped" se la pagina è stata riscritta, altrimenti "cloned".
+      // bucket "swiped" se la pagina Ã¨ stata riscritta, altrimenti "cloned".
       const swiped_data = p.swipedData
         ? { ...p.swipedData, html: html || p.swipedData.html, mobileHtml: mobileHtml || p.swipedData.mobileHtml }
         : null;
@@ -1958,7 +1752,7 @@ export const useStore = create<Store>()((set, get) => ({
               ...f,
               isInMyValchiria: value,
               // For shared rows (isShared=true) we MUST NOT touch
-              // show_in_valchiria — that flag is row-level and reflects
+              // show_in_valchiria â€” that flag is row-level and reflects
               // the master's intent, not ours. The server picks the
               // right primitive (pick vs row update); we just mirror.
               show_in_valchiria: f.isShared ? f.show_in_valchiria : value,
@@ -1992,7 +1786,7 @@ export const useStore = create<Store>()((set, get) => ({
       if (!step) return f;
       const name = STEP_SUFFIX_RE.test(f.name)
         ? f.name.replace(STEP_SUFFIX_RE, `Step ${step}`)
-        : `${f.name} — Step ${step}`;
+        : `${f.name} â€” Step ${step}`;
       const steps = Array.isArray(f.steps)
         ? ((f.steps as Array<Record<string, unknown>>).map((s, i) =>
             i === 0

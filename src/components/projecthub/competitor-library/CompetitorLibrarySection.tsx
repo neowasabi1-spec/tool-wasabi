@@ -2422,68 +2422,19 @@ function isNicheCategory(s: string) {
   return !!t && (/\s/.test(t) || !/\.[a-z]{2,}$/i.test(t));
 }
 
-// Live thumbnail rendered from the SAVED HTML (page_html mirror). Used when a
-// landing has no stored screenshot (e.g. rows recovered after the archive
-// wipe): the saved page itself — full CSS, images, layout — becomes the
-// preview. Fetch is lazy (IntersectionObserver) so a big grid stays cheap.
-function HtmlThumb({ htmlUrl, className = "" }: { htmlUrl: string; className?: string }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [scale, setScale] = useState(0.22);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !htmlUrl) return;
-    const obs = new IntersectionObserver((entries) => {
-      if (!entries[0]?.isIntersecting) return;
-      obs.disconnect();
-      setScale((el.clientWidth || 280) / 1280);
-      fetch(htmlPreviewUrl(htmlUrl) || htmlUrl)
-        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
-        .then((t) => { if (t && t.length > 100 && /<[a-z]/i.test(t)) setHtml(t); else setFailed(true); })
-        .catch(() => setFailed(true));
-    }, { rootMargin: "400px" });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [htmlUrl]);
-
-  return (
-    <div ref={ref} className={`relative overflow-hidden bg-white ${className}`}>
-      {html ? (
-        <iframe
-          srcDoc={html}
-          sandbox=""
-          scrolling="no"
-          tabIndex={-1}
-          title="Landing preview"
-          className="absolute top-0 left-0 border-0 pointer-events-none select-none"
-          style={{ width: "1280px", height: "1800px", transform: `scale(${scale})`, transformOrigin: "top left" }}
-        />
-      ) : (
-        <div className="w-full h-full flex items-center justify-center bg-slate-100">
-          {failed
-            ? <Globe className="w-10 h-10 text-slate-400" />
-            : <RefreshCw className="w-6 h-6 text-slate-300 animate-spin" />}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function CardShot({ landing }: { landing: Landing }) {
-  const [useHtml, setUseHtml] = useState(!isShotUrl(landing.screenshot));
-  if (!useHtml && isShotUrl(landing.screenshot)) {
+  const shot = [landing.screenshot, landing.screenshot_desktop, landing.screenshot_mobile].find(isShotUrl) || "";
+  const [broken, setBroken] = useState(false);
+  if (shot && !broken) {
     return (
       <img
-        src={landing.screenshot}
+        src={shot}
         alt={landing.name}
         className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform"
-        onError={() => setUseHtml(true)}
+        onError={() => setBroken(true)}
       />
     );
   }
-  if (landing.html_url) return <HtmlThumb htmlUrl={landing.html_url} className="w-full h-full" />;
   return (
     <div className="w-full h-full flex items-center justify-center bg-slate-100">
       <Globe className="w-10 h-10 text-slate-400" />
