@@ -88,6 +88,11 @@ type CompetitorAd = {
   reach?: number | null;
   // Phase 1: Claude-rewritten script adapted to the user's product.
   rewritten_script?: string | null;
+  /** Meta / TikTok / Google archive id from the scraper. */
+  external_id?: string | null;
+  source?: string | null;
+  /** Brand Ads Library URL when the row is joined (All creatives / overview). */
+  ads_library_url?: string | null;
 };
 
 function formatDate(d: string | null) {
@@ -258,6 +263,38 @@ function countryFromAdLibraryUrl(url?: string | null): string {
     return c && c !== "ALL" ? c : "";
   } catch {
     return "";
+  }
+}
+
+/** Per-creative Ads Library URL (Meta / TikTok / Google). */
+function adLibraryUrlForCreative(
+  ad: { external_id?: string | null; source?: string | null },
+  brandUrl?: string | null,
+): string {
+  const id = String(ad.external_id || "").trim();
+  const brand = String(brandUrl || "").trim();
+  if (!id && !brand) return "";
+  if (!id) return brand;
+  const hint = `${ad.source || ""} ${brand}`.toLowerCase();
+  if (hint.includes("tiktok") || hint.includes("library.tiktok")) {
+    return `https://library.tiktok.com/ads?id=${encodeURIComponent(id)}`;
+  }
+  if (hint.includes("adstransparency") || hint.includes("transparency.google")) {
+    return `https://adstransparency.google.com/?creative_id=${encodeURIComponent(id)}`;
+  }
+  try {
+    const u = new URL("https://www.facebook.com/ads/library/");
+    u.searchParams.set("id", id);
+    if (brand) {
+      const b = new URL(brand);
+      const country = (b.searchParams.get("country") || "").toUpperCase();
+      if (country && country !== "ALL") u.searchParams.set("country", country);
+      const active = b.searchParams.get("active_status");
+      if (active) u.searchParams.set("active_status", active);
+    }
+    return u.toString();
+  } catch {
+    return `https://www.facebook.com/ads/library/?id=${encodeURIComponent(id)}`;
   }
 }
 
@@ -596,12 +633,13 @@ function ShotsGrid({
 // with player, download, transcript + copy, and delete. Reused by the
 // per-competitor view and the flat "All creatives" view.
 function CreativeDetailPanel({
-  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange, onOpenCreated,
+  ad, placeholderIndex, brandName, projectId, adsLibraryUrl, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange, onOpenCreated,
 }: {
   ad: CompetitorAd;
   placeholderIndex: number;
   brandName?: string;
   projectId: string;
+  adsLibraryUrl?: string | null;
   onClose: () => void;
   onSaveTemplate: (id: number) => void;
   onDelete: (id: number) => void;
@@ -970,6 +1008,7 @@ function CreativeDetailPanel({
     } catch { toast({ title: "Transcription failed", variant: "destructive" }); }
     finally { setTranscribing(false); }
   };
+  const libraryUrl = adLibraryUrlForCreative(ad, adsLibraryUrl || ad.ads_library_url);
   return (
     <>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -979,10 +1018,30 @@ function CreativeDetailPanel({
           <div className="min-w-0">
             <span className="text-sm font-semibold text-foreground">Creative Detail</span>
             {brandName && <p className="text-[11px] text-muted-foreground truncate">{brandName}</p>}
+            {libraryUrl && (
+              <a
+                href={libraryUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+              >
+                <ExternalLink className="w-3 h-3" /> Ads Library
+              </a>
+            )}
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
         </div>
         <div className="p-4 border-b border-border space-y-2">
+          {libraryUrl && (
+            <a
+              href={libraryUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-border text-sm font-medium hover:bg-muted/50"
+            >
+              <ExternalLink className="w-4 h-4" /> Open this creative in Ads Library
+            </a>
+          )}
           <Button onClick={() => onSaveTemplate(ad.id)} className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
             <Bookmark className="w-4 h-4" /> Save template
           </Button>
@@ -2118,6 +2177,17 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
                     {ad.hook && (
                       <p className="text-[10px] text-muted-foreground truncate">{ad.hook}</p>
                     )}
+                    {adLibraryUrlForCreative(ad, competitor.ads_library_url) && (
+                      <a
+                        href={adLibraryUrlForCreative(ad, competitor.ads_library_url)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Ads Library
+                      </a>
+                    )}
                   </div>
                   <button
                     title="Delete creative"
@@ -2139,6 +2209,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           placeholderIndex={ads.indexOf(detailAd)}
           brandName={competitor.name}
           projectId={projectId}
+          adsLibraryUrl={competitor.ads_library_url || libUrl}
           onClose={() => setDetailAd(null)}
           onSaveTemplate={(id) => { saveToTemplates([id]); }}
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
@@ -2359,6 +2430,17 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-foreground truncate leading-tight">{ad.headline || ad.name || "Creative"}</p>
                   <p className="text-[10px] text-muted-foreground truncate">{ad.brand_name}</p>
+                  {adLibraryUrlForCreative(ad, ad.ads_library_url) && (
+                    <a
+                      href={adLibraryUrlForCreative(ad, ad.ads_library_url)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline"
+                    >
+                      <ExternalLink className="w-3 h-3" /> Ads Library
+                    </a>
+                  )}
                 </div>
                 <button title="Delete creative" onClick={e => { e.stopPropagation(); del(ad); }}
                   className="flex-shrink-0 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
@@ -2376,6 +2458,7 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
           placeholderIndex={filtered.indexOf(detailAd)}
           brandName={detailAd.brand_name}
           projectId={projectId}
+          adsLibraryUrl={detailAd.ads_library_url}
           onClose={() => setDetailAd(null)}
           onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { del(detailAd); setDetailAd(null); }}
@@ -4505,6 +4588,7 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           placeholderIndex={topAds.findIndex(t => t.ad.id === detailAd.id)}
           brandName={detailAd.brand_name}
           projectId={projectId}
+          adsLibraryUrl={detailAd.ads_library_url}
           onClose={() => setDetailAd(null)}
           onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { delAd(detailAd); setDetailAd(null); }}
