@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { ensureCreativeFolder } from '@/lib/creative-library';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -133,6 +134,8 @@ async function saveToProjectCreatives(
   const { allowed } = await canAccessProject(req, projectId);
   if (!allowed) return NextResponse.json({ error: 'Project not found' }, { status: 404 });
 
+  await ensureCreativeFolder(projectId, 'Recreated ads');
+
   const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(BUCKET).download(filePath);
   if (dlErr || !blob) {
     return NextResponse.json({ error: dlErr?.message || 'Could not read generated image' }, { status: 500 });
@@ -166,7 +169,13 @@ async function saveToProjectCreatives(
       { status: 500 },
     );
   }
-  return NextResponse.json({ ok: true, creative: created, filePath: dest });
+  return NextResponse.json({
+    ok: true,
+    creative: created,
+    filePath: dest,
+    href: `/projects/${projectId}?section=creative`,
+    folder: 'Recreated ads',
+  });
 }
 
 async function persistGenerated(

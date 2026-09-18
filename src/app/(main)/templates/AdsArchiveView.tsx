@@ -614,7 +614,11 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 Delete
               </button>
               <a
-                href={downloadHref(recreated?.filePath || preview.file_path)}
+                href={
+                  recreated?.filePath
+                    ? downloadHref(recreated.filePath)
+                    : (recreated?.previewUrl || downloadHref(preview.file_path))
+                }
                 className="px-3 py-1.5 bg-white text-gray-900 rounded-lg text-sm font-medium"
               >
                 Download

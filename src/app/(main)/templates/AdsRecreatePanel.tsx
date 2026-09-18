@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Download, FolderKanban, ImagePlus, Loader2, Sparkles } from 'lucide-react';
+import { Download, ExternalLink, FolderKanban, ImagePlus, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { getUploadUrl } from '@/lib/projecthub-storage';
@@ -194,6 +194,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
   const [waitMsg, setWaitMsg] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedHref, setSavedHref] = useState('');
   const [analysis, setAnalysis] = useState('');
   const [result, setResult] = useState<RecreatePreview | null>(null);
   const [loadingProjects, setLoadingProjects] = useState(true);
@@ -225,6 +226,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
   useEffect(() => {
     setResult(null);
     setSaved(false);
+    setSavedHref('');
     setAnalysis('');
   }, [ad.id]);
 
@@ -261,6 +263,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
     setWaitMsg('Preparing images…');
     setAnalysis('');
     setSaved(false);
+    setSavedHref('');
     setResult(null);
     onResult(null);
     try {
@@ -343,28 +346,49 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
     }
   };
 
+  const projectLabel = projects.find((p) => p.id === projectId)?.name || '';
+
   const saveToProject = async () => {
     if (!result) return;
     if (!projectId) {
-      toast.error('Pick a project to save into Creative');
+      toast.error('Pick a project under My Projects first');
       return;
     }
     setSaving(true);
     try {
+      let filePath = result.filePath;
+      if (!filePath && result.previewUrl) {
+        const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'ingest', url: result.previewUrl, name: result.name }),
+        });
+        const savedRaw = await ingested.json().catch(() => ({} as Record<string, unknown>));
+        if (!ingested.ok) throw new Error(String(savedRaw.error || 'Could not keep the generated image'));
+        filePath = String(savedRaw.filePath || savedRaw.file_path || '');
+        if (filePath) {
+          const next = { ...result, filePath, previewUrl: String(savedRaw.previewUrl || result.previewUrl) };
+          setResult(next);
+          onResult(next);
+        }
+      }
+      if (!filePath) throw new Error('The image is not ready to save yet');
       const res = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'save',
           projectId,
-          filePath: result.filePath,
+          filePath,
           name: result.name,
         }),
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || 'Could not save to Creative');
+      const href = String(d.href || `/projects/${projectId}?section=creative`);
       setSaved(true);
-      toast.success('Saved in the project Creative section');
+      setSavedHref(href);
+      toast.success(`Saved in ${projectLabel || 'the project'} → Creative → Recreated ads`);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not save to Creative');
     } finally {
@@ -372,9 +396,9 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
     }
   };
 
-  const downloadHref = result
+  const fileDownloadHref = result?.filePath
     ? getUploadUrl(result.filePath) + (getUploadUrl(result.filePath).includes('?') ? '&' : '?') + 'download=1'
-    : '';
+    : (result?.previewUrl || '');
 
   return (
     <div className="flex flex-col gap-3 p-4 bg-gray-900/80 border-t border-white/10 lg:border-t-0 lg:border-l lg:w-[340px] lg:shrink-0">
@@ -383,41 +407,9 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           <Sparkles className="w-4 h-4 text-violet-300" /> Recreate for your product
         </p>
         <p className="text-xs text-gray-400 mt-1">
-          AI reads this layout, then rebuilds the ad around your project or packshot. The result stays in this popup until you save it to the project Creative tab or download it.
+          Rebuilds this ad for your product. Download it, or save it into a project: Creative → Creatives → Recreated ads.
         </p>
       </div>
-
-      {result?.previewUrl && (
-        <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-2 space-y-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={result.previewUrl}
-            alt={result.name}
-            className="w-full max-h-64 object-contain rounded-md bg-black"
-          />
-          {saved && (
-            <p className="text-[11px] text-emerald-300 px-1">Saved in Creative → Recreated ads</p>
-          )}
-          <button
-            type="button"
-            onClick={() => void saveToProject()}
-            disabled={saving || busy || !projectId}
-            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
-          >
-            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderKanban className="w-4 h-4" />}
-            {saved ? 'Saved to project' : 'Save to project Creative'}
-          </button>
-          <a
-            href={downloadHref}
-            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 text-white text-sm font-medium hover:bg-white/10"
-          >
-            <Download className="w-4 h-4" /> Download
-          </a>
-          {!projectId && (
-            <p className="text-[11px] text-amber-300 px-1">Select a project above to save into Creative.</p>
-          )}
-        </div>
-      )}
 
       <label className="block">
         <span className="text-[11px] uppercase tracking-wide text-gray-500">My Projects</span>
@@ -440,6 +432,57 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           </span>
         )}
       </label>
+
+      {result?.previewUrl && (
+        <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-2 space-y-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={result.previewUrl}
+            alt={result.name}
+            className="w-full max-h-64 object-contain rounded-md bg-black"
+          />
+          {saved ? (
+            <p className="text-[11px] text-emerald-300 px-1">
+              Saved in {projectLabel || 'the project'} → Creative → Creatives → Recreated ads
+            </p>
+          ) : (
+            <p className="text-[11px] text-gray-300 px-1">
+              {projectId
+                ? `Save puts this still in ${projectLabel} → Creative → Creatives → Recreated ads`
+                : 'Pick a project above, then save. It goes to Creative → Creatives → Recreated ads.'}
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void saveToProject()}
+            disabled={saving || busy || !projectId}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white text-gray-900 text-sm font-medium hover:bg-gray-100 disabled:opacity-50"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderKanban className="w-4 h-4" />}
+            {saved
+              ? 'Saved to project'
+              : projectLabel
+                ? `Save to ${projectLabel}`
+                : 'Save to project'}
+          </button>
+          {saved && savedHref && (
+            <a
+              href={savedHref}
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500"
+            >
+              <ExternalLink className="w-4 h-4" />
+              Open Creative tab
+            </a>
+          )}
+          <a
+            href={fileDownloadHref}
+            download={result.name || 'recreated-ad.png'}
+            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 text-white text-sm font-medium hover:bg-white/10"
+          >
+            <Download className="w-4 h-4" /> Download
+          </a>
+        </div>
+      )}
 
       {products.length > 0 && (
         <label className="block">
