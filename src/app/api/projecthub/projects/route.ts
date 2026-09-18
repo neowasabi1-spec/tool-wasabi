@@ -16,9 +16,20 @@ import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 export const dynamic = 'force-dynamic';
 
 const PROJECT_COLS =
-  'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections, owner_user_id';
+  'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections, owner_user_id, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
 const PROJECT_COLS_LEGACY =
   'id, name, status, description, domain, notes, created_at, updated_at, owner_user_id';
+
+async function ownerEmailById(userIds: string[]): Promise<Map<string, string>> {
+  const want = new Set(userIds.filter(Boolean));
+  const out = new Map<string, string>();
+  if (!want.size) return out;
+  const { data } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
+  for (const u of data?.users || []) {
+    if (want.has(u.id) && u.email) out.set(u.id, u.email);
+  }
+  return out;
+}
 
 export async function GET(req: NextRequest) {
   const search = req.nextUrl.searchParams.get('search');
@@ -47,7 +58,7 @@ export async function GET(req: NextRequest) {
 
   let { data, error } = await query;
 
-  if (error && /thumbnail_path|product_brief_sections/i.test(error.message || '')) {
+  if (error && /thumbnail_path|product_brief_sections|brief_files|market_research/i.test(error.message || '')) {
     let retryQuery = supabaseAdmin
       .from('projects')
       .select(PROJECT_COLS_LEGACY)
@@ -57,18 +68,32 @@ export async function GET(req: NextRequest) {
     data = retry.data;
     error = retry.error;
     console.warn(
-      '[projecthub] missing thumbnail_path/product_brief_sections columns — run supabase-migration-projecthub.sql',
+      '[projecthub] missing optional project columns — run supabase-migration-projecthub.sql',
     );
   }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  let projects = data || [];
+  let projects = (data || []) as Array<Record<string, unknown>>;
   if (search) {
     const q = search.toLowerCase();
-    projects = projects.filter((p: { name?: string }) =>
-      (p.name || '').toLowerCase().includes(q),
+    projects = projects.filter((p) =>
+      String(p.name || '').toLowerCase().includes(q),
     );
   }
+
+  // Creator email is master-only. Regular users still get owner_user_id so
+  // the UI can tell "mine" vs "shared", but they must not see who created it.
+  if (ctx.isMaster) {
+    const emails = await ownerEmailById(
+      projects.map((p) => (typeof p.owner_user_id === 'string' ? p.owner_user_id : '')),
+    );
+    projects = projects.map((p) => ({
+      ...p,
+      owner_email:
+        typeof p.owner_user_id === 'string' ? emails.get(p.owner_user_id) || null : null,
+    }));
+  }
+
   return NextResponse.json(projects);
 }
 
@@ -116,7 +141,7 @@ export async function POST(req: NextRequest) {
     .select(PROJECT_COLS)
     .single();
 
-  if (error && /product_brief_sections/i.test(error.message || '')) {
+  if (error && /product_brief_sections|brief_files|thumbnail_path|market_research/i.test(error.message || '')) {
     delete insert.product_brief_sections;
     const retry = await supabaseAdmin
       .from('projects')
