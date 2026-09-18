@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-import { withCheckoutRules, type CheckoutMode } from '@/lib/checkout-modes';
+import { normalizeCheckoutMode, withCheckoutRules, type CheckoutMode } from '@/lib/checkout-modes';
+import { repairWasabiCheckout } from '@/lib/wasabi-checkout-contract';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -348,6 +349,26 @@ export async function POST(request: NextRequest) {
             resultHtml = await editWithGemini(html, prompt, systemPrompt, send);
           } else {
             resultHtml = await editWithClaude(html, prompt, systemPrompt, send);
+          }
+
+          // Enforce the contract instead of only asking for it. Telling the
+          // model not to write a runtime <script src> is what we did before,
+          // and a generated page hand-wrote one anyway — which suppressed the
+          // CRM's own injection and made the checkout unable to start. The
+          // repair pass runs over the model's answer whatever it says.
+          // `scaffold: false`: never inject controls into a page the user is
+          // mid-edit on; this only removes what breaks payment.
+          if (normalizeCheckoutMode(checkoutMode) === 'wasabi') {
+            const fixed = repairWasabiCheckout(resultHtml, { scaffold: false });
+            if (fixed.repairs.length) {
+              console.log(`[ai-edit-html] WasabiCRM repairs: ${fixed.repairs.join(' | ')}`);
+              send({ type: 'checkout-repairs', repairs: fixed.repairs });
+              resultHtml = fixed.html;
+            }
+            const fatal = fixed.issues.filter((i) => i.severity === 'fatal');
+            if (fatal.length) {
+              send({ type: 'checkout-issues', issues: fatal });
+            }
           }
 
           send({ type: 'result', html: resultHtml });

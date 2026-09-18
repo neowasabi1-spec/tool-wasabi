@@ -125,6 +125,69 @@ function effectiveCheckoutMode(
   return normalizeCheckoutMode(page.checkoutMode);
 }
 
+/**
+ * Make a finished page actually usable by WasabiCRM.
+ *
+ * Picking "WasabiCRM" used to do one thing: append the binding rules to the
+ * system prompt of the copy rewriter. But every rewrite path here (OpenClaw,
+ * the Edge function, landing/swipe) only ever asks the model for {id,
+ * rewritten} TEXT pairs and substitutes them back into the cloned
+ * competitor's DOM — no prompt can add a data-wc-* attribute from there. So
+ * the flag produced an ordinary checkout page: it rendered, and it could not
+ * take a payment.
+ *
+ * /api/wasabi-checkout is the step that was missing. It repairs what a
+ * machine can decide on its own (claim the page's own email box and CTA,
+ * mount the payment host, strip any runtime <script src> or <base>) and asks
+ * Claude for the rest (prices → data-wc-bind, package cards → a <template>).
+ *
+ * Never throws and never loses the page: on any failure the input HTML comes
+ * straight back and the reason goes in the swipe log.
+ */
+async function makeWasabiCheckoutReady(
+  html: string,
+  ctx: { productName?: string; brandName?: string; notes?: string },
+  onLog: (kind: 'info' | 'success' | 'error', message: string) => void,
+): Promise<string> {
+  if (!html || !html.trim()) return html;
+  onLog('info', 'WasabiCRM checkout — wiring the page to the payment runtime…');
+  try {
+    const res = await fetch('/api/wasabi-checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html, mode: 'wasabi', ...ctx }),
+    });
+    const data = (await res.json()) as {
+      html?: string;
+      ready?: boolean;
+      repairs?: string[];
+      issues?: { rule: string; severity: string; message: string }[];
+      error?: string;
+    };
+    if (!res.ok || !data.html) {
+      onLog('error', `WasabiCRM wiring failed: ${data.error || `HTTP ${res.status}`} — page saved as-is.`);
+      return html;
+    }
+    for (const r of (data.repairs || []).slice(0, 12)) onLog('info', `  · ${r}`);
+    const fatal = (data.issues || []).filter((i) => i.severity === 'fatal');
+    if (data.ready) {
+      onLog('success', '✓ WasabiCRM contract satisfied — the page can take a payment.');
+    } else {
+      onLog(
+        'error',
+        `⚠ WasabiCRM: ${fatal.length} issue(s) still block payment — ${fatal
+          .slice(0, 3)
+          .map((i) => `${i.rule} ${i.message.split('.')[0]}`)
+          .join('; ')}${data.error ? ` (${data.error})` : ''}`,
+      );
+    }
+    return data.html;
+  } catch (err) {
+    onLog('error', `WasabiCRM wiring failed: ${(err as Error).message} — page saved as-is.`);
+    return html;
+  }
+}
+
 // Helper: sanitize cloned HTML and rewrite ALL relative URLs to absolute using the original domain
 // Strips scripts (unless keepScripts=true for quiz pages), rewrites src/href/url() so CSS, images, fonts load correctly in preview
 const SAVED_SECTIONS_KEY = 'funnel-swiper-saved-sections';
@@ -3788,15 +3851,33 @@ export default function FrontEndFunnel() {
 
         const replacements = final.replacements ?? 0;
         const totalTexts = final.totalTexts ?? 0;
+
+        // Same step the single Clone & Rewrite does: the worker rewrote the
+        // COPY, which leaves a WasabiCRM checkout with nothing for the payment
+        // runtime to bind to. Per row, because pages inside one Swipe All
+        // differ — a landing next to a checkout skips this entirely.
+        let swipedHtml = final.html;
+        if (pageCheckoutMode === 'wasabi') {
+          swipedHtml = await makeWasabiCheckoutReady(
+            swipedHtml,
+            {
+              productName: project.name,
+              brandName: project.name,
+              notes: descCapped || undefined,
+            },
+            (kind, message) => pushSwipeLog(kind, message, pageName),
+          );
+        }
+
         updateFunnelPage(page.id, {
           swipeStatus: 'completed',
-          swipeResult: `Rewrite OK (${replacements}/${totalTexts} replacements via ${AUDITOR_LABEL[chosen]})`,
+          swipeResult: `Rewrite OK (${replacements}/${totalTexts} replacements via ${AUDITOR_LABEL[chosen]})${pageCheckoutMode === 'wasabi' ? ' · WasabiCRM wired' : ''}`,
           clonedData: {
-            html: final.html,
+            html: swipedHtml,
             mobileHtml: page.clonedData?.mobileHtml,
             title: final.new_title || page.clonedData?.title || pageName,
             method_used: `openclaw-${chosen}`,
-            content_length: final.html.length,
+            content_length: swipedHtml.length,
             duration_seconds: Math.round((Date.now() - t0) / 1000),
             cloned_at: new Date(),
             jobId: enqueued.id,
@@ -5140,9 +5221,40 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           pushSwipeLog('error', 'No product name — skipped palette and photos', pageName);
         }
 
+        // WasabiCRM checkout: the copy and the visuals are done, but the page
+        // still has none of the markup the payment runtime binds to. This is
+        // the step that makes the flavour mean something. Runs LAST so the
+        // restyle can't undo it, and only for a row whose page type is a
+        // checkout AND whose flavour is WasabiCRM — every other row skips it
+        // entirely and is saved exactly as before.
+        let wasabiNote = '';
+        if (effectiveCheckoutMode(currentPage) === 'wasabi') {
+          setCloneProgress({
+            phase: 'processing',
+            totalTexts: rewriteData.totalTexts || 0,
+            processedTexts: rewriteData.replacements || 0,
+            message: 'WasabiCRM — wiring the checkout to the payment runtime…',
+          });
+          const wired = await makeWasabiCheckoutReady(
+            rewrittenHtml,
+            {
+              productName: cloneConfig.productName || projectForVisual?.name || undefined,
+              brandName: projectForVisual?.name || undefined,
+              notes: swipeDesc || projectForVisual?.description || undefined,
+            },
+            (kind, message) => pushSwipeLog(kind, message, pageName),
+          );
+          if (wired !== rewrittenHtml) {
+            rewrittenHtml = wired;
+            wasabiNote = ' · WasabiCRM wired';
+            void saveHtmlBlob(pageId, 'swipedData', rewrittenHtml);
+          }
+          setCloneProgress(null);
+        }
+
         await updateFunnelPage(pageId, {
           swipeStatus: 'completed',
-          swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts)${visualNote}`,
+          swipeResult: `Rewrite OK (${rewriteData.replacements}/${rewriteData.totalTexts} texts)${visualNote}${wasabiNote}`,
           swipedData: {
             html: rewrittenHtml,
             originalTitle: pageName,

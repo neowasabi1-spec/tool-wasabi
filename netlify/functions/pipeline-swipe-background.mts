@@ -40,6 +40,8 @@ import { jinaProxyUrl } from '../../src/lib/spa-rescue';
 import { batchKeepingGroups, buildSwipePlan, orderAndLinkFragments, planRules } from '../../src/lib/swipe-plan';
 import { bakePairsDom } from '../../src/lib/swipe-bake';
 import { openaiGenerateImage, openaiImageKey } from '../../src/lib/openai-image';
+import { isCheckoutPageType, normalizeCheckoutMode } from '../../src/lib/checkout-modes';
+import { convertToWasabiCheckout } from '../../src/lib/wasabi-checkout-build';
 import { persistPageHtml, readPageHtml } from '../../src/lib/page-html-persist';
 
 /**
@@ -91,6 +93,52 @@ function getSupabase() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 type SupabaseClient = ReturnType<typeof getSupabase>;
+
+/**
+ * The checkout flavour of a funnel row, resolved the same way the app does:
+ * the `funnel_pages.checkout_mode` column when the migration has been applied,
+ * otherwise the `settings` sidecar that /api/checkout-mode writes.
+ *
+ * Needed here because this worker REWRITES the page's HTML — copy, CSS, even
+ * whole image blocks. On a WasabiCRM checkout that can quietly carry away the
+ * data-wc-* attributes the payment runtime binds to, so a restyle would turn a
+ * working checkout into one that paints and takes no money. Anything that
+ * fails resolves to 'standard' and the run behaves exactly as it did before.
+ */
+async function checkoutFlavour(
+  sb: SupabaseClient,
+  pageId: string,
+  pageType: string,
+): Promise<'standard' | 'wasabi'> {
+  if (!isCheckoutPageType(pageType)) return 'standard';
+  try {
+    const { data, error } = await sb
+      .from('funnel_pages')
+      .select('checkout_mode')
+      .eq('id', pageId)
+      .maybeSingle();
+    if (!error && data && (data as { checkout_mode?: unknown }).checkout_mode != null) {
+      return normalizeCheckoutMode((data as { checkout_mode?: unknown }).checkout_mode);
+    }
+  } catch {
+    /* column absent on this deployment — fall through to the sidecar */
+  }
+  try {
+    const { data } = await sb
+      .from('settings')
+      .select('value')
+      .eq('key', 'funnel_page_checkout_modes')
+      .limit(1);
+    const row = Array.isArray(data) && data.length ? (data[0] as { value?: unknown }) : null;
+    const raw = typeof row?.value === 'string' ? JSON.parse(row.value) : row?.value;
+    if (raw && typeof raw === 'object') {
+      return normalizeCheckoutMode((raw as Record<string, unknown>)[pageId]);
+    }
+  } catch {
+    /* no sidecar either */
+  }
+  return 'standard';
+}
 
 interface SwipePage {
   funnelPageId: string;
@@ -2141,11 +2189,50 @@ CRITICAL RULES:
     imgRes.total = n;
   }
 
-  await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
-
   const textsPassDone = ctx.phase === 'texts';
   let done = textsPassDone || ctx.imageMode === 'affiliate' || imgRes.remaining <= 0 || budget.imagesLeft <= 0;
   const nextOffset = imageOffset + (imgRes.processed || 0);
+
+  // WasabiCRM checkout: run ONCE, on the last pass, after every rewrite and
+  // photo swap has finished touching the HTML. Two jobs at the same time —
+  // it adds the data-wc-* contract to a page that never had one (the copy
+  // rewriter above only ever swaps strings, so it cannot), and it repairs the
+  // contract on a page that did, since a restyle can carry the attributes
+  // away with the markup it replaces.
+  //
+  // `done && !textsPassDone` is the real end of the run: on the texts pass
+  // `done` is true but the page comes back for photos.
+  let wasabiNote = '';
+  if (done && !textsPassDone) {
+    try {
+      const flavour = await checkoutFlavour(sb, page.funnelPageId, page.type);
+      if (flavour === 'wasabi') {
+        await touchPage(sb, page.funnelPageId, 'WasabiCRM — wiring the checkout to the payment runtime…');
+        const wired = await convertToWasabiCheckout({
+          html,
+          productName: ctx.productName,
+          brandName: ctx.productName,
+          notes: ctx.description || undefined,
+        });
+        html = wired.html;
+        wasabiNote = wired.ready
+          ? ', WasabiCRM wired'
+          : `, WasabiCRM needs a pass (${wired.issues.filter((i) => i.severity === 'fatal').length} issue(s))`;
+        changes.push({
+          from: 'WasabiCRM contract',
+          to: `${wired.repairs.length} repair(s), ${wired.ready ? 'satisfied' : 'still blocked'}`,
+        });
+        console.log(`[swipe] wasabi checkout ${page.funnelPageId}: ${wired.log.join(' | ')}`);
+      }
+    } catch (e) {
+      // Never lose a finished page to this: keep the HTML as the restyle left
+      // it and say so in the row's result line.
+      console.warn('[swipe] wasabi checkout wiring failed:', (e as Error).message);
+      wasabiNote = ', WasabiCRM wiring failed';
+    }
+  }
+
+  await persistHtml(sb, page.funnelPageId, 'swiped', html, ctx.ownerUserId);
   const now = new Date().toISOString();
   const step = `step ${ctx.pageIndex + 1}/${ctx.pageCount}`;
   const summary = textsPassDone
@@ -2156,6 +2243,7 @@ CRITICAL RULES:
     `${!resume && ctx.restyle ? ', new visual theme' : ''}` +
     `${imgRes.generated ? `, ${imgRes.generated} ChatGPT images` : ''}` +
     `${imgRes.productSwaps ? `, ${imgRes.productSwaps} product shots replaced` : ''}` +
+    `${wasabiNote}` +
     `${!done && imgRes.total ? ` (${nextOffset}/${imgRes.total} photos)` : ''}`;
 
   const { error: updErr } = await sb.from('funnel_pages').update({

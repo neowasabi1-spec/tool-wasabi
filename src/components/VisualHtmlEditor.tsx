@@ -2625,6 +2625,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   }, [checkoutMode]);
   const isWasabiCheckout = activeCheckoutMode === 'wasabi';
 
+  // Stato del bottone "Wire to WasabiCRM": la conversione vera (data-wc-*,
+  // <template>, data-wc-bind), non solo le regole nel prompt.
+  const [wasabiWiring, setWasabiWiring] = useState(false);
+  const [wasabiReport, setWasabiReport] = useState<{
+    ready: boolean;
+    repairs: string[];
+    issues: { rule: string; severity: string; message: string }[];
+    error?: string;
+  } | null>(null);
+
   const [currentHtml, setCurrentHtml] = useState(initialHtml);
   // Ref sempre aggiornato a currentHtml: usato da handleSave per leggere
   // il valore PIU' recente (anche se appena arrivato da cmd-flush-html)
@@ -4346,6 +4356,68 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setAiEditProgress(null);
     }
   }, [aiEditPrompt, aiEditModel, aiEditRunning, activeCheckoutMode, currentHtml, pushUndo]);
+
+  /* ── WasabiCRM: wire this page to the payment runtime ──
+   * The checkout flavour above only ever changed the AI's system prompt, which
+   * stops a model BREAKING a page that is already wired and does nothing for a
+   * page that never was. This button runs the actual conversion: claim the
+   * page's own email box and CTA, mount [data-wc-payment], turn literal prices
+   * into data-wc-bind, turn a package picker into a <template>, and strip any
+   * <base> or runtime <script src> that would suppress the CRM's injection.
+   * Undoable like an AI edit — it pushes onto the same history. */
+  const handleWasabiWire = useCallback(async () => {
+    if (aiEditRunning || wasabiWiring) return;
+    const target = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
+    if (!target?.trim()) return;
+
+    setWasabiWiring(true);
+    setWasabiReport(null);
+    setAiEditError('');
+    try {
+      const res = await fetch('/api/wasabi-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          html: target,
+          mode: 'wasabi',
+          productName: effectiveProduct?.name || '',
+          brandName: effectiveProduct?.name || '',
+          notes: effectiveProduct?.description || '',
+        }),
+      });
+      const data = (await res.json()) as {
+        html?: string;
+        ready?: boolean;
+        fatalCount?: number;
+        repairs?: string[];
+        issues?: { rule: string; severity: string; message: string }[];
+        error?: string;
+      };
+      if (!res.ok || !data.html) throw new Error(data.error || `HTTP ${res.status}`);
+
+      setIframeVersion(v => v + 1);
+      if (editorViewport === 'mobile' && mobileHtml) {
+        setAiEditHistory(prev => [...prev, mobileHtml]);
+        setMobileHtml(data.html);
+        setMobileCodeHtml(data.html);
+      } else {
+        setAiEditHistory(prev => [...prev, currentHtml]);
+        setCurrentHtml(data.html);
+        setCodeHtml(data.html);
+        pushUndo(data.html);
+      }
+      setWasabiReport({
+        ready: !!data.ready,
+        repairs: data.repairs || [],
+        issues: (data.issues || []).filter(i => i.severity === 'fatal'),
+        error: data.error,
+      });
+    } catch (err) {
+      setAiEditError(err instanceof Error ? err.message : 'WasabiCRM wiring failed');
+    } finally {
+      setWasabiWiring(false);
+    }
+  }, [aiEditRunning, wasabiWiring, editorViewport, mobileHtml, currentHtml, effectiveProduct, pushUndo]);
 
   const handleAiEditUndo = useCallback(() => {
     if (aiEditHistory.length === 0) return;
@@ -7573,9 +7645,57 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </div>
               </div>
               {isWasabiCheckout && (
-                <p className="mt-1.5 text-[11px] leading-relaxed text-emerald-300/90">
-                  {checkoutModeOption('wasabi').description}
-                </p>
+                <>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-emerald-300/90">
+                    {checkoutModeOption('wasabi').description}
+                  </p>
+                  {/* The toggle above only guards AI edits. This converts the
+                      page: without it a checkout has nothing for the runtime
+                      to bind to and takes no money, however good it looks. */}
+                  <button
+                    onClick={handleWasabiWire}
+                    disabled={wasabiWiring || aiEditRunning}
+                    title="Add the data-wc-* contract this page needs to take a payment: payment mount, email field, pay button, prices as data-wc-bind, package picker as a <template>."
+                    className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 transition-all"
+                  >
+                    {wasabiWiring ? (
+                      <><Loader2 className="h-3 w-3 animate-spin" />Wiring to the payment runtime…</>
+                    ) : (
+                      <><ShieldCheck className="h-3 w-3" />Wire this page to WasabiCRM</>
+                    )}
+                  </button>
+                  {wasabiReport && (
+                    <div
+                      className={`mt-2 rounded-lg border px-2.5 py-2 text-[10px] leading-relaxed ${
+                        wasabiReport.ready
+                          ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                          : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+                      }`}
+                    >
+                      <p className="font-semibold">
+                        {wasabiReport.ready
+                          ? '✓ Contract satisfied — this page can take a payment.'
+                          : `⚠ ${wasabiReport.issues.length} issue(s) still block payment.`}
+                      </p>
+                      {wasabiReport.repairs.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 text-slate-300/80">
+                          {wasabiReport.repairs.slice(0, 8).map((r, i) => (
+                            <li key={i}>· {r}</li>
+                          ))}
+                          {wasabiReport.repairs.length > 8 && (
+                            <li>· …and {wasabiReport.repairs.length - 8} more</li>
+                          )}
+                        </ul>
+                      )}
+                      {wasabiReport.issues.slice(0, 5).map((iss, i) => (
+                        <p key={i} className="mt-1">
+                          <span className="font-semibold">{iss.rule}</span> {iss.message}
+                        </p>
+                      ))}
+                      {wasabiReport.error && <p className="mt-1 opacity-80">({wasabiReport.error})</p>}
+                    </div>
+                  )}
+                </>
               )}
             </div>
 

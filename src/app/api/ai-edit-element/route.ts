@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
-import { withCheckoutRules } from '@/lib/checkout-modes';
+import { normalizeCheckoutMode, withCheckoutRules } from '@/lib/checkout-modes';
+import { stripRuntimeConflicts } from '@/lib/wasabi-checkout-contract';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -89,6 +90,21 @@ export async function POST(request: NextRequest) {
     // For a standard checkout (and every other page) the prompts are unchanged.
     const elementSystem = withCheckoutRules(ELEMENT_SYSTEM, checkoutMode);
     const pageSystem = withCheckoutRules(PAGE_SYSTEM, checkoutMode);
+    const isWasabi = normalizeCheckoutMode(checkoutMode) === 'wasabi';
+
+    // Both scopes return a FRAGMENT, so the whole-page rules (one payment
+    // mount, one email field) don't apply — but §1.4 does, and it is the one
+    // that broke a live checkout: a hand-written <script src=".../wasabi-
+    // checkout.js"> suppresses the CRM's own injection because ensureScript()
+    // matches the raw text. Asking was not enough; strip it.
+    const guard = (fragment: string): string => {
+      if (!isWasabi) return fragment;
+      const stripped = stripRuntimeConflicts(fragment);
+      if (stripped.repairs.length) {
+        console.log(`[ai-edit-element] WasabiCRM repairs: ${stripped.repairs.join(' | ')}`);
+      }
+      return stripped.html;
+    };
 
     if (isPageLevel) {
       const response = await anthropic.messages.create({
@@ -108,14 +124,14 @@ export async function POST(request: NextRequest) {
           scope: 'page',
           action: parsed.action,
           target: parsed.target,
-          code: parsed.code,
+          code: guard(String(parsed.code ?? '')),
         });
       } catch {
         return NextResponse.json({
           scope: 'page',
           action: 'insert_before',
           target: '</head>',
-          code: cleaned,
+          code: guard(cleaned),
         });
       }
     } else {
@@ -133,7 +149,7 @@ export async function POST(request: NextRequest) {
       const result = textBlock?.text?.trim() || '';
       const html = result.replace(/^```html?\n?/i, '').replace(/\n?```$/i, '').trim();
 
-      return NextResponse.json({ scope: 'element', html });
+      return NextResponse.json({ scope: 'element', html: guard(html) });
     }
   } catch (error) {
     console.error('Element AI edit error:', error);
