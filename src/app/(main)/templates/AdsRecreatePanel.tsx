@@ -6,25 +6,33 @@ import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import { supabase } from '@/lib/supabase';
+import {
+  absStreamUrl,
+  extractVideoPosters,
+  submitAndPollGenerate,
+} from './ads-recreate-client';
 
 type RecreatedAd = {
   id: string;
   name: string;
-  file_path: string;
+  media_type?: string;
+  file_path?: string;
 };
 
 export type RecreatePreview = {
   filePath: string;
   name: string;
   previewUrl: string;
+  mediaType?: 'image' | 'video';
 };
 
 type ProjectPick = { id: string; name: string; brief?: string | null; description?: string | null };
 type ProductPick = { id: string; name: string; brand_name?: string | null; image_url?: string | null };
 
 type Props = {
-  ad: RecreatedAd;
+  ads: RecreatedAd[];
   onResult: (result: RecreatePreview | null) => void;
+  onActiveAd?: (ad: RecreatedAd) => void;
 };
 
 function asProjectRows(raw: unknown): ProjectPick[] {
@@ -51,126 +59,6 @@ function asProjectRows(raw: unknown): ProjectPick[] {
   return out;
 }
 
-function absStreamUrl(path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  return `${window.location.origin}/api/projecthub/file-proxy?path=${encodeURIComponent(path)}&stream=1`;
-}
-
-async function readJson(res: Response): Promise<Record<string, unknown>> {
-  const raw = await res.text();
-  try {
-    return JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    const timeout = res.status === 504 || res.status === 408 || /timeout/i.test(raw);
-    throw new Error(timeout
-      ? `Server timed out (${res.status})`
-      : `Unexpected response (HTTP ${res.status})`);
-  }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function jobFrom(data: Record<string, unknown>, fallback?: Record<string, unknown>) {
-  return {
-    requestId: String(data.requestId || fallback?.requestId || 'job'),
-    statusUrl: String(data.statusUrl || fallback?.statusUrl || ''),
-    responseUrl: String(data.responseUrl || fallback?.responseUrl || ''),
-    modelKey: String(data.modelKey || fallback?.modelKey || 'gpt-image-2-edit'),
-  };
-}
-
-async function pollChatGptJob(opts: {
-  requestId: string;
-  statusUrl: string;
-  responseUrl: string;
-  modelKey: string;
-  onWait: (msg: string) => void;
-}): Promise<string> {
-  let data: Record<string, unknown> = {
-    status: 'pending',
-    requestId: opts.requestId,
-    statusUrl: opts.statusUrl,
-    responseUrl: opts.responseUrl,
-    modelKey: opts.modelKey,
-  };
-  const started = Date.now();
-  const deadline = started + 5 * 60_000;
-  let misses = 0;
-  while (String(data.status || '') === 'pending') {
-    if (Date.now() > deadline) throw new Error('ChatGPT Image 2 timed out — keep the popup open and try again');
-    const elapsed = Math.round((Date.now() - started) / 1000);
-    opts.onWait(
-      String(data.falStatus || '') === 'IN_PROGRESS'
-        ? `ChatGPT Image 2 is generating… ${elapsed}s`
-        : `Waiting for ChatGPT Image 2… checking every 5s (${elapsed}s)`,
-    );
-    await sleep(5_000);
-    try {
-      const pollRes = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'poll',
-          ...jobFrom(data, opts),
-        }),
-      });
-      const next = await readJson(pollRes);
-      if (next.status === 'error') {
-        const msg = String(next.error || 'ChatGPT Image 2 failed');
-        const transient = pollRes.status === 504 || pollRes.status === 408 || /timeout|ETIMEDOUT|network/i.test(msg);
-        if (!transient) throw new Error(msg);
-        misses += 1;
-        if (misses >= 4) throw new Error(msg);
-        continue;
-      }
-      if (!pollRes.ok) {
-        misses += 1;
-        if (misses >= 4) throw new Error(`Unexpected response (HTTP ${pollRes.status})`);
-        continue;
-      }
-      misses = 0;
-      data = { ...data, ...next };
-    } catch (e) {
-      misses += 1;
-      if (misses >= 4) throw e;
-    }
-  }
-  const url = String(data.url || '').trim();
-  if (String(data.status || '') !== 'completed' || !url) {
-    throw new Error(String(data.error || 'ChatGPT Image 2 did not return an image'));
-  }
-  return url;
-}
-
-async function submitAndPollChatGpt(opts: {
-  prompt: string;
-  imageUrl: string;
-  secondaryImageUrl?: string;
-  onWait: (msg: string) => void;
-}): Promise<string> {
-  opts.onWait('Sending to ChatGPT Image 2…');
-  const submitRes = await fetch('/api/generate-image', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      mode: 'image2image',
-      model: 'gpt-image-2-edit',
-      prompt: opts.prompt,
-      size: '1024x1536',
-      style: 'natural',
-      imageUrl: opts.imageUrl,
-      secondaryImageUrl: opts.secondaryImageUrl || undefined,
-    }),
-  });
-  const submit = await readJson(submitRes);
-  if (!submitRes.ok || submit.status === 'error' || !submit.statusUrl) {
-    throw new Error(String(submit.error || 'ChatGPT Image 2 failed to start'));
-  }
-  return pollChatGptJob({ ...jobFrom(submit), onWait: opts.onWait });
-}
-
 function parseProjects(hub: unknown, list: unknown, db: unknown): ProjectPick[] {
   const merged = [...asProjectRows(hub), ...asProjectRows(list), ...asProjectRows(db)];
   const seen = new Set<string>();
@@ -181,8 +69,20 @@ function parseProjects(hub: unknown, list: unknown, db: unknown): ProjectPick[] 
   });
 }
 
-export default function AdsRecreatePanel({ ad, onResult }: Props) {
+function videoFallbackPrompt(productName: string, brief: string, adName: string): string {
+  const name = productName || 'our product';
+  return [
+    `Create a 10-second multi-shot product video for ${name}.`,
+    brief ? `Product facts: ${brief.replace(/\s+/g, ' ').trim().slice(0, 800)}.` : '',
+    `Match the persuasive intent and format of the competitor clip titled "${adName}".`,
+    'Keep the same genre (UGC, demo, testimonial, before/after, news, lifestyle) and energy.',
+    'Realistic, photoreal, professional cinematic lighting, smooth motion, sharp focus, no on-screen text, no captions, no logos, no audio.',
+  ].filter(Boolean).join(' ');
+}
+
+export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
   const photoRef = useRef<HTMLInputElement>(null);
+  const cancelledRef = useRef(false);
   const [projects, setProjects] = useState<ProjectPick[]>([]);
   const [products, setProducts] = useState<ProductPick[]>([]);
   const [projectId, setProjectId] = useState('');
@@ -192,23 +92,39 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
   const [photoPreview, setPhotoPreview] = useState('');
   const [busy, setBusy] = useState(false);
   const [waitMsg, setWaitMsg] = useState('');
+  const [queueIndex, setQueueIndex] = useState(0);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [savedHref, setSavedHref] = useState('');
   const [analysis, setAnalysis] = useState('');
   const [result, setResult] = useState<RecreatePreview | null>(null);
+  const [history, setHistory] = useState<RecreatePreview[]>([]);
   const [loadingProjects, setLoadingProjects] = useState(true);
+
+  const queue = ads.filter((a) => a.id && a.media_type !== 'folder');
+  const firstId = queue[0]?.id || '';
+  const bulk = queue.length > 1;
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    return () => { cancelledRef.current = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoadingProjects(true);
       try {
+        const catalogUrl = firstId
+          ? `/api/templates/ads/${firstId}/recreate`
+          : '/api/templates/ads';
         const [hub, list, db, catalog] = await Promise.all([
           authFetch('/api/projecthub/projects').then((r) => r.json()).catch(() => null),
           authFetch('/api/projects/list').then((r) => r.json()).catch(() => null),
           supabase.from('projects').select('id, name, description, brief').order('created_at', { ascending: false }),
-          authFetch(`/api/templates/ads/${ad.id}/recreate`).then((r) => r.json()).catch(() => ({})),
+          firstId
+            ? authFetch(catalogUrl).then((r) => r.json()).catch(() => ({}))
+            : Promise.resolve({}),
         ]);
         if (cancelled) return;
         const mapped = parseProjects(hub, list, db.data);
@@ -221,14 +137,16 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       }
     })();
     return () => { cancelled = true; };
-  }, [ad.id]);
+  }, [firstId]);
 
   useEffect(() => {
     setResult(null);
     setSaved(false);
     setSavedHref('');
     setAnalysis('');
-  }, [ad.id]);
+    setHistory([]);
+    setQueueIndex(0);
+  }, [firstId, queue.length]);
 
   useEffect(() => {
     if (!photo) {
@@ -252,41 +170,123 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
     if (prod && !productName.trim()) setProductName(prod.name);
   };
 
-  const canRun = Boolean(projectId || productId || photo || productName.trim());
+  const canRun = Boolean(projectId || productId || photo || productName.trim()) && queue.length > 0;
 
-  const recreate = async () => {
-    if (!canRun) {
-      toast.error('Pick a project, a product, or upload a packshot.');
-      return;
+  const ingest = async (adId: string, falUrl: string, name: string, mediaType: 'image' | 'video') => {
+    const ingested = await authFetch(`/api/templates/ads/${adId}/recreate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'ingest', url: falUrl, name, mediaType }),
+    });
+    const savedRaw = await ingested.text();
+    let savedJson: Record<string, unknown> = {};
+    try { savedJson = JSON.parse(savedRaw) as Record<string, unknown>; } catch { /* ignore */ }
+    if (!ingested.ok) {
+      return { filePath: '', previewUrl: falUrl, mediaType };
     }
-    setBusy(true);
-    setWaitMsg('Preparing images…');
-    setAnalysis('');
-    setSaved(false);
-    setSavedHref('');
-    setResult(null);
-    onResult(null);
-    try {
-      const fd = new FormData();
-      if (projectId) fd.append('projectId', projectId);
-      if (productId) fd.append('productId', productId);
-      if (productName.trim()) fd.append('productName', productName.trim());
-      if (photo) fd.append('file', photo);
-      const res = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-        method: 'POST',
-        body: fd,
-      });
-      const raw = await res.text();
-      let d: Record<string, unknown> = {};
-      try { d = JSON.parse(raw) as Record<string, unknown>; } catch { /* html 504/500 */ }
-      if (!res.ok) {
-        throw new Error(
-          String(d.error || '')
-          || (res.status === 504 ? 'ChatGPT timed out — try again' : `Recreate failed (HTTP ${res.status})`),
-        );
-      }
+    return {
+      filePath: String(savedJson.filePath || savedJson.file_path || ''),
+      previewUrl: String(savedJson.previewUrl || falUrl),
+      mediaType: String(savedJson.mediaType || mediaType) === 'video' ? 'video' as const : 'image' as const,
+    };
+  };
 
-      const name = String(d.name || productName || 'Recreated ad');
+  const saveOne = async (adId: string, preview: RecreatePreview, silent?: boolean) => {
+    if (!projectId) {
+      if (!silent) toast.error('Pick a project under My Projects first');
+      return '';
+    }
+    let filePath = preview.filePath;
+    if (!filePath && preview.previewUrl) {
+      const kept = await ingest(adId, preview.previewUrl, preview.name, preview.mediaType || 'image');
+      filePath = kept.filePath;
+    }
+    if (!filePath) throw new Error('The file is not ready to save yet');
+    const res = await authFetch(`/api/templates/ads/${adId}/recreate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'save',
+        projectId,
+        filePath,
+        name: preview.name,
+      }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(d.error || 'Could not save to Creative');
+    return String(d.href || `/projects/${projectId}?section=creative`);
+  };
+
+  const recreateOne = async (
+    item: RecreatedAd,
+    label: (msg: string) => void,
+  ): Promise<RecreatePreview> => {
+    const fd = new FormData();
+    if (projectId) fd.append('projectId', projectId);
+    if (productId) fd.append('productId', productId);
+    if (productName.trim()) fd.append('productName', productName.trim());
+    if (photo) fd.append('file', photo);
+    const res = await authFetch(`/api/templates/ads/${item.id}/recreate`, {
+      method: 'POST',
+      body: fd,
+    });
+    const raw = await res.text();
+    let d: Record<string, unknown> = {};
+    try { d = JSON.parse(raw) as Record<string, unknown>; } catch { /* html 504/500 */ }
+    if (!res.ok) {
+      throw new Error(
+        String(d.error || '')
+        || (res.status === 504 ? 'Timed out — try again' : `Recreate failed (HTTP ${res.status})`),
+      );
+    }
+
+    const name = String(d.name || productName || item.name || 'Recreated ad');
+    const mediaType = String(d.mediaType || item.media_type || 'image') === 'video' ? 'video' : 'image';
+    const productLabel = String(d.productName || productName || 'our product');
+    const brief = String(d.brief || '');
+
+    let falUrl = '';
+    if (mediaType === 'video') {
+      label('Reading video frames…');
+      let frames: string[] = [];
+      const srcPath = String(d.imagePath || item.file_path || '');
+      if (srcPath) {
+        try {
+          frames = await extractVideoPosters(absStreamUrl(srcPath));
+        } catch {
+          frames = [];
+        }
+      }
+      label('Analyzing the clip…');
+      const analyzed = await fetch('/api/swipe-video/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          posterFrames: frames.slice(0, 3),
+          currentAlt: item.name,
+          pageTitle: item.name,
+          productContext: {
+            name: productLabel,
+            brief: brief.slice(0, 2000),
+          },
+        }),
+      }).then((r) => r.json()).catch(() => ({} as Record<string, unknown>));
+      const suggested = String(analyzed.suggestedPrompt || '').trim();
+      const neg = String(analyzed.negativePrompt || '').trim();
+      const prompt = suggested
+        ? (neg ? `${suggested}\n\nAvoid: ${neg}.` : suggested)
+        : videoFallbackPrompt(productLabel, brief, item.name);
+      setAnalysis(String(analyzed.analysis || analyzed.originalDescription || prompt).slice(0, 2500));
+      const duration = analyzed.suggestedDuration === 5 ? 5 : 10;
+      falUrl = await submitAndPollGenerate({
+        mode: 'text2video',
+        model: 'seedance-2-t2v',
+        prompt,
+        duration,
+        onWait: label,
+        label: 'Seedance',
+      });
+    } else {
       const prompt = String(d.prompt || '').trim();
       const imageUrl = /^https?:\/\//i.test(String(d.imageUrl || ''))
         ? String(d.imageUrl)
@@ -294,52 +294,91 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
       const secondaryImageUrl = /^https?:\/\//i.test(String(d.productImageUrl || ''))
         ? String(d.productImageUrl)
         : (String(d.productPath || '') ? absStreamUrl(String(d.productPath)) : '');
-
-      let falUrl = '';
-      if (d.status === 'pending' && (d.requestId || d.statusUrl)) {
-        falUrl = await pollChatGptJob({
-          ...jobFrom(d),
-          onWait: setWaitMsg,
-        });
-      } else if (prompt && imageUrl) {
-        falUrl = await submitAndPollChatGpt({
-          prompt,
-          imageUrl,
-          secondaryImageUrl: secondaryImageUrl || undefined,
-          onWait: setWaitMsg,
-        });
-      }
-
-      if (!falUrl) {
+      if (!prompt || !imageUrl) {
         throw new Error(String(d.error || 'ChatGPT Image 2 did not return an image'));
       }
-
-      let filePath = '';
-      let previewUrl = falUrl;
-      setResult({ filePath: '', name, previewUrl: falUrl });
-      onResult({ filePath: '', name, previewUrl: falUrl });
-      const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'ingest', url: falUrl, name }),
+      falUrl = await submitAndPollGenerate({
+        mode: 'image2image',
+        model: 'gpt-image-2-edit',
+        prompt,
+        imageUrl,
+        secondaryImageUrl: secondaryImageUrl || undefined,
+        onWait: label,
+        label: 'ChatGPT Image 2',
       });
-      const savedRaw = await ingested.text();
-      let saved: Record<string, unknown> = {};
-      try { saved = JSON.parse(savedRaw) as Record<string, unknown>; } catch { /* ignore */ }
-      if (ingested.ok) {
-        filePath = String(saved.filePath || saved.file_path || '');
-        previewUrl = String(saved.previewUrl || falUrl);
+    }
+
+    if (!falUrl) throw new Error('Generation did not return a file');
+    const kept = await ingest(item.id, falUrl, name, mediaType);
+    return {
+      filePath: kept.filePath,
+      name,
+      previewUrl: kept.previewUrl || falUrl,
+      mediaType: kept.mediaType,
+    };
+  };
+
+  const recreate = async () => {
+    if (!canRun) {
+      toast.error('Pick a project, a product, or upload a packshot.');
+      return;
+    }
+    cancelledRef.current = false;
+    setBusy(true);
+    setWaitMsg('Preparing…');
+    setAnalysis('');
+    setSaved(false);
+    setSavedHref('');
+    setResult(null);
+    setHistory([]);
+    onResult(null);
+    const done: RecreatePreview[] = [];
+    let failed = 0;
+    let lastHref = '';
+    try {
+      for (let i = 0; i < queue.length; i++) {
+        if (cancelledRef.current) return;
+        const item = queue[i];
+        setQueueIndex(i);
+        onActiveAd?.(item);
+        const prefix = bulk ? `${i + 1}/${queue.length} · ${item.name} — ` : '';
+        const label = (msg: string) => setWaitMsg(`${prefix}${msg}`);
+        label('Preparing…');
+        try {
+          const preview = await recreateOne(item, label);
+          if (cancelledRef.current) return;
+          done.push(preview);
+          setHistory([...done]);
+          setResult(preview);
+          onResult(preview);
+          if (projectId && preview.filePath) {
+            try {
+              lastHref = await saveOne(item.id, preview, true);
+              setSaved(true);
+              setSavedHref(lastHref);
+            } catch (e) {
+              toast.error(`${item.name}: ${e instanceof Error ? e.message : 'Could not save to Creative'}`);
+            }
+          }
+        } catch (e) {
+          failed += 1;
+          toast.error(`${item.name}: ${e instanceof Error ? e.message : 'Recreate failed'}`);
+        }
       }
-      const preview: RecreatePreview = {
-        filePath,
-        name,
-        previewUrl: previewUrl || falUrl,
-      };
-      setResult(preview);
-      onResult(preview);
-      toast.success('Preview ready — save to the project or download');
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Recreate failed');
+      if (cancelledRef.current) return;
+      if (done.length === 0) {
+        toast.error('None of the selected creatives could be recreated');
+      } else if (bulk) {
+        toast.success(
+          projectId
+            ? `${done.length} saved to Creative → Recreated ads${failed ? ` · ${failed} failed` : ''}`
+            : `${done.length} preview${done.length === 1 ? '' : 's'} ready${failed ? ` · ${failed} failed` : ''}`,
+        );
+      } else {
+        toast.success(projectId && lastHref
+          ? 'Saved to Creative → Recreated ads'
+          : 'Preview ready — save to the project or download');
+      }
     } finally {
       setBusy(false);
       setWaitMsg('');
@@ -347,45 +386,13 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
   };
 
   const projectLabel = projects.find((p) => p.id === projectId)?.name || '';
+  const activeAd = queue[Math.min(queueIndex, Math.max(0, queue.length - 1))];
 
   const saveToProject = async () => {
-    if (!result) return;
-    if (!projectId) {
-      toast.error('Pick a project under My Projects first');
-      return;
-    }
+    if (!result || !activeAd) return;
     setSaving(true);
     try {
-      let filePath = result.filePath;
-      if (!filePath && result.previewUrl) {
-        const ingested = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'ingest', url: result.previewUrl, name: result.name }),
-        });
-        const savedRaw = await ingested.json().catch(() => ({} as Record<string, unknown>));
-        if (!ingested.ok) throw new Error(String(savedRaw.error || 'Could not keep the generated image'));
-        filePath = String(savedRaw.filePath || savedRaw.file_path || '');
-        if (filePath) {
-          const next = { ...result, filePath, previewUrl: String(savedRaw.previewUrl || result.previewUrl) };
-          setResult(next);
-          onResult(next);
-        }
-      }
-      if (!filePath) throw new Error('The image is not ready to save yet');
-      const res = await authFetch(`/api/templates/ads/${ad.id}/recreate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'save',
-          projectId,
-          filePath,
-          name: result.name,
-        }),
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(d.error || 'Could not save to Creative');
-      const href = String(d.href || `/projects/${projectId}?section=creative`);
+      const href = await saveOne(activeAd.id, result);
       setSaved(true);
       setSavedHref(href);
       toast.success(`Saved in ${projectLabel || 'the project'} → Creative → Recreated ads`);
@@ -400,6 +407,10 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
     ? getUploadUrl(result.filePath) + (getUploadUrl(result.filePath).includes('?') ? '&' : '?') + 'download=1'
     : (result?.previewUrl || '');
 
+  const runLabel = bulk
+    ? `Recreate ${queue.length} ads`
+    : 'Recreate ad';
+
   return (
     <div className="flex flex-col gap-3 p-4 bg-gray-900/80 border-t border-white/10 lg:border-t-0 lg:border-l lg:w-[340px] lg:shrink-0">
       <div>
@@ -407,9 +418,24 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           <Sparkles className="w-4 h-4 text-violet-300" /> Recreate for your product
         </p>
         <p className="text-xs text-gray-400 mt-1">
-          Rebuilds this ad for your product. Download it, or save it into a project: Creative → Creatives → Recreated ads.
+          {bulk
+            ? `Runs ${queue.length} creatives one by one (images and videos). Pick a project to save each into Creative → Recreated ads.`
+            : 'Rebuilds this ad for your product. Download it, or save it into a project: Creative → Creatives → Recreated ads.'}
         </p>
       </div>
+
+      {bulk && (
+        <ol className="max-h-28 overflow-auto rounded-lg border border-white/10 bg-black/30 px-2 py-1.5 text-[11px] text-gray-300 space-y-0.5">
+          {queue.map((a, i) => (
+            <li
+              key={a.id}
+              className={i === queueIndex && busy ? 'text-violet-300 font-medium' : i < history.length ? 'text-emerald-300' : ''}
+            >
+              {i + 1}. {a.name}{a.media_type === 'video' ? ' · video' : ''}
+            </li>
+          ))}
+        </ol>
+      )}
 
       <label className="block">
         <span className="text-[11px] uppercase tracking-wide text-gray-500">My Projects</span>
@@ -435,12 +461,16 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
 
       {result?.previewUrl && (
         <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-2 space-y-2">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={result.previewUrl}
-            alt={result.name}
-            className="w-full max-h-64 object-contain rounded-md bg-black"
-          />
+          {result.mediaType === 'video' ? (
+            <video src={result.previewUrl} controls className="w-full max-h-64 rounded-md bg-black" />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={result.previewUrl}
+              alt={result.name}
+              className="w-full max-h-64 object-contain rounded-md bg-black"
+            />
+          )}
           {saved ? (
             <p className="text-[11px] text-emerald-300 px-1">
               Saved in {projectLabel || 'the project'} → Creative → Creatives → Recreated ads
@@ -448,7 +478,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           ) : (
             <p className="text-[11px] text-gray-300 px-1">
               {projectId
-                ? `Save puts this still in ${projectLabel} → Creative → Creatives → Recreated ads`
+                ? `Save puts this in ${projectLabel} → Creative → Creatives → Recreated ads`
                 : 'Pick a project above, then save. It goes to Creative → Creatives → Recreated ads.'}
             </p>
           )}
@@ -476,11 +506,29 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
           )}
           <a
             href={fileDownloadHref}
-            download={result.name || 'recreated-ad.png'}
+            download={result.name || (result.mediaType === 'video' ? 'recreated-ad.mp4' : 'recreated-ad.png')}
             className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-white/20 text-white text-sm font-medium hover:bg-white/10"
           >
             <Download className="w-4 h-4" /> Download
           </a>
+        </div>
+      )}
+
+      {history.length > 1 && (
+        <div className="space-y-1">
+          <p className="text-[11px] uppercase tracking-wide text-gray-500">Done</p>
+          {history.map((h, i) => (
+            <a
+              key={`${h.filePath || h.previewUrl}-${i}`}
+              href={h.filePath
+                ? getUploadUrl(h.filePath) + (getUploadUrl(h.filePath).includes('?') ? '&' : '?') + 'download=1'
+                : h.previewUrl}
+              className="block truncate text-[11px] text-violet-300 hover:text-white"
+              download={h.name}
+            >
+              {i + 1}. {h.name}
+            </a>
+          ))}
         </div>
       )}
 
@@ -559,7 +607,7 @@ export default function AdsRecreatePanel({ ad, onResult }: Props) {
         className="mt-1 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500 disabled:opacity-50"
       >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-        {busy ? (waitMsg || 'Working…') : 'Recreate ad'}
+        {busy ? (waitMsg || 'Working…') : runLabel}
       </button>
 
       {busy && (

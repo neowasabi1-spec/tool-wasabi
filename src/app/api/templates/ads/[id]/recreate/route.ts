@@ -125,7 +125,7 @@ async function saveToProjectCreatives(
     return NextResponse.json({ error: 'Pick a project to save into Creative' }, { status: 400 });
   }
   if (!filePath) {
-    return NextResponse.json({ error: 'Missing generated image' }, { status: 400 });
+    return NextResponse.json({ error: 'Missing generated file' }, { status: 400 });
   }
   const allowedPrefix = `archive-ads/${userId}/`;
   if (!filePath.startsWith(allowedPrefix)) {
@@ -138,12 +138,17 @@ async function saveToProjectCreatives(
 
   const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(BUCKET).download(filePath);
   if (dlErr || !blob) {
-    return NextResponse.json({ error: dlErr?.message || 'Could not read generated image' }, { status: 500 });
+    return NextResponse.json({ error: dlErr?.message || 'Could not read generated file' }, { status: 500 });
   }
   const buf = Buffer.from(await blob.arrayBuffer());
   const ext = (filePath.split('.').pop() || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
   const dest = `${projectId}/creatives/recreate_${Date.now()}.${ext}`;
-  const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+  const mime =
+    ext === 'mp4' ? 'video/mp4'
+      : ext === 'webm' ? 'video/webm'
+        : ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg'
+          : ext === 'webp' ? 'image/webp'
+            : 'image/png';
   const { error: upErr } = await supabaseAdmin.storage.from(BUCKET).upload(dest, buf, {
     contentType: mime,
     upsert: false,
@@ -158,7 +163,7 @@ async function saveToProjectCreatives(
       source_brand: '',
       category: 'Recreated ads',
       file_path: dest,
-      media_type: 'image',
+      media_type: /^video\//i.test(mime) ? 'video' : 'image',
       tags: '',
     })
     .select()
@@ -184,7 +189,15 @@ async function persistGenerated(
   buf: Buffer,
   mime: string,
 ) {
-  const ext = /webp/i.test(mime) ? 'webp' : /jpe?g/i.test(mime) ? 'jpg' : 'png';
+  const ext = /mp4|quicktime/i.test(mime)
+    ? 'mp4'
+    : /webm/i.test(mime)
+      ? 'webm'
+      : /webp/i.test(mime)
+        ? 'webp'
+        : /jpe?g/i.test(mime)
+          ? 'jpg'
+          : 'png';
   const outPath = `archive-ads/${userId}/drafts/recreate_${Date.now()}.${ext}`;
   const { error: saveErr } = await supabaseAdmin.storage.from(BUCKET).upload(outPath, buf, {
     contentType: mime,
@@ -198,13 +211,14 @@ async function persistGenerated(
     filePath: outPath,
     name,
     previewUrl,
+    mediaType: /^video\//i.test(mime) ? 'video' : 'image',
   });
 }
 
 async function ingestGenerated(userId: string, body: Record<string, unknown>) {
   const url = String(body.url || '').trim();
   const name = String(body.name || 'Recreated ad').trim().slice(0, 300) || 'Recreated ad';
-  if (!url) return NextResponse.json({ error: 'Missing generated image' }, { status: 400 });
+  if (!url) return NextResponse.json({ error: 'Missing generated file' }, { status: 400 });
   try {
     let buf: Buffer;
     let mime = 'image/png';
@@ -215,14 +229,18 @@ async function ingestGenerated(userId: string, body: Record<string, unknown>) {
       buf = Buffer.from(m[2], 'base64');
     } else {
       if (!/^https?:\/\//i.test(url)) {
-        return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 });
+        return NextResponse.json({ error: 'Invalid file URL' }, { status: 400 });
       }
-      const dl = await fetch(url, { signal: AbortSignal.timeout(60_000) });
-      if (!dl.ok) return NextResponse.json({ error: 'Could not download the generated image' }, { status: 502 });
+      const dl = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+      if (!dl.ok) return NextResponse.json({ error: 'Could not download the generated file' }, { status: 502 });
       buf = Buffer.from(await dl.arrayBuffer());
-      mime = (dl.headers.get('content-type') || 'image/png').split(';')[0].trim();
+      mime = (dl.headers.get('content-type') || '').split(';')[0].trim();
+      if (!mime || mime === 'application/octet-stream') {
+        const hinted = String(body.mediaType || '').toLowerCase();
+        mime = hinted === 'video' ? 'video/mp4' : 'image/png';
+      }
     }
-    if (buf.length < 80) return NextResponse.json({ error: 'Generated image was empty' }, { status: 502 });
+    if (buf.length < 80) return NextResponse.json({ error: 'Generated file was empty' }, { status: 502 });
     return persistGenerated(userId, name, buf, mime);
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message || 'Could not save preview' }, { status: 500 });
@@ -265,9 +283,10 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       .maybeSingle();
     if (!ad) return NextResponse.json({ error: 'Ad not found' }, { status: 404 });
     const source = ad as SourceAd;
-    if (source.media_type === 'video' || source.media_type === 'folder' || !source.file_path) {
-      return NextResponse.json({ error: 'Recreate is available for still images only' }, { status: 400 });
+    if (source.media_type === 'folder' || !source.file_path) {
+      return NextResponse.json({ error: 'This item cannot be recreated' }, { status: 400 });
     }
+    const mediaType = source.media_type === 'video' ? 'video' : 'image';
 
     let projectId = '';
     let productId = '';
@@ -346,11 +365,13 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const hasPackshot = Boolean(productPath || productImageUrl);
-    const prompt = buildPrompt({
-      productName: productName || 'our product',
-      brief,
-      hasPackshot,
-    });
+    const prompt = mediaType === 'image'
+      ? buildPrompt({
+          productName: productName || 'our product',
+          brief,
+          hasPackshot,
+        })
+      : '';
 
     const name = `${productName || 'Swipe'} — ${source.name}`.slice(0, 300);
     const publicProductUrl =
@@ -360,8 +381,11 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     return NextResponse.json({
       ok: true,
       status: 'ready',
+      mediaType,
       name,
       prompt,
+      productName: productName || '',
+      brief,
       imagePath: source.file_path,
       productPath: productPath || '',
       productImageUrl: publicProductUrl,
