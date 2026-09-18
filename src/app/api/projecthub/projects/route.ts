@@ -12,6 +12,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
+import { ownerEmailById } from '@/lib/auth/owner-emails';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,17 +20,6 @@ const PROJECT_COLS =
   'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections, owner_user_id, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel';
 const PROJECT_COLS_LEGACY =
   'id, name, status, description, domain, notes, created_at, updated_at, owner_user_id';
-
-async function ownerEmailById(userIds: string[]): Promise<Map<string, string>> {
-  const want = new Set(userIds.filter(Boolean));
-  const out = new Map<string, string>();
-  if (!want.size) return out;
-  const { data } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1000 });
-  for (const u of data?.users || []) {
-    if (want.has(u.id) && u.email) out.set(u.id, u.email);
-  }
-  return out;
-}
 
 export async function GET(req: NextRequest) {
   const search = req.nextUrl.searchParams.get('search');

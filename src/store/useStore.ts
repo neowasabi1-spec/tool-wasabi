@@ -235,6 +235,9 @@ interface AppFunnelPage {
     price: string | null;
     benefits: string[];
   };
+  /** Master-only: who created this Clone/Swipe step. */
+  ownerUserId?: string | null;
+  ownerEmail?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -543,6 +546,14 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
     analysisStatus: p.analysis_status || undefined,
     analysisResult: p.analysis_result || undefined,
     extractedData: p.extracted_data as AppFunnelPage['extractedData'],
+    ownerUserId:
+      typeof (p as { owner_user_id?: unknown }).owner_user_id === 'string'
+        ? (p as { owner_user_id: string }).owner_user_id
+        : null,
+    ownerEmail:
+      typeof (p as { owner_email?: unknown }).owner_email === 'string'
+        ? (p as { owner_email: string }).owner_email
+        : null,
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };

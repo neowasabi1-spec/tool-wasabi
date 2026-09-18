@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 import { loadSlimFunnelPages } from '@/lib/slim-funnel-pages';
+import { ownerEmailById } from '@/lib/auth/owner-emails';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 26;
@@ -18,7 +19,26 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ error }, { status: 500 });
 
   if (!ctx.userId || ctx.isMaster) {
-    return NextResponse.json(rows);
+    if (!ctx.isMaster) return NextResponse.json(rows);
+    const emails = await ownerEmailById(
+      rows.map((r) =>
+        typeof (r as { owner_user_id?: unknown }).owner_user_id === 'string'
+          ? String((r as { owner_user_id: string }).owner_user_id)
+          : '',
+      ),
+    );
+    return NextResponse.json(
+      rows.map((r) => {
+        const owner =
+          typeof (r as { owner_user_id?: unknown }).owner_user_id === 'string'
+            ? String((r as { owner_user_id: string }).owner_user_id)
+            : null;
+        return {
+          ...r,
+          owner_email: owner ? emails.get(owner) || null : null,
+        };
+      }),
+    );
   }
 
   const { ownedIds, sharedIds } = await listAccessibleProjectIds(ctx.userId);

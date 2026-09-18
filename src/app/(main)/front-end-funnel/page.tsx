@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { supabase } from '@/lib/supabase';
 import { extractSectionContent, type SectionData } from '@/lib/project-sections';
@@ -64,6 +65,7 @@ import {
   MessageSquare,
   Target,
   Copy,
+  User,
   Globe,
   Sparkles,
   Download,
@@ -1164,6 +1166,8 @@ function DebouncedInput({
 
 export default function FrontEndFunnel() {
   const searchParams = useSearchParams();
+  const { permissions } = useCurrentUser();
+  const isMaster = permissions?.role === 'master';
   const {
     projects,
     templates,
@@ -6442,6 +6446,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           }
                           className="font-medium truncate"
                         />
+                        {isMaster && (
+                          <p
+                            className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 min-w-0"
+                            title={page.ownerEmail || 'No owner'}
+                          >
+                            <User className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{page.ownerEmail || 'No owner'}</span>
+                          </p>
+                        )}
                       </td>
 
                       {/* Page Type */}
@@ -6983,7 +6996,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           <button
                             onClick={() => deleteFunnelPage(page.id)}
                             className="p-1 text-red-500 hover:bg-red-50 rounded"
-                            title="Delete"
+                            title={
+                              isMaster && page.ownerEmail
+                                ? `Delete — created by ${page.ownerEmail}`
+                                : 'Delete'
+                            }
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
