@@ -18,7 +18,18 @@ type SourceAd = {
   category: string;
   media_type: string;
   file_path: string;
+  headline?: string;
+  primary_text?: string;
 };
+
+type RecreateMode = 'swipe' | 'from_scratch' | 'hook';
+
+function parseRecreateMode(raw: string): RecreateMode {
+  const v = raw.trim().toLowerCase().replace(/[-\s]/g, '_');
+  if (v === 'from_scratch' || v === 'scratch' || v === 'template') return 'from_scratch';
+  if (v === 'hook') return 'hook';
+  return 'swipe';
+}
 
 async function signedUrl(path: string): Promise<string | null> {
   if (/^https?:\/\//i.test(path)) return path;
@@ -293,7 +304,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
     const { data: ad } = await supabaseAdmin
       .from('archive_ads')
-      .select('id, name, ad_type, category, media_type, file_path')
+      .select('id, name, ad_type, category, media_type, file_path, headline, primary_text')
       .eq('id', params.id)
       .maybeSingle();
     if (!ad) return NextResponse.json({ error: 'Ad not found' }, { status: 404 });
@@ -307,6 +318,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     let productId = '';
     let productNameHint = '';
     let guidanceHint = '';
+    let recreateMode: RecreateMode = 'swipe';
     let uploadedProduct: { buf: Buffer; mime: string } | null = null;
     let briefFile: { name: string; mime: string; buf: Buffer } | null = null;
 
@@ -317,6 +329,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       productId = String(fd.get('productId') || '').trim();
       productNameHint = String(fd.get('productName') || '').trim();
       guidanceHint = String(fd.get('guidance') || '').trim();
+      recreateMode = parseRecreateMode(String(fd.get('recreateMode') || ''));
       const file = fd.get('file');
       if (file instanceof File && file.size > 0) {
         if (file.size > 8 * 1024 * 1024) {
@@ -347,6 +360,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       productId = String(jsonBody?.productId || '').trim();
       productNameHint = String(jsonBody?.productName || '').trim();
       guidanceHint = String(jsonBody?.guidance || '').trim();
+      recreateMode = parseRecreateMode(String(jsonBody?.recreateMode || ''));
     }
 
     if (projectId) {
@@ -407,7 +421,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const hasPackshot = Boolean(productPath || productImageUrl);
-    const prompt = mediaType === 'image'
+    const prompt = mediaType === 'image' && recreateMode === 'swipe'
       ? buildPrompt({
           productName: productName || 'our product',
           brief,
@@ -425,11 +439,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       ok: true,
       status: 'ready',
       mediaType,
+      recreateMode,
       name,
       prompt,
       guidance,
       productName: productName || '',
       brief,
+      headline: String(source.headline || '').trim(),
+      primaryText: String(source.primary_text || '').trim(),
       imagePath: source.file_path,
       productPath: productPath || '',
       productImageUrl: publicProductUrl,

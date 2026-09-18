@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FileText, FolderKanban, ImagePlus, Loader2, Sparkles } from 'lucide-react';
+import { Copy, Download, ExternalLink, FileText, FolderKanban, ImagePlus, Loader2, Sparkles, Wand2, Zap } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { getUploadUrl } from '@/lib/projecthub-storage';
@@ -17,7 +17,11 @@ type RecreatedAd = {
   name: string;
   media_type?: string;
   file_path?: string;
+  headline?: string;
+  primary_text?: string;
 };
+
+type RecreateMode = 'swipe' | 'from_scratch' | 'hook';
 
 export type RecreatePreview = {
   filePath: string;
@@ -80,6 +84,50 @@ function videoFallbackPrompt(productName: string, brief: string, adName: string)
   ].filter(Boolean).join(' ');
 }
 
+function imageFromScratchFallback(productName: string, brief: string, adName: string): string {
+  const name = productName || 'our product';
+  return [
+    `Create a brand-new vertical 9:16 product ad for ${name}.`,
+    `Inspired by the template titled "${adName}", but invent original people, setting and composition.`,
+    brief ? `Product facts: ${brief.replace(/\s+/g, ' ').trim().slice(0, 800)}.` : '',
+    'Photoreal advertising photography, sharp on-image copy for our product, no competitor logos or leftover original text.',
+  ].filter(Boolean).join(' ');
+}
+
+function imageHookFallback(productName: string, brief: string, hook: string): string {
+  const name = productName || 'our product';
+  return [
+    `Create a brand-new vertical 9:16 ad for ${name} whose ONLY job is this hook: "${hook || 'a scroll-stopping opening idea'}".`,
+    'Invent a new scene. Do not recreate a full competitor layout.',
+    brief ? `Product facts: ${brief.replace(/\s+/g, ' ').trim().slice(0, 800)}.` : '',
+    'Photoreal, one clear visual idea, short punchy on-image text, no competitor logos.',
+  ].filter(Boolean).join(' ');
+}
+
+function analyzeGuidance(mode: RecreateMode, notes: string, headline: string, primaryText: string): string {
+  return [
+    mode === 'from_scratch'
+      ? 'FROM SCRATCH MODE: The original is a TEMPLATE BRIEF only. Detect its format/genre, then write a prompt for a brand-new original creative in that same format for OUR product. Invent new people, setting and composition. Do NOT copy faces, pixels, exact layout, or on-screen text from the original.'
+      : mode === 'hook'
+        ? 'HOOK MODE: Extract only the opening hook (first visual beat / headline idea / scroll-stopper). Write a prompt for a brand-new original creative that lands THAT hook for OUR product. Discard the rest of the original story, layout and people. Invent a new scene. Keep it short and punchy (one idea).'
+        : '',
+    headline ? `Original headline/hook text: "${headline}"` : '',
+    primaryText ? `Original primary text: "${primaryText.slice(0, 400)}"` : '',
+    notes,
+  ].filter(Boolean).join('\n');
+}
+
+const RECREATE_MODES: Array<{
+  id: RecreateMode;
+  label: string;
+  hint: string;
+  icon: typeof Copy;
+}> = [
+  { id: 'swipe', label: 'Swipe', hint: 'Copy this creative and swap in your product', icon: Copy },
+  { id: 'from_scratch', label: 'From scratch', hint: 'Use the template, invent a new image or video', icon: Wand2 },
+  { id: 'hook', label: 'Hook', hint: 'Keep only the hook, invent the rest', icon: Zap },
+];
+
 export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
   const photoRef = useRef<HTMLInputElement>(null);
   const briefRef = useRef<HTMLInputElement>(null);
@@ -89,6 +137,7 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
   const [projectId, setProjectId] = useState('');
   const [productId, setProductId] = useState('');
   const [productName, setProductName] = useState('');
+  const [recreateMode, setRecreateMode] = useState<RecreateMode>('swipe');
   const [notes, setNotes] = useState('');
   const [briefFile, setBriefFile] = useState<File | null>(null);
   const [photo, setPhoto] = useState<File | null>(null);
@@ -229,6 +278,7 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
     if (productId) fd.append('productId', productId);
     if (productName.trim()) fd.append('productName', productName.trim());
     if (notes.trim()) fd.append('guidance', notes.trim());
+    fd.append('recreateMode', recreateMode);
     if (photo) fd.append('file', photo);
     if (briefFile) fd.append('briefFile', briefFile);
     const res = await authFetch(`/api/templates/ads/${item.id}/recreate`, {
@@ -250,12 +300,34 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
     const productLabel = String(d.productName || productName || 'our product');
     const brief = String(d.brief || '');
     const guidance = String(d.guidance || notes).trim();
+    const headline = String(d.headline || item.headline || '').trim();
+    const primaryText = String(d.primaryText || item.primary_text || '').trim();
+    const mode = (String(d.recreateMode || recreateMode) as RecreateMode);
+    const modeHint = analyzeGuidance(mode === 'swipe' ? 'swipe' : mode, guidance, headline, primaryText);
+    const hookLine = headline || String(d.originalDescription || '') || item.name;
+    const srcPath = String(d.imagePath || item.file_path || '');
+    const layoutUrl = /^https?:\/\//i.test(String(d.imageUrl || ''))
+      ? String(d.imageUrl)
+      : (srcPath ? absStreamUrl(srcPath) : '');
+    const packshotUrl = /^https?:\/\//i.test(String(d.productImageUrl || ''))
+      ? String(d.productImageUrl)
+      : (String(d.productPath || '') ? absStreamUrl(String(d.productPath)) : '');
+
+    const finishPrompt = (analyzed: Record<string, unknown>, fallback: string) => {
+      const suggested = String(analyzed.suggestedPrompt || '').trim();
+      const neg = String(analyzed.negativePrompt || '').trim();
+      let prompt = suggested ? (neg ? `${suggested}\n\nAvoid: ${neg}.` : suggested) : fallback;
+      if (mode === 'hook' && hookLine) {
+        prompt = `HOOK to land (rewrite for our product, keep the same punch): "${hookLine}".\n\n${prompt}`;
+      }
+      if (guidance) prompt = `${prompt}\n\nUser notes (must apply): ${guidance}`;
+      return prompt;
+    };
 
     let falUrl = '';
     if (mediaType === 'video') {
-      label('Reading video frames…');
+      label(mode === 'hook' ? 'Reading the hook frames…' : 'Reading video frames…');
       let frames: string[] = [];
-      const srcPath = String(d.imagePath || item.file_path || '');
       if (srcPath) {
         try {
           frames = await extractVideoPosters(absStreamUrl(srcPath));
@@ -263,31 +335,30 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
           frames = [];
         }
       }
+      const posters = mode === 'hook' ? frames.slice(0, 1) : frames.slice(0, 3);
       label('Analyzing the clip…');
       const analyzed = await fetch('/api/swipe-video/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          posterFrames: frames.slice(0, 3),
-          currentAlt: item.name,
+          posterFrames: posters,
+          currentAlt: headline || item.name,
           pageTitle: item.name,
           productContext: {
             name: productLabel,
             brief: brief.slice(0, 2000),
           },
-          userGuidance: guidance || undefined,
+          userGuidance: modeHint || undefined,
         }),
       }).then((r) => r.json()).catch(() => ({} as Record<string, unknown>));
-      const suggested = String(analyzed.suggestedPrompt || '').trim();
-      const neg = String(analyzed.negativePrompt || '').trim();
-      const prompt = suggested
-        ? (neg ? `${suggested}\n\nAvoid: ${neg}.` : suggested)
+      const fallback = mode === 'hook'
+        ? `Create a 5-second hook video for ${productLabel}. Land this idea: "${hookLine}". Invent a new scene, same energy as a scroll-stopping first beat. No on-screen text, no logos, no audio.`
         : videoFallbackPrompt(productLabel, brief, item.name);
-      const finalPrompt = guidance
-        ? `${prompt}\n\nUser notes (must apply): ${guidance}`
-        : prompt;
+      const finalPrompt = finishPrompt(analyzed, fallback);
       setAnalysis(String(analyzed.analysis || analyzed.originalDescription || finalPrompt).slice(0, 2500));
-      const duration = analyzed.suggestedDuration === 5 ? 5 : 10;
+      const duration = mode === 'hook'
+        ? 5
+        : (analyzed.suggestedDuration === 5 ? 5 : 10);
       falUrl = await submitAndPollGenerate({
         mode: 'text2video',
         model: 'seedance-2-t2v',
@@ -296,26 +367,59 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
         onWait: label,
         label: 'Seedance',
       });
-    } else {
+    } else if (mode === 'swipe') {
       const prompt = String(d.prompt || '').trim();
-      const imageUrl = /^https?:\/\//i.test(String(d.imageUrl || ''))
-        ? String(d.imageUrl)
-        : (String(d.imagePath || '') ? absStreamUrl(String(d.imagePath)) : '');
-      const secondaryImageUrl = /^https?:\/\//i.test(String(d.productImageUrl || ''))
-        ? String(d.productImageUrl)
-        : (String(d.productPath || '') ? absStreamUrl(String(d.productPath)) : '');
-      if (!prompt || !imageUrl) {
+      if (!prompt || !layoutUrl) {
         throw new Error(String(d.error || 'ChatGPT Image 2 did not return an image'));
       }
       falUrl = await submitAndPollGenerate({
         mode: 'image2image',
         model: 'gpt-image-2-edit',
         prompt,
-        imageUrl,
-        secondaryImageUrl: secondaryImageUrl || undefined,
+        imageUrl: layoutUrl,
+        secondaryImageUrl: packshotUrl || undefined,
         onWait: label,
         label: 'ChatGPT Image 2',
       });
+    } else {
+      label('Reading the template…');
+      const analyzed = await fetch('/api/swipe-image/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageUrl: layoutUrl || undefined,
+          currentAlt: headline || item.name,
+          pageTitle: item.name,
+          productContext: {
+            name: productLabel,
+            brief: brief.slice(0, 2000),
+          },
+          userGuidance: modeHint || undefined,
+        }),
+      }).then((r) => r.json()).catch(() => ({} as Record<string, unknown>));
+      const fallback = mode === 'hook'
+        ? imageHookFallback(productLabel, brief, hookLine)
+        : imageFromScratchFallback(productLabel, brief, item.name);
+      const prompt = finishPrompt(analyzed, fallback);
+      setAnalysis(String(analyzed.analysis || analyzed.originalDescription || prompt).slice(0, 2500));
+      if (packshotUrl) {
+        falUrl = await submitAndPollGenerate({
+          mode: 'image2image',
+          model: 'gpt-image-2-edit',
+          prompt: `${prompt} The attached image is OUR packshot only — show that exact product. Invent a brand-new ad around it; do not copy a competitor layout.`,
+          imageUrl: packshotUrl,
+          onWait: label,
+          label: 'ChatGPT Image 2',
+        });
+      } else {
+        falUrl = await submitAndPollGenerate({
+          mode: 'text2image',
+          model: 'gpt-image-2',
+          prompt,
+          onWait: label,
+          label: 'ChatGPT Image 2',
+        });
+      }
     }
 
     if (!falUrl) throw new Error('Generation did not return a file');
@@ -432,6 +536,33 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
             ? `Runs ${queue.length} creatives one by one (images and videos). Pick a project to save each into Creative → Recreated ads.`
             : 'Rebuilds this ad for your product. Download it, or save it into a project: Creative → Creatives → Recreated ads.'}
         </p>
+      </div>
+
+      <div className="space-y-1.5">
+        <span className="text-[11px] uppercase tracking-wide text-gray-500">How to recreate</span>
+        {RECREATE_MODES.map((m) => {
+          const Icon = m.icon;
+          const active = recreateMode === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setRecreateMode(m.id)}
+              disabled={busy}
+              className={`w-full text-left px-3 py-2 rounded-lg border transition-colors disabled:opacity-50 ${
+                active
+                  ? 'border-violet-400 bg-violet-500/15'
+                  : 'border-white/10 bg-black/20 hover:border-white/25'
+              }`}
+            >
+              <span className="flex items-center gap-2 text-sm text-white font-medium">
+                <Icon className={`w-4 h-4 ${active ? 'text-violet-300' : 'text-gray-400'}`} />
+                {m.label}
+              </span>
+              <span className="block text-[11px] text-gray-400 mt-0.5 pl-6">{m.hint}</span>
+            </button>
+          );
+        })}
       </div>
 
       {bulk && (
