@@ -42,7 +42,14 @@ interface Job {
   updated_at?: string;
 }
 
-const ACTIVE = (s?: JobStatus) => s === 'pending' || s === 'running';
+/** Netlify background functions die at 15 min: a job still "running" long
+ *  after that is a zombie. Never let it lock the form forever. */
+const STALE_MS = 20 * 60 * 1000;
+const ACTIVE = (j?: Job | null) => {
+  if (!j || (j.status !== 'pending' && j.status !== 'running')) return false;
+  const ts = Date.parse(j.updated_at || j.created_at || '');
+  return !Number.isFinite(ts) || Date.now() - ts < STALE_MS;
+};
 
 export function AutopilotSection({
   projectId,
@@ -98,7 +105,7 @@ export function AutopilotSection({
         const swipeData = await swipeRes.json().catch(() => ({})) as { pages?: Array<{ swipeStatus?: string }> };
         swipeBusy = (swipeData.pages || []).some((p) => p.swipeStatus === 'in_progress');
       } catch { /* keep going */ }
-      if (!ACTIVE(data.status) && !swipeBusy) {
+      if (!ACTIVE(data) && !swipeBusy) {
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = null;
         loadHistory();
@@ -119,7 +126,7 @@ export function AutopilotSection({
       const rows: Job[] = await res.json();
       setHistory(rows);
       // Resume polling if a run is still active and we're not already tracking it.
-      const active = rows.find((r) => ACTIVE(r.status));
+      const active = rows.find((r) => ACTIVE(r));
       if (active && !pollRef.current) {
         setJob(active);
         startPolling(active.id);
@@ -187,7 +194,7 @@ export function AutopilotSection({
     }
   };
 
-  const running = ACTIVE(job?.status);
+  const running = ACTIVE(job);
 
   return (
     <div className="space-y-6">
@@ -353,7 +360,7 @@ export function AutopilotSection({
             {history.map((r) => (
               <button
                 key={r.id}
-                onClick={() => { setJob(r); if (ACTIVE(r.status)) startPolling(r.id); }}
+                onClick={() => { setJob(r); if (ACTIVE(r)) startPolling(r.id); }}
                 className="w-full flex items-center justify-between px-3 py-2 rounded-lg border border-border/70 hover:bg-muted/50 text-left"
               >
                 <span className="text-sm text-foreground truncate">
