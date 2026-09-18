@@ -25,6 +25,7 @@ import { PAGE_TYPE_OPTIONS } from "@/types";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
+import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 
 const BASE_URL = "";
