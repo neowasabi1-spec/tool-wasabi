@@ -478,6 +478,46 @@ async function loadTemplateRpc(fn: string, deadline: number): Promise<SlimArchiv
 const loadTemplatePagesRpc = (deadline: number) => loadTemplateRpc('slim_template_pages', deadline);
 const loadTemplateFunnelsRpc = (deadline: number) => loadTemplateRpc('slim_template_funnels', deadline);
 
+/** Fallback when the slim_template_funnels RPC is missing (e.g. exec_sql not
+ *  available on this Supabase): pull `steps` for the few FUNNEL rows straight
+ *  from the table in tiny batches and slim them in Node. The raw jsonb can
+ *  carry MBs of saved HTML, so batches stay small and time-boxed. */
+async function hydrateFunnelSteps(rows: SlimArchiveRow[], deadline: number): Promise<void> {
+  const todo = rows.filter((r) => !r.steps.length);
+  const BATCH = 2;
+  for (let i = 0; i < todo.length && Date.now() < deadline; i += BATCH) {
+    const slice = todo.slice(i, i + BATCH);
+    const ms = Math.max(800, Math.min(8_000, deadline - Date.now()));
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('archived_funnels')
+        .select('id, steps')
+        .in('id', slice.map((r) => r.id))
+        .abortSignal(AbortSignal.timeout(ms));
+      if (error || !Array.isArray(data)) {
+        console.warn('[slim-archived-funnels] funnel steps hydrate:', error?.message);
+        continue;
+      }
+      for (const raw of data) {
+        const row = slice.find((r) => r.id === String((raw as { id: string }).id));
+        if (!row) continue;
+        const steps = asSteps((raw as { steps?: unknown }).steps).map(
+          (s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep,
+        );
+        if (steps.length) {
+          row.steps = steps;
+          if (!row.total_steps) row.total_steps = steps.length;
+        }
+      }
+    } catch (e) {
+      console.warn(
+        '[slim-archived-funnels] funnel steps hydrate aborted:',
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+}
+
 let ensurePromise: Promise<void> | null = null;
 
 async function ensureSlimFn(): Promise<void> {
@@ -561,6 +601,11 @@ async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow
         } else {
           const all = await loadMeta(null, cap);
           funnels = all.filter((r) => !have.has(r.id) && !isPageRow(r));
+        }
+        // The picker needs the actual step list (checkboxes): if any funnel
+        // came back as a bare shell, hydrate its steps directly.
+        if (funnels.some((r) => !r.steps.length)) {
+          await hydrateFunnelSteps(funnels, Date.now() + 10_000);
         }
       } catch (e) {
         console.warn('[slim-archived-funnels] funnel meta:', e);
