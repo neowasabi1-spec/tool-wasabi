@@ -18,7 +18,10 @@ function maybeTriggerReanalysis(projectId: string, rows: Array<Record<string, un
     if (!r.thumb_path) return false;
     const tags = r.tags as string[] | null | undefined;
     if (!Array.isArray(tags) || tags.length === 0) return true;
-    return r.has_text === true && !BAND_RE.test(String(r.text_region || ''));
+    if (r.has_text === true && !BAND_RE.test(String(r.text_region || ''))) return true;
+    // Column present (migration applied) but scene JSON never filled.
+    if ('action' in r && !String(r.action || '').trim()) return true;
+    return false;
   });
   if (!legacy) return;
   const last = reanalyzeFiredAt.get(projectId) || 0;

@@ -523,6 +523,10 @@ type Shot = {
   caption?: string | null;
   tags?: string[] | null;
   section?: string | null;
+  action?: string | null;
+  people_count?: number | null;
+  people?: string | null;
+  context?: string | null;
   clean_path?: string | null;
   inpaint_status?: string | null;
   inpaint_error?: string | null;
@@ -578,29 +582,40 @@ function ShotsGrid({
             <p className="text-sm text-muted-foreground py-10 text-center">Loading shots…</p>
           ) : shots.length === 0 ? (
             <p className="text-sm text-muted-foreground py-10 text-center">
-              No shots yet. Use “Split into shots” — the local ffmpeg worker must be running.
+              No shots yet. Use “Split into shots”.
             </p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
               {shots.map((s) => {
                 const hasText = s.has_text === true;
+                const who = typeof s.people_count === 'number'
+                  ? (s.people_count === 0 ? 'no people' : `${s.people_count} ${s.people_count === 1 ? 'person' : 'people'}`)
+                  : '';
                 return (
                   <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
-                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-slate-100">
+                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-slate-100 relative">
                       {s.thumb_path
                         ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
                         : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-6 h-6" /></div>}
+                      <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
+                        {s.duration_sec}s
+                      </span>
+                      <span
+                        title={hasText
+                          ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
+                          : "Clean (no subtitles detected)"}
+                        className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
+                        {hasText ? "SUBS" : "CLEAN"}
+                      </span>
                     </button>
-                    <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
-                      {s.duration_sec}s
-                    </span>
-                    <span
-                      title={hasText
-                        ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
-                        : "Clean (no subtitles detected)"}
-                      className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                      {hasText ? "SUBS" : "CLEAN"}
-                    </span>
+                    <div className="p-1.5 pr-7 min-h-[3.2rem]">
+                      <p className="text-[10px] font-medium text-foreground leading-tight line-clamp-2">
+                        {s.action || s.caption || s.label || `${s.duration_sec}s shot`}
+                      </p>
+                      <p className="text-[9px] text-muted-foreground leading-tight line-clamp-2 mt-0.5">
+                        {[who, s.people, s.context].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
                     <button
                       onClick={() => remove(s)}
                       className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/70 text-white rounded-md p-1"
@@ -617,12 +632,25 @@ function ShotsGrid({
       {playing && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
           <div className="absolute inset-0 bg-black/80" />
-          <video
-            src={getUploadUrl(playing.file_path)}
-            controls autoPlay loop playsInline
-            className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <div className="relative flex flex-col items-center gap-3 max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
+            <video
+              src={getUploadUrl(playing.file_path)}
+              controls autoPlay loop playsInline
+              className="max-h-[70vh] max-w-full rounded-xl bg-black"
+            />
+            {(playing.action || playing.context || playing.people) && (
+              <div className="w-full rounded-xl bg-black/70 text-white p-3 text-left">
+                {playing.action && <p className="text-xs font-medium leading-snug">{playing.action}</p>}
+                <p className="text-[11px] text-white/70 mt-1">
+                  {typeof playing.people_count === 'number'
+                    ? `${playing.people_count} ${playing.people_count === 1 ? 'person' : 'people'}`
+                    : ''}
+                  {playing.people ? ` — ${playing.people}` : ''}
+                </p>
+                {playing.context && <p className="text-[11px] text-white/70 mt-0.5">{playing.context}</p>}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1296,7 +1324,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Real footage shots</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Split this video into individual shots (audio removed) to reuse as real B-roll. Runs on the server — may take a minute or two.
+                AI watches the action, describes each scene (what happens, how many people, setting) and cuts when the action changes — not every 2 seconds. Audio is removed so you can reuse the footage.
               </p>
               <div className="flex items-center gap-2">
                 <Button

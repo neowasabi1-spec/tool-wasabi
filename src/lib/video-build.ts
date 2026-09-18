@@ -26,13 +26,13 @@ const splitSystem = (language: string) => {
 ${langLine}
 
 Return ONLY a compact JSON array. Each element is an object:
-  { "say": "<the spoken line, ~4-14 words>", "match": "<2-5 ENGLISH keywords for the footage this beat needs, e.g. 'man holding phone'>" }
+  { "say": "<the spoken line, ~4-14 words>", "match": "<one ENGLISH sentence describing the SCENE this beat needs: action, how many people, setting. e.g. 'one woman in a kitchen holds a bottle to camera and talks'>" }
 
 Rules:
 - Each beat = ONE on-screen moment, natural spoken cadence.
 - Keep the persuasive order (hook → problem → solution/mechanism → proof → offer → CTA).
 - Strip stage directions, brackets, "HOOK:", "CTA:", B-roll notes from "say".
-- "match" is ALWAYS in English, whatever the spoken language, so the right footage is chosen.
+- "match" is ALWAYS in English, whatever the spoken language. Describe the scene meaning, NOT a list of keywords — the footage picker matches action/people/context, not tags.
 - 6 to 12 beats total.
 No markdown, no explanation.`;
 };

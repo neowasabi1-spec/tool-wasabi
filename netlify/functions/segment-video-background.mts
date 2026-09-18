@@ -2,14 +2,15 @@ import fs from 'fs';
 import path from 'path';
 import {
   getSupabase, ffprobeInfo, detectScenes, buildSegments, cutClip, grabThumb,
-  analyzeShot, downloadSource, uploadFile, makeWorkDir, autoCleanShots, selfOrigin,
+  analyzeShot, planShotsFromVideo, downloadSource, uploadFile, makeWorkDir,
+  autoCleanShots, selfOrigin, type PlannedShot,
 } from './_shared/video';
 
 /**
  * Background function (up to 15 min) that splits a competitor video into
- * individual "shots" using ffmpeg. Triggered fire-and-forget by the segment
- * enqueue API route. Reads the already-created video_segment_jobs row, does the
- * work, writes competitor_shots, and flips the job to done/error.
+ * individual "shots". Vision plans cuts by ACTION duration (not a 2s clock);
+ * ffmpeg scene cuts are hints only. Each shot is stored with a scene JSON
+ * (action, people count, context) so the builder can match footage to copy.
  *
  * Body: { jobId, projectId, brandId, adId }
  */
@@ -61,8 +62,16 @@ export default async (req: Request) => {
     log(`duration ${info.duration.toFixed(1)}s ${info.width}x${info.height}`);
 
     const cuts = await detectScenes(srcFile);
-    const segments = buildSegments(cuts, info.duration);
-    log(`scene cuts: ${cuts.length}, shots: ${segments.length}`);
+    const planned = await planShotsFromVideo(srcFile, info.duration, cuts, workDir);
+    const segments: PlannedShot[] = planned && planned.length
+      ? planned
+      : buildSegments(cuts, info.duration).map(([start, end]) => ({
+        start, end, action: '', peopleCount: 0, people: '', context: '',
+        label: '', caption: '', tags: [],
+      }));
+    log(planned?.length
+      ? `action-planned ${segments.length} shots (ffmpeg hints: ${cuts.length})`
+      : `ffmpeg fallback: ${cuts.length} cuts → ${segments.length} shots`);
 
     // Narrative section from position in the source video.
     const total = info.duration;
@@ -74,16 +83,38 @@ export default async (req: Request) => {
     };
 
     for (let i = 0; i < segments.length; i++) {
-      const [start, end] = segments[i];
+      const seg = segments[i];
+      const start = seg.start;
+      const end = seg.end;
       const clipFile = path.join(workDir, `shot_${i}.mp4`);
       const thumbFile = path.join(workDir, `shot_${i}.jpg`);
+      const extraA = path.join(workDir, `shot_${i}_a.jpg`);
+      const extraB = path.join(workDir, `shot_${i}_b.jpg`);
       try {
         await cutClip(srcFile, start, end, clipFile);
+        const span = end - start;
         await grabThumb(srcFile, (start + end) / 2, thumbFile);
+        if (span >= 2.2) {
+          try { await grabThumb(srcFile, start + Math.min(0.35, span * 0.12), extraA, 360); } catch { /* optional */ }
+          try { await grabThumb(srcFile, end - Math.min(0.35, span * 0.12), extraB, 360); } catch { /* optional */ }
+        }
       } catch (e) {
         log(`shot ${i} cut failed: ${(e as Error).message}`);
         continue;
       }
+
+      const extras = [extraA, extraB].filter((p) => {
+        try { return fs.existsSync(p) && fs.statSync(p).size > 80; } catch { return false; }
+      });
+      const vision = await analyzeShot(thumbFile, extras);
+      const action = vision.action || seg.action || '';
+      const peopleCount = vision.peopleCount || seg.peopleCount || 0;
+      const people = vision.people || seg.people || '';
+      const context = vision.context || seg.context || '';
+      const label = vision.label || seg.label || '';
+      const caption = vision.caption || seg.caption || '';
+      const tags = (vision.tags.length ? vision.tags : seg.tags) || [];
+      log(`shot ${i}: ${action || label || '(no scene)'} [${peopleCount}p] ${context}${vision.hasText ? ' SUBS' : ''}`);
 
       const base = `${projectId}/shots/${brandId}/${adId}_${i}_${Date.now()}`;
       const clipKey = `${base}.mp4`;
@@ -96,9 +127,6 @@ export default async (req: Request) => {
         log(`thumb upload failed: ${(e as Error).message}`);
       }
 
-      const meta = await analyzeShot(thumbFile);
-      log(`shot ${i}: ${meta.label || '(no label)'} [${meta.tags.join(', ')}]${meta.hasText ? ' SUBS' : ''}`);
-
       const row: Record<string, unknown> = {
         project_id: projectId,
         brand_id: brandId,
@@ -110,16 +138,27 @@ export default async (req: Request) => {
         duration_sec: +(end - start).toFixed(2),
         width: info.width,
         height: info.height,
-        has_text: meta.hasText,
-        text_score: meta.score,
-        text_region: meta.region,
-        label: meta.label || null,
-        caption: meta.caption || null,
-        tags: meta.tags,
+        has_text: vision.hasText,
+        text_score: vision.score,
+        text_region: vision.region,
+        label: label || null,
+        caption: caption || null,
+        tags,
         section: sectionFor(start, end),
+        action: action || null,
+        people_count: peopleCount,
+        people: people || null,
+        context: context || null,
+        scene: { action, peopleCount, people, context },
       };
       let { data: ins, error: insErr } = await supabase
         .from('competitor_shots').insert(row).select('id').maybeSingle();
+      if (insErr && /action|people_count|people|context|scene/i.test(insErr.message)) {
+        delete row.action; delete row.people_count; delete row.people;
+        delete row.context; delete row.scene;
+        ({ data: ins, error: insErr } = await supabase
+          .from('competitor_shots').insert(row).select('id').maybeSingle());
+      }
       // If the new columns aren't migrated yet, retry without them so we still
       // capture the shot (older schema compatibility).
       if (insErr && /label|caption|tags|section/i.test(insErr.message)) {
@@ -130,7 +169,7 @@ export default async (req: Request) => {
       if (insErr) log(`shot ${i} insert failed: ${insErr.message}`);
       else {
         shotsCount++;
-        if (meta.hasText && ins?.id) subtitled.push(ins.id as number);
+        if (vision.hasText && ins?.id) subtitled.push(ins.id as number);
       }
     }
 
