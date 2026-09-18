@@ -623,6 +623,13 @@ async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow
         if (!r.total_steps) r.total_steps = steps.length;
       }
     }
+    // FUNNEL rows (multi-step) still have no steps here: the json-path
+    // hydrate above only grabs step 0 for pages. Pull the full slim step
+    // lists so Templates → Funnel and the Chimera picker stay usable.
+    const funnelRows = rows.filter((r) => !isPageRow(r) && !r.steps.length);
+    if (funnelRows.length) {
+      await hydrateFunnelSteps(funnelRows, Date.now() + 10_000);
+    }
     return { rows, error: null };
   } catch (e) {
     return { rows: [], error: e instanceof Error ? e.message : String(e) };
