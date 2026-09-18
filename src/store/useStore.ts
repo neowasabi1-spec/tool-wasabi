@@ -1500,31 +1500,18 @@ export const useStore = create<Store>()((set, get) => ({
         }`;
         console.warn('[loadArchivedFunnels]', apiReason);
       }
-      // Direct Supabase fallback â€” RLS scopes rows; for the master this
-      // returns everything via `is_master(auth.uid())`.
-      try {
-        const data = await supabaseOps.fetchArchivedFunnels();
-        set({
-          archivedFunnels: data,
-          archivedFunnelsLoaded: true,
-          archivedFunnelsLoading: false,
-          archivedFunnelsError: null,
-        });
-      } catch (fallbackErr) {
-        const fallbackReason =
-          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-        const kept = get().archivedFunnels || [];
-        if (kept.length > 0) {
-          set({ archivedFunnelsLoading: false });
-          return;
-        }
-        set({
-          archivedFunnels: kept,
-          archivedFunnelsLoaded: false,
-          archivedFunnelsLoading: false,
-          archivedFunnelsError: `${apiReason || 'API failed'}. Fallback also failed: ${fallbackReason}`,
-        });
+      const kept = get().archivedFunnels || [];
+      const keptHasSteps = kept.some((f) => Array.isArray(f.steps) && f.steps.length > 0);
+      if (keptHasSteps) {
+        set({ archivedFunnelsLoading: false });
+        return;
       }
+      set({
+        archivedFunnels: kept,
+        archivedFunnelsLoaded: false,
+        archivedFunnelsLoading: false,
+        archivedFunnelsError: apiReason || 'Could not load page templates',
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Error loading archived funnels:', error);

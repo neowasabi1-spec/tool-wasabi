@@ -221,19 +221,18 @@ export async function loadSlimArchivedFunnels(
   limit = 400,
 ): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
   const cap = Math.max(1, Math.min(limit, 2000));
+  const args: { p_project_id?: string; p_limit: number } = { p_limit: cap };
+  if (projectId) args.p_project_id = projectId;
 
-  if (projectId) {
-    const args = { p_project_id: projectId, p_limit: cap };
-    let { data, error } = await supabaseAdmin.rpc('slim_archived_funnels', args);
-    if (error && /does not exist|42883/i.test(error.message || '')) {
-      await ensureSlimFn();
-      const retry = await supabaseAdmin.rpc('slim_archived_funnels', args);
-      data = retry.data;
-      error = retry.error;
-    }
-    if (!error) return { rows: asRows(data), error: null };
-    console.warn('[slim-archived-funnels] RPC failed, paging steps:', error.message);
+  let { data, error } = await supabaseAdmin.rpc('slim_archived_funnels', args);
+  if (error && /does not exist|42883/i.test(error.message || '')) {
+    await ensureSlimFn();
+    const retry = await supabaseAdmin.rpc('slim_archived_funnels', args);
+    data = retry.data;
+    error = retry.error;
   }
+  if (!error) return { rows: asRows(data), error: null };
+  console.warn('[slim-archived-funnels] RPC failed, paging steps:', error.message);
 
   try {
     return { rows: await loadPaged(projectId, cap), error: null };

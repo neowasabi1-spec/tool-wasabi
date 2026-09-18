@@ -2040,6 +2040,30 @@ export default function TemplatesPage() {
         {/* ============ BY TYPE VIEW ============ */}
         {mainView === 'byType' && (
           <div className="space-y-5">
+            {(archivedFunnelsLoading || archivedFunnelsError) && (
+              <div className={`rounded-xl border px-4 py-3 text-sm ${
+                archivedFunnelsError
+                  ? 'border-amber-200 bg-amber-50 text-amber-900'
+                  : 'border-gray-200 bg-white text-gray-600'
+              }`}>
+                {archivedFunnelsLoading ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Loading page templates…
+                  </span>
+                ) : (
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <p className="min-w-0 break-words">{archivedFunnelsError}</p>
+                    <button
+                      type="button"
+                      onClick={() => loadArchivedFunnels(true)}
+                      className="shrink-0 px-3 py-1.5 bg-gray-900 text-white rounded-lg text-xs font-medium"
+                    >
+                      Reload
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             {/* Category bar (niche) */}
             <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
