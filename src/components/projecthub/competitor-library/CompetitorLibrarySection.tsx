@@ -558,11 +558,40 @@ function ShotsGrid({
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ad.id]);
   useLiveReload(() => { void load(true); });
 
+  const cleaningCount = shots.filter(
+    (s) => s.inpaint_status === "pending" || s.inpaint_status === "processing",
+  ).length;
+  useEffect(() => {
+    if (cleaningCount === 0) return;
+    const t = setTimeout(() => load(true), 8000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shots]);
+
   const remove = async (s: Shot) => {
     setShots((p) => p.filter((x) => x.id !== s.id));
     try {
       await fetch(`/api/projecthub/projects/${projectId}/shots/${s.id}`, { method: "DELETE" });
     } catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  const inpaint = async (shotId: number) => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/shots/inpaint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shotId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: "Could not start", description: j.error || "Unknown error", variant: "destructive" });
+        return;
+      }
+      toast({ title: "Removing subtitles…", description: "AI is reconstructing the frames — a few minutes." });
+      load(true);
+    } catch {
+      toast({ title: "Could not start", variant: "destructive" });
+    }
   };
 
   return (
@@ -588,6 +617,8 @@ function ShotsGrid({
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
               {shots.map((s) => {
                 const hasText = s.has_text === true;
+                const cleaned = !!s.clean_path;
+                const cleaning = !cleaned && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
                 const who = typeof s.people_count === 'number'
                   ? (s.people_count === 0 ? 'no people' : `${s.people_count} ${s.people_count === 1 ? 'person' : 'people'}`)
                   : '';
@@ -601,12 +632,27 @@ function ShotsGrid({
                         {s.duration_sec}s
                       </span>
                       <span
-                        title={hasText
-                          ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
-                          : "Clean (no subtitles detected)"}
-                        className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                        {hasText ? "SUBS" : "CLEAN"}
+                        title={cleaned
+                          ? "Subtitles removed with AI"
+                          : cleaning
+                            ? "AI is removing the subtitles…"
+                            : hasText
+                              ? "Has burned-in subtitles — excluded from builds until cleaned"
+                              : "Detector saw no captions — if you still see them, click Remove subs"}
+                        className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                          cleaned ? "bg-emerald-500 text-white"
+                          : cleaning ? "bg-amber-500 text-white"
+                          : hasText ? "bg-rose-500 text-white"
+                          : "bg-emerald-500 text-white"}`}>
+                        {cleaned ? "CLEANED" : cleaning ? "CLEANING…" : hasText ? "SUBS" : "CLEAN"}
                       </span>
+                      {!cleaned && !cleaning && (
+                        <span
+                          onClick={(e) => { e.stopPropagation(); e.preventDefault(); void inpaint(s.id); }}
+                          className="absolute inset-x-1.5 bottom-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 hover:bg-indigo-500 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1">
+                          <Sparkles className="w-3 h-3" /> Remove subs
+                        </span>
+                      )}
                     </button>
                     <div className="p-1.5 pr-7 min-h-[3.2rem]">
                       <p className="text-[10px] font-medium text-foreground leading-tight line-clamp-2">
@@ -3384,9 +3430,9 @@ function ShotsLibraryView({
 
   const renderCard = (s: Shot) => {
     const hasText = s.has_text === true;
-    const cleaned = hasText && !!s.clean_path;
-    const cleaning = hasText && !s.clean_path && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
-    const failed = hasText && !s.clean_path && s.inpaint_status === "error";
+    const cleaned = !!s.clean_path;
+    const cleaning = !cleaned && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
+    const failed = !cleaned && s.inpaint_status === "error";
     return (
       <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-slate-50">
         <div className="relative">
@@ -3405,7 +3451,7 @@ function ShotsLibraryView({
                 ? "AI is removing the subtitles…"
                 : hasText
                   ? (failed ? `AI cleanup failed: ${s.inpaint_error || "unknown error"} — click Remove subs to retry` : "Has burned-in subtitles — excluded from builds until cleaned")
-                  : "Clean (no subtitles detected)"}
+                  : "Detector saw no captions — if you still see them, click Remove subs"}
             className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${
               cleaned ? "bg-emerald-500 text-white"
               : cleaning ? "bg-amber-500 text-white"
@@ -3418,7 +3464,7 @@ function ShotsLibraryView({
               {brandNames[s.brand_id]}
             </span>
           )}
-          {hasText && !cleaned && !cleaning && (
+          {!cleaned && !cleaning && (
             <button
               onClick={() => inpaint(s.id)}
               className="absolute inset-x-1.5 bottom-8 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 hover:bg-indigo-500 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1"

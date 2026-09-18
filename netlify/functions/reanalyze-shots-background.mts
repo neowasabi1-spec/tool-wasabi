@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getSupabase, analyzeShot, downloadSource, makeWorkDir } from './_shared/video';
+import { getSupabase, analyzeShot, downloadSource, makeWorkDir, autoCleanShots, selfOrigin } from './_shared/video';
 
 /**
  * Background function that re-runs the Vision analysis on LEGACY shots:
@@ -27,16 +27,24 @@ type ShotRow = {
   start_sec?: number | null;
   has_text?: boolean | null;
   text_region?: string | null;
+  text_score?: number | null;
   tags?: string[] | null;
   section?: string | null;
   action?: string | null;
 };
+
+const CLEAN_RESCORE = 0.92;
 
 function needsReanalysis(s: ShotRow, hasActionCol: boolean): boolean {
   if (!s.thumb_path) return false;
   if (!Array.isArray(s.tags) || s.tags.length === 0) return true;
   if (s.has_text === true && !BAND_RE.test(s.text_region || '')) return true;
   if (hasActionCol && !String(s.action || '').trim()) return true;
+  // Old detector ignored CapCut/TikTok captions and stamped CLEAN (score ~0.1).
+  if (s.has_text !== true) {
+    const score = Number(s.text_score);
+    if (!Number.isFinite(score) || score < CLEAN_RESCORE) return true;
+  }
   return false;
 }
 
@@ -62,9 +70,9 @@ export default async (req: Request) => {
   const log = (...a: unknown[]) => console.log('[reanalyze-bg]', projectId, ...a);
 
   const full =
-    'id, ad_id, thumb_path, start_sec, end_sec, has_text, text_region, tags, section, action';
+    'id, ad_id, thumb_path, start_sec, end_sec, has_text, text_region, text_score, tags, section, action';
   const base =
-    'id, ad_id, thumb_path, start_sec, end_sec, has_text, text_region, tags, section';
+    'id, ad_id, thumb_path, start_sec, end_sec, has_text, text_region, text_score, tags, section';
   let { data, error } = await supabase
     .from('competitor_shots')
     .select(full)
@@ -80,8 +88,11 @@ export default async (req: Request) => {
       .limit(200));
   }
   const shots = (data || []) as ShotRow[];
-  const legacy = shots.filter((s) => needsReanalysis(s, hasActionCol));
-  log(`shots: ${shots.length}, to re-analyze: ${legacy.length}`);
+  const allLegacy = shots.filter((s) => needsReanalysis(s, hasActionCol));
+  // Cap per run so we stay inside the 15-min budget; leftover CLEAN shots
+  // still have a low text_score and will be picked up on the next listing.
+  const legacy = allLegacy.slice(0, 40);
+  log(`shots: ${shots.length}, to re-analyze: ${allLegacy.length} (doing ${legacy.length})`);
   if (legacy.length === 0) return new Response('nothing to do', { status: 200 });
 
   // Approximate source duration per ad (for recomputing missing sections).
@@ -93,6 +104,7 @@ export default async (req: Request) => {
 
   const workDir = makeWorkDir('wreana-');
   let updated = 0;
+  const newlySubtitled: number[] = [];
   try {
     for (const s of legacy) {
       const thumbFile = path.join(workDir, `t_${s.id}.jpg`);
@@ -148,8 +160,15 @@ export default async (req: Request) => {
       if (updErr) log(`shot #${s.id}: update failed — ${updErr.message}`);
       else {
         updated++;
+        if (meta.hasText && s.has_text !== true) newlySubtitled.push(s.id);
         log(`shot #${s.id}: ${meta.hasText ? region : 'clean'} — ${meta.action || meta.label || '(no scene)'}`);
       }
+    }
+    if (newlySubtitled.length) {
+      const queued = await autoCleanShots(supabase, selfOrigin(req.url), projectId, newlySubtitled);
+      log(queued
+        ? `queued AI subtitle removal for ${queued} newly flagged shots`
+        : `${newlySubtitled.length} subtitled shots left for manual cleanup`);
     }
     log(`done — updated ${updated}/${legacy.length}`);
     return new Response('done', { status: 200 });

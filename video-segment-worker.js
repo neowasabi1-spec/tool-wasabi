@@ -158,10 +158,61 @@ async function cutClip(src, start, end, outFile) {
 }
 
 async function grabThumb(src, atSec, outFile, width = 0) {
-  const args = ['-y', '-ss', String(Math.max(0, atSec)), '-i', src, '-frames:v', '1', '-q:v', '4'];
+  const args = ['-y', '-ss', String(Math.max(0, atSec)), '-i', src, '-frames:v', '1', '-q:v', '2'];
   if (width > 0) args.push('-vf', `scale=${width}:-2`);
   args.push(outFile);
   await run('ffmpeg', args);
+}
+
+function fileOk(p) {
+  try { return fs.existsSync(p) && fs.statSync(p).size > 80; } catch { return false; }
+}
+
+function overlayLooksLikeCaption(raw) {
+  const s = String(raw || '')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/@[\w.]+/g, ' ')
+    .replace(/\b(tiktok|instagram|facebook|meta|capcut|watermark|logo)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}\s']/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length < 3) return false;
+  const words = s.split(' ').filter((w) => w.length >= 2);
+  return words.length >= 1 && /[\p{L}]{3,}/u.test(s);
+}
+
+async function grabBottomCrop(src, atSec, outFile) {
+  await run('ffmpeg', [
+    '-y', '-ss', String(Math.max(0, atSec)), '-i', src,
+    '-frames:v', '1', '-q:v', '2',
+    '-vf', 'crop=iw:ih*0.48:0:ih*0.52,scale=720:-2',
+    outFile,
+  ]);
+}
+
+async function grabDetectionFrames(src, start, end, workDir, prefix) {
+  const span = Math.max(0.2, end - start);
+  const mid = start + span / 2;
+  const thumb = path.join(workDir, `${prefix}.jpg`);
+  await grabThumb(src, mid, thumb, 720);
+  const extras = [];
+  const extraTimes = [...new Set([
+    start + Math.min(0.35, span * 0.12),
+    end - Math.min(0.35, span * 0.12),
+  ].map((t) => +t.toFixed(2)))].filter((t) => Math.abs(t - mid) > 0.18);
+  for (let i = 0; i < extraTimes.length; i++) {
+    const f = path.join(workDir, `${prefix}_e${i}.jpg`);
+    try {
+      await grabThumb(src, extraTimes[i], f, 720);
+      if (fileOk(f)) extras.push(f);
+    } catch { /* optional */ }
+  }
+  const crop = path.join(workDir, `${prefix}_bot.jpg`);
+  try {
+    await grabBottomCrop(src, mid, crop);
+    if (fileOk(crop)) extras.push(crop);
+  } catch { /* optional */ }
+  return { thumb, extras };
 }
 
 const EMPTY_SCENE = {
@@ -178,17 +229,20 @@ async function analyzeShot(thumbPath, extraThumbs = []) {
   try {
     const images = paths.map((p) => ({
       type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(p).toString('base64')}` },
+      image_url: {
+        url: `data:image/jpeg;base64,${fs.readFileSync(p).toString('base64')}`,
+        detail: 'high',
+      },
     }));
     const frameHint = paths.length > 1
-      ? `You are seeing ${paths.length} chronological frames from the SAME shot (start → later). Describe the action across them, not each frame as a new shot.`
+      ? `You are seeing ${paths.length} images from the SAME shot. Early ones are chronological frames; the last may be a crop of the LOWER HALF (where TikTok/CapCut captions sit). Describe the action across the full frames.`
       : 'Analyze this single video frame as one shot.';
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        max_tokens: 420,
+        max_tokens: 480,
         response_format: { type: 'json_object' },
         messages: [{
           role: 'user',
@@ -197,7 +251,8 @@ async function analyzeShot(thumbPath, extraThumbs = []) {
               type: 'text',
               text:
                 `${frameHint} Reply ONLY JSON with keys:\n` +
-                '"text" (true if large burned-in caption words, ignore logos),\n' +
+                '"overlayText" (quote EVERY burned-in overlay phrase you can read: captions, karaoke/word-by-word, outlined yellow/white text, lower-thirds, CTA stickers. Empty only if none),\n' +
+                '"text" (true if overlayText is non-empty. Tiny corner logos/@handles alone = false. Do NOT ignore captions because they look "part of the ad"),\n' +
                 '"conf" (0..1), "region" ("top"|"center"|"bottom"|""),\n' +
                 '"band" (if text: [y0,y1] 0=top 1=bottom else []),\n' +
                 '"action" (what is happening, verb phrase),\n' +
@@ -220,17 +275,21 @@ async function analyzeShot(thumbPath, extraThumbs = []) {
     const tags = Array.isArray(p.tags)
       ? p.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 8)
       : [];
+    const overlay = typeof p.overlayText === 'string' ? p.overlayText : '';
+    const hasText = !!(p.text || overlayLooksLikeCaption(overlay));
     let region = typeof p.region === 'string' ? p.region : '';
-    if (p.text && Array.isArray(p.band) && p.band.length === 2) {
+    if (hasText && Array.isArray(p.band) && p.band.length === 2) {
       const y0 = Number(p.band[0]);
       const y1 = Number(p.band[1]);
       if (Number.isFinite(y0) && Number.isFinite(y1) && y0 >= 0 && y1 <= 1 && y1 > y0) {
         region = `${region || (y0 > 0.5 ? 'bottom' : y1 < 0.5 ? 'top' : 'center')} ${y0.toFixed(2)}-${y1.toFixed(2)}`;
       }
     }
+    if (hasText && !region) region = 'bottom 0.62-0.92';
+    const conf = typeof p.conf === 'number' ? p.conf : hasText ? 0.9 : 0.95;
     return {
-      hasText: !!p.text,
-      score: typeof p.conf === 'number' ? p.conf : p.text ? 0.8 : 0.1,
+      hasText,
+      score: hasText ? conf : Math.max(conf, 0.95),
       region,
       action: typeof p.action === 'string' ? p.action.slice(0, 240) : '',
       peopleCount: Math.max(0, Math.min(12, Number(p.peopleCount) || 0)),
@@ -511,25 +570,18 @@ async function processJob(job) {
       const start = seg.start;
       const end = seg.end;
       const clipFile = path.join(workDir, `shot_${i}.mp4`);
-      const thumbFile = path.join(workDir, `shot_${i}.jpg`);
-      const extraA = path.join(workDir, `shot_${i}_a.jpg`);
-      const extraB = path.join(workDir, `shot_${i}_b.jpg`);
+      let thumbFile = path.join(workDir, `shot_${i}.jpg`);
+      let extras = [];
       try {
         await cutClip(srcFile, start, end, clipFile);
-        const span = end - start;
-        await grabThumb(srcFile, (start + end) / 2, thumbFile);
-        if (span >= 2.2) {
-          try { await grabThumb(srcFile, start + Math.min(0.35, span * 0.12), extraA, 360); } catch { /* optional */ }
-          try { await grabThumb(srcFile, end - Math.min(0.35, span * 0.12), extraB, 360); } catch { /* optional */ }
-        }
+        const det = await grabDetectionFrames(srcFile, start, end, workDir, `shot_${i}`);
+        thumbFile = det.thumb;
+        extras = det.extras;
       } catch (e) {
         errlog(`shot ${i} cut failed: ${e.message}`);
         continue;
       }
 
-      const extras = [extraA, extraB].filter((p) => {
-        try { return fs.existsSync(p) && fs.statSync(p).size > 80; } catch { return false; }
-      });
       const vision = await analyzeShot(thumbFile, extras);
       const action = vision.action || seg.action || '';
       const peopleCount = vision.peopleCount || seg.peopleCount || 0;

@@ -1,8 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import {
-  getSupabase, ffprobeInfo, detectScenes, buildSegments, cutClip, grabThumb,
-  analyzeShot, planShotsFromVideo, downloadSource, uploadFile, makeWorkDir,
+  getSupabase, ffprobeInfo, detectScenes, buildSegments, cutClip,
+  analyzeShot, planShotsFromVideo, grabDetectionFrames, downloadSource, uploadFile, makeWorkDir,
   autoCleanShots, selfOrigin, type PlannedShot,
 } from './_shared/video';
 
@@ -87,25 +87,18 @@ export default async (req: Request) => {
       const start = seg.start;
       const end = seg.end;
       const clipFile = path.join(workDir, `shot_${i}.mp4`);
-      const thumbFile = path.join(workDir, `shot_${i}.jpg`);
-      const extraA = path.join(workDir, `shot_${i}_a.jpg`);
-      const extraB = path.join(workDir, `shot_${i}_b.jpg`);
+      let thumbFile = path.join(workDir, `shot_${i}.jpg`);
+      let extras: string[] = [];
       try {
         await cutClip(srcFile, start, end, clipFile);
-        const span = end - start;
-        await grabThumb(srcFile, (start + end) / 2, thumbFile);
-        if (span >= 2.2) {
-          try { await grabThumb(srcFile, start + Math.min(0.35, span * 0.12), extraA, 360); } catch { /* optional */ }
-          try { await grabThumb(srcFile, end - Math.min(0.35, span * 0.12), extraB, 360); } catch { /* optional */ }
-        }
+        const det = await grabDetectionFrames(srcFile, start, end, workDir, `shot_${i}`);
+        thumbFile = det.thumb;
+        extras = det.extras;
       } catch (e) {
         log(`shot ${i} cut failed: ${(e as Error).message}`);
         continue;
       }
 
-      const extras = [extraA, extraB].filter((p) => {
-        try { return fs.existsSync(p) && fs.statSync(p).size > 80; } catch { return false; }
-      });
       const vision = await analyzeShot(thumbFile, extras);
       const action = vision.action || seg.action || '';
       const peopleCount = vision.peopleCount || seg.peopleCount || 0;
