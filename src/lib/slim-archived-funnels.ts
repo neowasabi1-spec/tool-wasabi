@@ -479,35 +479,90 @@ const loadTemplatePagesRpc = (deadline: number) => loadTemplateRpc('slim_templat
 const loadTemplateFunnelsRpc = (deadline: number) => loadTemplateRpc('slim_template_funnels', deadline);
 
 /** Fallback when the slim_template_funnels RPC is missing (e.g. exec_sql not
- *  available on this Supabase): pull `steps` for the few FUNNEL rows straight
- *  from the table in tiny batches and slim them in Node. The raw jsonb can
- *  carry MBs of saved HTML, so batches stay small and time-boxed. */
+ *  available on this Supabase): rebuild each funnel's step list from SCALAR
+ *  json-path selects only. Never pull the raw `steps` jsonb — walk saves can
+ *  carry 1–5 MB of HTML per step and the fetch times out (that's exactly how
+ *  tryrosabella/nooro stayed empty while 2-step funnels hydrated fine). */
+const MAX_FUNNEL_STEPS = 24;
+
+function funnelPathSelect(count: number): string {
+  const cols: string[] = ['id'];
+  for (let i = 0; i < count; i++) {
+    cols.push(
+      `s${i}_name:steps->${i}->>name`,
+      `s${i}_ptype:steps->${i}->>page_type`,
+      `s${i}_stype:steps->${i}->>step_type`,
+      `s${i}_pid:steps->${i}->>page_id`,
+      `s${i}_url:steps->${i}->>url_to_swipe`,
+      `s${i}_prompt:steps->${i}->>prompt`,
+      `s${i}_src:steps->${i}->cloned_data->>source_url`,
+      `s${i}_shot:steps->${i}->cloned_data->>screenshotDesktopUrl`,
+      `s${i}_shotm:steps->${i}->cloned_data->>screenshotMobileUrl`,
+      `s${i}_html:steps->${i}->cloned_data->>htmlUrl`,
+      `s${i}_cat:steps->${i}->cloned_data->>category`,
+    );
+  }
+  return cols.join(', ');
+}
+
+function stepFromPathRow(row: Record<string, unknown>, i: number, rowName: string): SlimArchiveStep | null {
+  const g = (k: string) => {
+    const v = row[`s${i}_${k}`];
+    return v == null ? '' : String(v).trim();
+  };
+  const name = g('name');
+  const ptype = g('ptype') || g('stype');
+  const url = g('url') || g('src');
+  if (!name && !ptype && !url) return null; // past the end of the array
+  const pageId = g('pid');
+  const htmlUrl =
+    g('html') ||
+    (pageId ? `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop` : undefined);
+  return {
+    name: name || `Step ${i + 1}`,
+    page_type: ptype || 'landing',
+    step_type: g('stype') || undefined,
+    page_id: pageId || undefined,
+    step_index: i + 1,
+    url_to_swipe: url,
+    prompt: g('prompt') || undefined,
+    cloned_data: {
+      source_url: g('src') || url || undefined,
+      screenshotDesktopUrl: g('shot') || null,
+      screenshotMobileUrl: g('shotm') || null,
+      htmlUrl,
+      category: g('cat') || rowName || undefined,
+      tags: [],
+    },
+  };
+}
+
 async function hydrateFunnelSteps(rows: SlimArchiveRow[], deadline: number): Promise<void> {
   const todo = rows.filter((r) => !r.steps.length);
-  const BATCH = 2;
-  for (let i = 0; i < todo.length && Date.now() < deadline; i += BATCH) {
-    const slice = todo.slice(i, i + BATCH);
-    const ms = Math.max(800, Math.min(8_000, deadline - Date.now()));
+  for (const row of todo) {
+    if (Date.now() >= deadline) break;
+    const count = Math.max(2, Math.min(MAX_FUNNEL_STEPS, asTotalSteps(row.total_steps, 2)));
+    const ms = Math.max(800, Math.min(6_000, deadline - Date.now()));
     try {
       const { data, error } = await supabaseAdmin
         .from('archived_funnels')
-        .select('id, steps')
-        .in('id', slice.map((r) => r.id))
-        .abortSignal(AbortSignal.timeout(ms));
-      if (error || !Array.isArray(data)) {
+        .select(funnelPathSelect(count))
+        .eq('id', row.id)
+        .abortSignal(AbortSignal.timeout(ms))
+        .maybeSingle();
+      if (error || !data) {
         console.warn('[slim-archived-funnels] funnel steps hydrate:', error?.message);
         continue;
       }
-      for (const raw of data) {
-        const row = slice.find((r) => r.id === String((raw as { id: string }).id));
-        if (!row) continue;
-        const steps = asSteps((raw as { steps?: unknown }).steps).map(
-          (s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep,
-        );
-        if (steps.length) {
-          row.steps = steps;
-          if (!row.total_steps) row.total_steps = steps.length;
-        }
+      const steps: SlimArchiveStep[] = [];
+      for (let i = 0; i < count; i++) {
+        const s = stepFromPathRow(data as unknown as Record<string, unknown>, i, row.name);
+        if (!s) break;
+        steps.push(s);
+      }
+      if (steps.length) {
+        row.steps = steps;
+        if (!row.total_steps) row.total_steps = steps.length;
       }
     } catch (e) {
       console.warn(
