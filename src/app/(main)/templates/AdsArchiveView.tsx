@@ -125,16 +125,18 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     setRecreated(null);
   }, [preview?.id]);
 
-  useEffect(() => {
-    setSelectedIds([]);
-  }, [openType, openCategory]);
-
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const openRecreate = (ads: ArchiveAd[]) => {
-    const queue = ads.filter((a) => a.media_type !== 'folder' && a.file_path);
+  const selectedAds = useMemo(() => {
+    const byId = new Map(items.map((a) => [a.id, a]));
+    return selectedIds.map((id) => byId.get(id)).filter((a): a is ArchiveAd => Boolean(a));
+  }, [items, selectedIds]);
+
+  const openRecreate = (ads?: ArchiveAd[]) => {
+    const queue = (ads && ads.length > 0 ? ads : selectedAds)
+      .filter((a) => a.media_type !== 'folder' && a.file_path);
     if (queue.length === 0) {
       toast.error('Select at least one image or video');
       return;
@@ -335,27 +337,41 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   };
 
   const selectionBar = (list: ArchiveAd[]) => {
-    const selected = list.filter((a) => selectedIds.includes(a.id));
-    const allSelected = list.length > 0 && selected.length === list.length;
+    const folderIds = list.map((a) => a.id);
+    const selectedHere = folderIds.filter((id) => selectedIds.includes(id));
+    const allInFolder = list.length > 0 && selectedHere.length === list.length;
+    const globalCount = selectedAds.length;
+    const fromOther = Math.max(0, globalCount - selectedHere.length);
     return (
       <div className="flex items-center gap-2 flex-wrap">
         <button
           type="button"
-          onClick={() => setSelectedIds(allSelected ? [] : list.map((a) => a.id))}
+          onClick={() => {
+            if (allInFolder) {
+              setSelectedIds((prev) => prev.filter((id) => !folderIds.includes(id)));
+            } else {
+              setSelectedIds((prev) => {
+                const have = new Set(prev);
+                return [...prev, ...folderIds.filter((id) => !have.has(id))];
+              });
+            }
+          }}
           className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-700 hover:border-indigo-300"
         >
-          {allSelected ? <CheckSquare className="w-4 h-4 text-indigo-600" /> : <Square className="w-4 h-4" />}
-          {allSelected ? 'Deselect all' : 'Select all'}
+          {allInFolder ? <CheckSquare className="w-4 h-4 text-indigo-600" /> : <Square className="w-4 h-4" />}
+          {allInFolder ? 'Deselect folder' : 'Select all in folder'}
         </button>
-        {selected.length > 0 && (
+        {globalCount > 0 && (
           <>
-            <span className="text-sm text-gray-500">{selected.length} selected</span>
+            <span className="text-sm text-gray-500">
+              {globalCount} selected{fromOther > 0 ? ` · ${fromOther} from other folders` : ''}
+            </span>
             <button
               type="button"
-              onClick={() => openRecreate(selected)}
+              onClick={() => openRecreate()}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500"
             >
-              <Sparkles className="w-4 h-4" /> Recreate {selected.length}
+              <Sparkles className="w-4 h-4" /> Recreate {globalCount}
             </button>
             <button type="button" onClick={() => setSelectedIds([])} className="text-sm text-gray-500 hover:text-gray-800">
               Clear
@@ -365,6 +381,25 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
       </div>
     );
   };
+
+  const globalRecreateBar = selectedAds.length > 0 ? (
+    <div className="sticky top-0 z-20 flex items-center gap-2 flex-wrap rounded-xl border border-violet-200 bg-violet-50 px-3 py-2">
+      <CheckSquare className="w-4 h-4 text-violet-700" />
+      <span className="text-sm text-violet-900 font-medium">
+        {selectedAds.length} selected across folders
+      </span>
+      <button
+        type="button"
+        onClick={() => openRecreate()}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500"
+      >
+        <Sparkles className="w-4 h-4" /> Recreate {selectedAds.length}
+      </button>
+      <button type="button" onClick={() => setSelectedIds([])} className="text-sm text-violet-800 hover:text-violet-950">
+        Clear
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-5">
@@ -388,7 +423,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
           <p className="text-gray-700 font-medium">Ads library is not installed yet</p>
           <p className="text-sm text-gray-500 mt-1">Run <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">supabase-migration-archive-ads.sql</code> on Supabase, then reload.</p>
         </div>
-      ) : (q || tagFilter) ? (
+      ) : (
+        <>
+          {globalRecreateBar}
+          {(q || tagFilter) ? (
         matchingAds.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
             <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
@@ -437,6 +475,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {typeFolderOptions.map((opt) => {
             const count = itemsInType(opt.value).length;
+            const selectedHere = itemsInType(opt.value).filter((a) => selectedIds.includes(a.id)).length;
             return (
               <button
                 key={opt.value}
@@ -450,7 +489,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                   <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                 </div>
                 <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${typeColor(opt.value)}`}>{opt.label}</span>
-                <span className="text-[11px] text-gray-400">{count === 1 ? '1 ad' : `${count} ads`}</span>
+                <span className="text-[11px] text-gray-400">
+                  {count === 1 ? '1 ad' : `${count} ads`}
+                  {selectedHere > 0 ? ` · ${selectedHere} selected` : ''}
+                </span>
               </button>
             );
           })}
@@ -490,7 +532,9 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
         (() => {
           const opt = typeFolderOptions.find((o) => o.value === openType);
           const folders = categoryFolders(openType);
-          const unfiled = adsInFolder(openType, UNFILED).length;
+          const unfiledAds = adsInFolder(openType, UNFILED);
+          const unfiled = unfiledAds.length;
+          const unfiledSelected = unfiledAds.filter((a) => selectedIds.includes(a.id)).length;
           return (
             <div className="space-y-4">
               <div className="flex items-center gap-3 flex-wrap">
@@ -504,6 +548,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                 {folders.map((name) => {
                   const count = adsInFolder(openType, name).length;
+                  const selectedHere = adsInFolder(openType, name).filter((a) => selectedIds.includes(a.id)).length;
                   return (
                     <div key={name} className="relative group">
                       <button
@@ -517,7 +562,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                           <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                         </div>
                         <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">{name}</span>
-                        <span className="text-[11px] text-gray-400">{count === 1 ? '1 ad' : `${count} ads`}</span>
+                        <span className="text-[11px] text-gray-400">
+                          {count === 1 ? '1 ad' : `${count} ads`}
+                          {selectedHere > 0 ? ` · ${selectedHere} selected` : ''}
+                        </span>
                       </button>
                       <button
                         type="button"
@@ -542,7 +590,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                       <span className="text-3xl font-bold text-gray-800 tabular-nums">{unfiled}</span>
                     </div>
                     <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Uncategorized</span>
-                    <span className="text-[11px] text-gray-400">{unfiled === 1 ? '1 ad' : `${unfiled} ads`}</span>
+                    <span className="text-[11px] text-gray-400">
+                      {unfiled === 1 ? '1 ad' : `${unfiled} ads`}
+                      {unfiledSelected > 0 ? ` · ${unfiledSelected} selected` : ''}
+                    </span>
                   </button>
                 )}
                 {addingCategory ? (
@@ -656,6 +707,8 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
           </div>
         );
       })()}
+        </>
+      )}
 
       {preview && preview.media_type !== 'folder' && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => { setPreview(null); setRecreateQueue([]); }}>
