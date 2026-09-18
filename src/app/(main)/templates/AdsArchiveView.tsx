@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ChevronRight, FolderOpen, Loader2, Megaphone, Play, Plus, Search,
+  ChevronRight, FolderOpen, Loader2, Megaphone, Play, Plus, Search, Tag,
   Trash2, Upload, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { confirmDialog } from '@/components/ui/confirm';
+import { adMatchesQuery, formatAdTags, parseAdTags } from '@/lib/ad-tags';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import AdsRecreatePanel, { type RecreatePreview } from './AdsRecreatePanel';
 import {
@@ -56,6 +57,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<ArchiveAd | null>(null);
   const [recreated, setRecreated] = useState<RecreatePreview | null>(null);
+  const [tagFilter, setTagFilter] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const items = useMemo(() => rows.filter((r) => r.media_type !== 'folder'), [rows]);
@@ -252,15 +254,16 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     if (ko > 0) toast.error(lastError || `${ko} file${ko === 1 ? '' : 's'} failed`);
   };
 
-  const moveAd = async (ad: ArchiveAd, patch: { ad_type?: string; category?: string }) => {
-    setRows((prev) => prev.map((x) => (x.id === ad.id ? { ...x, ...patch } : x)));
+  const moveAd = async (ad: ArchiveAd, patch: { ad_type?: string; category?: string; tags?: string }) => {
+    const next = { ...ad, ...patch };
+    setRows((prev) => prev.map((x) => (x.id === ad.id ? next : x)));
     const res = await authFetch(`/api/templates/ads/${ad.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
     if (!res.ok) {
-      toast.error('Move failed');
+      toast.error('Update failed');
       void loadAds();
     }
   };
@@ -285,9 +288,16 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   };
 
   const matchingAds = useMemo(() => {
-    if (!q) return [] as ArchiveAd[];
-    return items.filter((a) => a.name.toLowerCase().includes(q) || a.tags.toLowerCase().includes(q));
-  }, [items, q]);
+    if (!q && !tagFilter) return [] as ArchiveAd[];
+    return items.filter((a) => {
+      if (q && !adMatchesQuery(a, q)) return false;
+      if (tagFilter) {
+        const want = tagFilter.toLowerCase();
+        if (!parseAdTags(a.tags).some((t) => t.toLowerCase() === want)) return false;
+      }
+      return true;
+    });
+  }, [items, q, tagFilter]);
 
   const typeColor = (type: string) => {
     const opt = typeFolderOptions.find((o) => o.value === type);
@@ -321,14 +331,31 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
           <p className="text-gray-700 font-medium">Ads library is not installed yet</p>
           <p className="text-sm text-gray-500 mt-1">Run <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">supabase-migration-archive-ads.sql</code> on Supabase, then reload.</p>
         </div>
-      ) : q ? (
+      ) : (q || tagFilter) ? (
         matchingAds.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
             <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-500">No ads match “{search.trim()}”.</p>
+            <p className="text-gray-500">
+              No ads match {q ? `“${search.trim()}”` : ''}{q && tagFilter ? ' and ' : ''}{tagFilter ? `tag #${tagFilter}` : ''}.
+            </p>
+            {tagFilter && (
+              <button type="button" onClick={() => setTagFilter('')} className="mt-3 text-sm text-indigo-600 hover:underline">
+                Clear tag
+              </button>
+            )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          <div className="space-y-3">
+            {tagFilter && (
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-800 text-xs font-semibold">
+                  <Tag className="w-3 h-3" /> #{tagFilter}
+                  <button type="button" onClick={() => setTagFilter('')} className="hover:text-indigo-950"><X className="w-3 h-3" /></button>
+                </span>
+                <span className="text-xs text-gray-400">{matchingAds.length} {matchingAds.length === 1 ? 'ad' : 'ads'}</span>
+              </div>
+            )}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
             {matchingAds.map((ad) => (
               <AdCard
                 key={ad.id}
@@ -338,9 +365,12 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 onPreview={() => setPreview(ad)}
                 onMoveType={(t) => void moveAd(ad, { ad_type: t })}
                 onMoveCategory={(c) => void moveAd(ad, { category: c })}
+                onTags={(tags) => void moveAd(ad, { tags: formatAdTags(parseAdTags(tags)) })}
+                onTagClick={setTagFilter}
                 onDelete={() => void deleteAd(ad)}
               />
             ))}
+            </div>
           </div>
         )
       ) : openType === null ? (
@@ -551,6 +581,8 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                     onPreview={() => setPreview(ad)}
                     onMoveType={(t) => void moveAd(ad, { ad_type: t })}
                     onMoveCategory={(c) => void moveAd(ad, { category: c })}
+                    onTags={(tags) => void moveAd(ad, { tags: formatAdTags(parseAdTags(tags)) })}
+                    onTagClick={setTagFilter}
                     onDelete={() => void deleteAd(ad)}
                   />
                 ))}
@@ -638,6 +670,8 @@ function AdCard({
   onPreview,
   onMoveType,
   onMoveCategory,
+  onTags,
+  onTagClick,
   onDelete,
 }: {
   ad: ArchiveAd;
@@ -646,9 +680,14 @@ function AdCard({
   onPreview: () => void;
   onMoveType: (adType: string) => void;
   onMoveCategory: (category: string) => void;
+  onTags: (tags: string) => void;
+  onTagClick: (tag: string) => void;
   onDelete: () => void;
 }) {
   const src = getUploadUrl(ad.file_path);
+  const chips = parseAdTags(ad.tags);
+  const [tagDraft, setTagDraft] = useState(ad.tags);
+  useEffect(() => { setTagDraft(ad.tags); }, [ad.tags]);
   return (
     <div className="group bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden hover:border-indigo-300 hover:shadow-md transition-all">
       <button type="button" onClick={onPreview} className="relative block w-full aspect-[4/5] bg-gray-100">
@@ -668,6 +707,37 @@ function AdCard({
       </button>
       <div className="p-2.5 space-y-1.5">
         <p className="text-sm font-medium text-gray-900 truncate" title={ad.name}>{ad.name}</p>
+        {chips.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {chips.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => onTagClick(tag)}
+                className="px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-medium hover:bg-indigo-100"
+              >
+                #{tag}
+              </button>
+            ))}
+          </div>
+        )}
+        <input
+          value={tagDraft}
+          onChange={(e) => setTagDraft(e.target.value)}
+          onBlur={() => {
+            const next = formatAdTags(parseAdTags(tagDraft));
+            setTagDraft(next);
+            if (next !== formatAdTags(parseAdTags(ad.tags))) onTags(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          placeholder="Tags: hook, ugc…"
+          className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-[11px] bg-white text-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none"
+        />
         <select
           value={ad.ad_type}
           onChange={(e) => onMoveType(e.target.value)}

@@ -25,7 +25,7 @@ import { PAGE_TYPE_OPTIONS } from "@/types";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
-import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
+import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 
 const BASE_URL = "";
 
@@ -983,7 +983,7 @@ function CreativeDetailPanel({
         </div>
         <div className="p-4 border-b border-border space-y-2">
           <Button onClick={() => onSaveTemplate(ad.id)} className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
-            <Bookmark className="w-4 h-4" /> Add to my templates
+            <Bookmark className="w-4 h-4" /> Save template
           </Button>
           {ad.file_path && (
             <Button variant="outline" onClick={() => downloadCreative(ad)} className="w-full gap-2">
@@ -1725,7 +1725,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   // the brand is stamped as seen as soon as they are shown.
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [saving, setSaving] = useState(false);
+  const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1851,19 +1851,15 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
     toast({ title: `${ids.length} creative${ids.length > 1 ? "s" : ""} removed` });
   };
 
-  const saveToTemplates = async (ids: number[]) => {
-    if (ids.length === 0) return;
-    setSaving(true);
-    try {
-      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads/save-to-templates`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: ids }),
-      });
-      if (r.ok) {
-        const saved = await r.json();
-        setSelected(new Set());
-        toast({ title: `${saved.length} ad${saved.length > 1 ? "s" : ""} saved to templates!` });
-      }
-    } catch { toast({ title: "Save error", variant: "destructive" }); } finally { setSaving(false); }
+  const saveToTemplates = (ids: number[]) => {
+    const picked = ads.filter((a) => ids.includes(a.id));
+    if (picked.length === 0) return;
+    setTplItems(picked.map((a) => ({
+      id: a.id,
+      brandId: a.brand_id || competitor.id,
+      mediaType: a.media_type,
+      name: a.name || a.headline,
+    })));
   };
 
   const toggleSelect = (id: number, e: React.MouseEvent) => {
@@ -2017,11 +2013,9 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
                 className="gap-1.5 h-8 text-xs px-4 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700">
                 <Trash2 className="w-3.5 h-3.5" /> Delete ({selected.size})
               </Button>
-              <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))} disabled={saving}
+              <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))}
                 variant="ghost" className="gap-1.5 h-8 text-xs px-3 text-muted-foreground">
-                {saving
-                  ? <><RefreshCw className="w-3 h-3 animate-spin" /> Saving...</>
-                  : <><Bookmark className="w-3.5 h-3.5" /> Templates</>}
+                <Bookmark className="w-3.5 h-3.5" /> Templates
               </Button>
             </div>
           )}
@@ -2145,13 +2139,21 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           brandName={competitor.name}
           projectId={projectId}
           onClose={() => setDetailAd(null)}
-          onSaveTemplate={(id) => { saveToTemplates([id]); setDetailAd(null); }}
+          onSaveTemplate={(id) => { saveToTemplates([id]); }}
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
           onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setAds(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />
       )}
+
+      <SaveAdTemplateDialog
+        open={tplItems.length > 0}
+        projectId={projectId}
+        items={tplItems}
+        onClose={() => setTplItems([])}
+        onSaved={() => setSelected(new Set())}
+      />
 
       {/* Upload dialog */}
       <Dialog open={uploadOpen} onOpenChange={v => { setUploadOpen(v); if (!v) { setAdForm({ name: "", headline: "", hook: "", body_text: "" }); setFileLabel(""); } }}>
@@ -2239,6 +2241,7 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+  const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
   // brand_id -> market (from each competitor's Ad Library country=), used to
   // pick the right CPM when estimating spend.
   const [countryByBrand, setCountryByBrand] = useState<Map<number, string>>(new Map());
@@ -2265,11 +2268,13 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}`, { method: "DELETE" });
     toast({ title: "Creative removed" });
   };
-  const saveTpl = async (ad: CreativeWithBrand) => {
-    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/save-to-templates`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: [ad.id] }),
-    });
-    if (r.ok) toast({ title: "Saved to templates!" });
+  const saveTpl = (ad: CreativeWithBrand) => {
+    setTplItems([{
+      id: ad.id,
+      brandId: ad.brand_id,
+      mediaType: ad.media_type,
+      name: ad.name || ad.headline,
+    }]);
   };
 
   const brands = [...new Set(creatives.map(c => c.brand_name).filter(Boolean))];
@@ -2371,13 +2376,20 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
           brandName={detailAd.brand_name}
           projectId={projectId}
           onClose={() => setDetailAd(null)}
-          onSaveTemplate={() => { saveTpl(detailAd); setDetailAd(null); }}
+          onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { del(detailAd); setDetailAd(null); }}
           onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />
       )}
+
+      <SaveAdTemplateDialog
+        open={tplItems.length > 0}
+        projectId={projectId}
+        items={tplItems}
+        onClose={() => setTplItems([])}
+      />
     </div>
   );
 }
@@ -4114,17 +4126,20 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+  const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
 
   const delAd = async (ad: CompetitorAd) => {
     setCreatives(p => p.filter(a => a.id !== ad.id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}`, { method: "DELETE" });
     toast({ title: "Creative removed" });
   };
-  const saveTpl = async (ad: CompetitorAd) => {
-    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/save-to-templates`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: [ad.id] }),
-    });
-    if (r.ok) toast({ title: "Saved to templates!" });
+  const saveTpl = (ad: CompetitorAd) => {
+    setTplItems([{
+      id: ad.id,
+      brandId: ad.brand_id,
+      mediaType: ad.media_type,
+      name: ad.name || ad.headline,
+    }]);
   };
 
   useEffect(() => {
@@ -4497,6 +4512,13 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           onOpenCreated={onOpenCreated}
         />
       )}
+
+      <SaveAdTemplateDialog
+        open={tplItems.length > 0}
+        projectId={projectId}
+        items={tplItems}
+        onClose={() => setTplItems([])}
+      />
     </div>
   );
 }

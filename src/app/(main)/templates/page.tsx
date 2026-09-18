@@ -1622,7 +1622,7 @@ export default function TemplatesPage() {
                 type="text"
                 value={archiveSearch}
                 onChange={(e) => setArchiveSearch(e.target.value)}
-                placeholder="Search a name across folders…"
+                placeholder={mainView === 'ads' ? 'Search ads by name or tag…' : 'Search a name across folders…'}
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
               />
               {archiveSearch && (
