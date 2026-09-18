@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { ensureCreativeFolder } from '@/lib/creative-library';
+import { extractTextFromUpload } from '@/lib/server-text-extract';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -86,10 +87,20 @@ async function loadCatalogProduct(productId: string) {
   };
 }
 
+function clipGuidance(raw: string): string {
+  return raw
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 2500);
+}
+
 function buildPrompt(opts: {
   productName: string;
   brief: string;
   hasPackshot: boolean;
+  guidance?: string;
 }): string {
   const name = opts.productName || 'our product';
   const facts = opts.brief.replace(/\s+/g, ' ').trim().slice(0, 1400);
@@ -109,6 +120,10 @@ function buildPrompt(opts: {
     parts.push(`Use these product facts in the copy (do not invent extra medical claims): ${facts}`);
   } else {
     parts.push(`If the packshot has a brand, product name, or category on the label, use those in the copy together with the name ${name}.`);
+  }
+  const guidance = clipGuidance(opts.guidance || '');
+  if (guidance) {
+    parts.push(`USER INSTRUCTIONS — highest priority. Apply these notes, edits and constraints on top of the swipe: ${guidance}`);
   }
   return parts.join(' ');
 }
@@ -291,7 +306,9 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     let projectId = '';
     let productId = '';
     let productNameHint = '';
+    let guidanceHint = '';
     let uploadedProduct: { buf: Buffer; mime: string } | null = null;
+    let briefFile: { name: string; mime: string; buf: Buffer } | null = null;
 
     if (ct.includes('multipart/form-data')) {
       const fd = await req.formData().catch(() => null);
@@ -299,6 +316,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       projectId = String(fd.get('projectId') || '').trim();
       productId = String(fd.get('productId') || '').trim();
       productNameHint = String(fd.get('productName') || '').trim();
+      guidanceHint = String(fd.get('guidance') || '').trim();
       const file = fd.get('file');
       if (file instanceof File && file.size > 0) {
         if (file.size > 8 * 1024 * 1024) {
@@ -313,10 +331,22 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           mime: mime || 'image/jpeg',
         };
       }
+      const doc = fd.get('briefFile');
+      if (doc instanceof File && doc.size > 0) {
+        if (doc.size > 8 * 1024 * 1024) {
+          return NextResponse.json({ error: 'Brief document must be 8 MB or smaller' }, { status: 400 });
+        }
+        briefFile = {
+          name: doc.name || 'brief.txt',
+          mime: (doc.type || 'text/plain').split(';')[0].toLowerCase(),
+          buf: Buffer.from(await doc.arrayBuffer()),
+        };
+      }
     } else {
       projectId = String(jsonBody?.projectId || '').trim();
       productId = String(jsonBody?.productId || '').trim();
       productNameHint = String(jsonBody?.productName || '').trim();
+      guidanceHint = String(jsonBody?.guidance || '').trim();
     }
 
     if (projectId) {
@@ -357,6 +387,18 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       productImageUrl = await signedUrl(key);
     }
 
+    let docText = '';
+    if (briefFile) {
+      docText = await extractTextFromUpload(briefFile.name, briefFile.mime, briefFile.buf);
+      if (!docText.trim()) {
+        return NextResponse.json(
+          { error: 'Could not read that document. Use PDF, Word, TXT, MD, or paste the text.' },
+          { status: 400 },
+        );
+      }
+    }
+    const guidance = clipGuidance([guidanceHint, docText].filter(Boolean).join('\n\n'));
+
     if (!productName && !productImageUrl && !brief) {
       return NextResponse.json(
         { error: 'Pick a project, a catalog product, or upload a product photo.' },
@@ -370,6 +412,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           productName: productName || 'our product',
           brief,
           hasPackshot,
+          guidance,
         })
       : '';
 
@@ -384,6 +427,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       mediaType,
       name,
       prompt,
+      guidance,
       productName: productName || '',
       brief,
       imagePath: source.file_path,

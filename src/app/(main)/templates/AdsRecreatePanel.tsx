@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Download, ExternalLink, FolderKanban, ImagePlus, Loader2, Sparkles } from 'lucide-react';
+import { Download, ExternalLink, FileText, FolderKanban, ImagePlus, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { getUploadUrl } from '@/lib/projecthub-storage';
@@ -82,12 +82,15 @@ function videoFallbackPrompt(productName: string, brief: string, adName: string)
 
 export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
   const photoRef = useRef<HTMLInputElement>(null);
+  const briefRef = useRef<HTMLInputElement>(null);
   const cancelledRef = useRef(false);
   const [projects, setProjects] = useState<ProjectPick[]>([]);
   const [products, setProducts] = useState<ProductPick[]>([]);
   const [projectId, setProjectId] = useState('');
   const [productId, setProductId] = useState('');
   const [productName, setProductName] = useState('');
+  const [notes, setNotes] = useState('');
+  const [briefFile, setBriefFile] = useState<File | null>(null);
   const [photo, setPhoto] = useState<File | null>(null);
   const [photoPreview, setPhotoPreview] = useState('');
   const [busy, setBusy] = useState(false);
@@ -225,7 +228,9 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
     if (projectId) fd.append('projectId', projectId);
     if (productId) fd.append('productId', productId);
     if (productName.trim()) fd.append('productName', productName.trim());
+    if (notes.trim()) fd.append('guidance', notes.trim());
     if (photo) fd.append('file', photo);
+    if (briefFile) fd.append('briefFile', briefFile);
     const res = await authFetch(`/api/templates/ads/${item.id}/recreate`, {
       method: 'POST',
       body: fd,
@@ -244,6 +249,7 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
     const mediaType = String(d.mediaType || item.media_type || 'image') === 'video' ? 'video' : 'image';
     const productLabel = String(d.productName || productName || 'our product');
     const brief = String(d.brief || '');
+    const guidance = String(d.guidance || notes).trim();
 
     let falUrl = '';
     if (mediaType === 'video') {
@@ -269,6 +275,7 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
             name: productLabel,
             brief: brief.slice(0, 2000),
           },
+          userGuidance: guidance || undefined,
         }),
       }).then((r) => r.json()).catch(() => ({} as Record<string, unknown>));
       const suggested = String(analyzed.suggestedPrompt || '').trim();
@@ -276,12 +283,15 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
       const prompt = suggested
         ? (neg ? `${suggested}\n\nAvoid: ${neg}.` : suggested)
         : videoFallbackPrompt(productLabel, brief, item.name);
-      setAnalysis(String(analyzed.analysis || analyzed.originalDescription || prompt).slice(0, 2500));
+      const finalPrompt = guidance
+        ? `${prompt}\n\nUser notes (must apply): ${guidance}`
+        : prompt;
+      setAnalysis(String(analyzed.analysis || analyzed.originalDescription || finalPrompt).slice(0, 2500));
       const duration = analyzed.suggestedDuration === 5 ? 5 : 10;
       falUrl = await submitAndPollGenerate({
         mode: 'text2video',
         model: 'seedance-2-t2v',
-        prompt,
+        prompt: finalPrompt,
         duration,
         onWait: label,
         label: 'Seedance',
@@ -599,6 +609,54 @@ export default function AdsRecreatePanel({ ads, onResult, onActiveAd }: Props) {
           Remove photo
         </button>
       )}
+
+      <div className="rounded-lg border border-white/10 bg-black/20 p-3 space-y-2">
+        <p className="text-[11px] uppercase tracking-wide text-gray-500">Notes &amp; changes</p>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          disabled={busy}
+          rows={4}
+          placeholder="Optional — headlines to change, colors, claims to keep, extra edits…"
+          className="w-full px-2.5 py-2 rounded-lg bg-gray-800 border border-white/10 text-sm text-white outline-none focus:ring-2 focus:ring-violet-500 placeholder:text-gray-500 resize-y min-h-[88px]"
+        />
+        <input
+          ref={briefRef}
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.md,.markdown,.rtf,.csv,application/pdf,text/plain,text/markdown,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          className="hidden"
+          onChange={(e) => setBriefFile(e.target.files?.[0] || null)}
+        />
+        <button
+          type="button"
+          onClick={() => briefRef.current?.click()}
+          disabled={busy}
+          className="flex items-center gap-3 w-full px-3 py-2 rounded-lg border border-dashed border-white/20 text-left hover:border-violet-400/60 hover:bg-white/5 transition-colors disabled:opacity-50"
+        >
+          <span className="w-9 h-9 rounded-md bg-white/5 text-gray-400 flex items-center justify-center shrink-0">
+            <FileText className="w-4 h-4" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm text-white">Upload a brief</span>
+            <span className="block text-xs text-gray-400 truncate">
+              {briefFile ? briefFile.name : 'PDF, Word, TXT or Markdown'}
+            </span>
+          </span>
+        </button>
+        {briefFile && (
+          <button
+            type="button"
+            onClick={() => {
+              setBriefFile(null);
+              if (briefRef.current) briefRef.current.value = '';
+            }}
+            disabled={busy}
+            className="text-xs text-gray-400 hover:text-white self-start"
+          >
+            Remove document
+          </button>
+        )}
+      </div>
 
       <button
         type="button"

@@ -243,7 +243,7 @@ function buildUserMessage(
   if (userGuidance && userGuidance.trim()) {
     lines.push('---');
     lines.push(
-      `EXPLICIT USER GUIDANCE for this rewrite (highest priority — bake this into the suggestedPrompt, override defaults if needed):\n"${userGuidance.trim().slice(0, 600)}"`,
+      `EXPLICIT USER GUIDANCE for this rewrite (highest priority — bake this into the suggestedPrompt, override defaults if needed):\n"${userGuidance.trim().slice(0, 2000)}"`,
     );
   }
   lines.push('Return ONLY the JSON described in the system instructions.');
