@@ -187,9 +187,16 @@ AS $$
     f.id,
     f.name,
     f.created_at,
-    f.total_steps,
+    COALESCE(
+      CASE
+        WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+        THEN btrim(f.total_steps::text)::integer
+        ELSE NULL
+      END,
+      0
+    ) AS total_steps,
     f.project_id,
-    f.section,
+    f.section::text,
     COALESCE((
       SELECT jsonb_agg(s.step ORDER BY s.ord)
       FROM (
@@ -222,7 +229,17 @@ AS $$
     ), '[]'::jsonb) AS steps
   FROM archived_funnels f
   WHERE f.project_id IS NULL
-    AND (COALESCE(f.section, '') = 'page' OR COALESCE(f.total_steps, 1) <= 1)
+    AND (
+      COALESCE(f.section::text, '') = 'page'
+      OR COALESCE(
+        CASE
+          WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+          THEN btrim(f.total_steps::text)::integer
+          ELSE NULL
+        END,
+        1
+      ) <= 1
+    )
   ORDER BY f.created_at DESC
   LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 40), 80))
   OFFSET GREATEST(0, COALESCE(p_offset, 0));
