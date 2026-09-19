@@ -36,9 +36,18 @@ const els = {
 };
 
 let activeTab = null;
+let knownSavedUrls = [];
 
 function sendMessage(msg) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r)));
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(msg, (r) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(r);
+    });
+  });
 }
 
 function setStatus(html, cls) {
@@ -233,6 +242,7 @@ async function loadFolders() {
         els.category.appendChild(opt);
       }
     }
+    knownSavedUrls = Array.isArray(data.savedUrls) ? data.savedUrls : [];
   } catch (e) {
     console.warn('loadFolders failed', e);
   }
@@ -377,6 +387,17 @@ function domainOf(url) {
   }
 }
 
+function pageIdentity(raw) {
+  try {
+    const x = new URL(String(raw || '').trim());
+    const host = x.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    return `${x.protocol}//${host}${path.toLowerCase()}`;
+  } catch {
+    return String(raw || '').toLowerCase().replace(/\/+$/, '').split('?')[0];
+  }
+}
+
 async function onSave() {
   els.save.disabled = true;
   try {
@@ -452,8 +473,7 @@ async function onSave() {
   } catch (e) {
     setStatus(String((e && e.message) || e), 'err');
   } finally {
-    // Keep the button disabled while a background funnel walk is polling.
-    if (!funnelPollTimer) els.save.disabled = false;
+    if (!funnelPollTimer && !bulkPollTimer) els.save.disabled = false;
   }
 }
 
@@ -770,7 +790,15 @@ async function scanListingUrls() {
     const merged = parseBulkUrlsText([...existing, ...urls].join('\n'));
     els.bulkUrls.value = merged.join('\n');
     updateBulkCount();
-    setStatus(`Found ${merged.length} landing URL${merged.length === 1 ? '' : 's'}. Review the list, pick Type (Advertorial / Landing…), then Save.`, 'ok');
+    const known = new Set(knownSavedUrls.map(pageIdentity).filter(Boolean));
+    const already = merged.filter((u) => known.has(pageIdentity(u))).length;
+    const fresh = merged.length - already;
+    setStatus(
+      already
+        ? `Found ${merged.length} URLs · ${already} already in archive · ${fresh} new. Save imports only the new ones.`
+        : `Found ${merged.length} landing URL${merged.length === 1 ? '' : 's'}. Review the list, pick Type, then Save.`,
+      'ok',
+    );
   } catch (e) {
     setStatus(String((e && e.message) || e), 'err');
   }
@@ -783,7 +811,16 @@ function stopBulkPoll() {
 async function refreshBulkStatusOnce() {
   const r = await sendMessage({ type: 'BULK_STATUS' });
   const st = r && r.state;
-  if (!st) { stopBulkPoll(); if (els.save) els.save.disabled = false; syncBulkUi(); return; }
+  if (!st) {
+    if (r && r.running) {
+      setStatus('<span class="spinner"></span>Starting…');
+      return;
+    }
+    stopBulkPoll();
+    if (els.save) els.save.disabled = false;
+    syncBulkUi();
+    return;
+  }
   if (!st.done && !(r && r.running) && st.updatedAt && Date.now() - st.updatedAt > 60000) {
     stopBulkPoll();
     if (els.save) els.save.disabled = false;
@@ -825,6 +862,11 @@ async function startBackgroundBulk(projectId) {
   const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
   const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
   const { pageType, pageTypeLabel } = resolveSavePageType();
+  setStatus(`<span class="spinner"></span>Starting ${urls.length} pages… a window will open each landing.`);
+  if (els.save) {
+    els.save.disabled = true;
+    els.save.textContent = 'Importing…';
+  }
   const r = await sendMessage({
     type: 'BULK_START',
     urls,
@@ -833,12 +875,14 @@ async function startBackgroundBulk(projectId) {
     category,
     tags,
     projectId: projectId || null,
+    savedUrls: knownSavedUrls,
     wantDesktop: els.shotDesktop.checked,
     wantMobile: els.shotMobile.checked,
   });
   if (!r || !r.ok) {
     setStatus((r && r.error) || 'Could not start bulk import.', 'err');
     if (els.save) els.save.disabled = false;
+    syncBulkUi();
     return;
   }
   startBulkPoll();

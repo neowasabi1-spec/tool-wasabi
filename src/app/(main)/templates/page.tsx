@@ -13,7 +13,7 @@ import AdsArchiveView from './AdsArchiveView';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
-import { countProductsFromSteps, dedupeStepsByUrl, isStandaloneTemplatePage } from '@/lib/archive-placement';
+import { countProductsFromSteps, dedupeStepsByUrl, isStandaloneTemplatePage, pageIdentity } from '@/lib/archive-placement';
 import { emitLiveRefresh } from '@/lib/live-refresh';
 import { flagEmoji, geoLabel, geoMatchesSearch, resolvePageGeo, sortGeos } from '@/lib/page-geo';
 
@@ -605,6 +605,8 @@ export default function TemplatesPage() {
 
   const [movingPages, setMovingPages] = useState(false);
   const [bulkMoveTo, setBulkMoveTo] = useState('');
+  const [removingDupes, setRemovingDupes] = useState(false);
+  const [deletingSelected, setDeletingSelected] = useState(false);
 
   const handleMovePage = async (funnelId: string, name: string, url: string, pageType: string) => {
     if (!funnelId || !pageType) return;
@@ -631,6 +633,85 @@ export default function TemplatesPage() {
       toast.error(e instanceof Error ? e.message : 'Move failed');
     } finally {
       setMovingPages(false);
+    }
+  };
+
+  const duplicateIds = useMemo(() => {
+    const all = archivedFunnels || [];
+    const groups = new Map<string, ArchivedFunnel[]>();
+    for (const f of all) {
+      if (!isStandaloneTemplatePage(f, all)) continue;
+      const steps = (f.steps as { url_to_swipe?: string; cloned_data?: { source_url?: string; screenshotDesktopUrl?: string | null; screenshotMobileUrl?: string | null } }[]) || [];
+      const url = String(steps[0]?.url_to_swipe || steps[0]?.cloned_data?.source_url || '');
+      const key = pageIdentity(url);
+      if (!key) continue;
+      const arr = groups.get(key) || [];
+      arr.push(f);
+      groups.set(key, arr);
+    }
+    const drop: string[] = [];
+    for (const rows of groups.values()) {
+      if (rows.length < 2) continue;
+      const ranked = [...rows].sort((a, b) => {
+        const shot = (row: ArchivedFunnel) => {
+          const s = ((row.steps as { cloned_data?: ClonedShots }[]) || [])[0];
+          return cardShotUrl(s?.cloned_data) ? 1 : 0;
+        };
+        return shot(b) - shot(a) || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      });
+      for (const r of ranked.slice(1)) drop.push(r.id);
+    }
+    return drop;
+  }, [archivedFunnels]);
+
+  const handleRemoveDuplicates = async () => {
+    if (duplicateIds.length === 0) return;
+    const ok = await confirmDialog({
+      title: 'Remove duplicates',
+      message: `Delete ${duplicateIds.length} duplicate page${duplicateIds.length === 1 ? '' : 's'}? Keeps one copy of each landing (the one with a screenshot, or the newest).`,
+      confirmText: 'Delete duplicates',
+      danger: true,
+    });
+    if (!ok) return;
+    setRemovingDupes(true);
+    let n = 0;
+    try {
+      for (const id of duplicateIds) {
+        await deleteArchivedFunnel(id);
+        n += 1;
+      }
+      setSelectedPages([]);
+      toast.success(`Removed ${n} duplicate${n === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : `Removed ${n}, then failed`);
+    } finally {
+      setRemovingDupes(false);
+    }
+  };
+
+  const handleDeleteSelected = async () => {
+    const ids = [...new Set(selectedPages.map((p) => p.funnel_id).filter(Boolean))] as string[];
+    if (!ids.length) return;
+    const ok = await confirmDialog({
+      title: 'Delete selected pages',
+      message: `Delete ${ids.length} selected page${ids.length === 1 ? '' : 's'}? This cannot be undone.`,
+      confirmText: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    setDeletingSelected(true);
+    let n = 0;
+    try {
+      for (const id of ids) {
+        await deleteArchivedFunnel(id);
+        n += 1;
+      }
+      setSelectedPages([]);
+      toast.success(`Deleted ${n} page${n === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : `Deleted ${n}, then failed`);
+    } finally {
+      setDeletingSelected(false);
     }
   };
 
@@ -2163,9 +2244,20 @@ export default function TemplatesPage() {
               {selectedCategory && (
                 <button
                   onClick={() => deleteCategory(selectedCategory)}
-                  className="ml-auto flex items-center gap-1 text-xs text-red-500 hover:text-red-700"
+                  className="flex items-center gap-1 text-xs text-red-500 hover:text-red-700"
                 >
                   <Trash2 className="w-3.5 h-3.5" /> Delete &ldquo;{selectedCategory}&rdquo;
+                </button>
+              )}
+              {duplicateIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void handleRemoveDuplicates()}
+                  disabled={removingDupes}
+                  className="ml-auto flex items-center gap-1.5 px-3 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-medium hover:bg-red-50 disabled:opacity-50"
+                >
+                  {removingDupes ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  Remove {duplicateIds.length} duplicate{duplicateIds.length === 1 ? '' : 's'}
                 </button>
               )}
             </div>
@@ -3648,6 +3740,15 @@ export default function TemplatesPage() {
                     <div className="h-6 w-px bg-gray-700" />
                   </>
                 )}
+
+                <button
+                  onClick={() => void handleDeleteSelected()}
+                  disabled={deletingSelected}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-colors"
+                >
+                  {deletingSelected ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  Delete
+                </button>
 
                 <button
                   onClick={() => setSelectedPages([])}

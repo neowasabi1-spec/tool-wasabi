@@ -188,7 +188,7 @@ function langFromTag(tag: string): string {
 }
 
 function scoreLang(text: string): string {
-  const hay = ` ${text.toLowerCase().replace(/[^\p{L}\s]/gu, ' ')} `;
+  const hay = ` ${text.toLowerCase().replace(/[^a-zàèéìòùäöüßáéíóúãõçñ\s]/gi, ' ')} `;
   if (!hay.trim()) return '';
   let best = '';
   let bestN = 0;

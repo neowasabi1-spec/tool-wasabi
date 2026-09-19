@@ -6,10 +6,11 @@ import { canAccessProject } from '@/lib/auth/project-access';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-type-classifier';
 import { resolvePageType, upsertArchivePageType } from '@/lib/archive-page-types';
-import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl } from '@/lib/archive-placement';
+import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl, pageIdentity } from '@/lib/archive-placement';
 import { extractLandingMediaFromHtml } from '@/lib/landing-media';
 import { inferPageTags } from '@/lib/page-niche-tags';
 import { inferPageGeo } from '@/lib/page-geo';
+import { findSavedArchivePage } from '@/lib/archive-saved-urls';
 
 async function saveLandingMedia(
   projectId: string | null,
@@ -191,6 +192,19 @@ export async function POST(req: NextRequest) {
     if (allowed) projectId = requestedProjectId;
   }
 
+  const alreadySaved = await findSavedArchivePage(userId, url, projectId);
+  if (alreadySaved && !body.funnelGroup) {
+    return NextResponse.json({
+      success: true,
+      duplicate: true,
+      pageId: alreadySaved.pageId,
+      projectId,
+      htmlUrl: alreadySaved.htmlUrl || `/api/funnel-html?pageId=${encodeURIComponent(alreadySaved.pageId)}&kind=cloned&variant=desktop`,
+      editorUrl: `/edit/${alreadySaved.pageId}`,
+      name: alreadySaved.name,
+    });
+  }
+
   // Absolutize relative URLs so the saved snapshot renders standalone.
   let html = body.html;
   try {
@@ -199,13 +213,26 @@ export async function POST(req: NextRequest) {
     /* keep raw html on failure */
   }
 
-  const tags = inferPageTags({
-    title: `${name} ${title}`,
-    html,
-    extra: extraTags,
-    known: knownTags,
-  });
-  const { geo, lang } = inferPageGeo({ url, html, title: `${name} ${title}` });
+  let tags = extraTags.slice();
+  let geo = '';
+  let lang = '';
+  try {
+    tags = inferPageTags({
+      title: `${name} ${title}`,
+      html,
+      extra: extraTags,
+      known: knownTags,
+    });
+  } catch (e) {
+    console.warn('[save-page] infer tags:', (e as Error).message);
+  }
+  try {
+    const g = inferPageGeo({ url, html, title: `${name} ${title}` });
+    geo = g.geo;
+    lang = g.lang;
+  } catch (e) {
+    console.warn('[save-page] infer geo:', (e as Error).message);
+  }
 
   const clonedData: Record<string, unknown> = {
     html,
@@ -303,9 +330,13 @@ export async function POST(req: NextRequest) {
       if (row && row.owner_user_id === userId) {
         const rawSteps = Array.isArray(row.steps) ? (row.steps as Record<string, unknown>[]) : [];
         const steps = dedupeStepsByUrl(rawSteps);
-        const incoming = canonPageUrl(url);
+        const incoming = pageIdentity(url) || canonPageUrl(url);
         const already = incoming
-          ? steps.find((s) => canonPageUrl(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } })) === incoming)
+          ? steps.find((s) => {
+              const got = pageIdentity(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } }))
+                || canonPageUrl(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } }));
+              return got === incoming;
+            })
           : undefined;
         if (already) {
           if (steps.length !== rawSteps.length) {

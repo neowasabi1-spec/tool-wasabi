@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { PAGE_TYPE_OPTIONS } from '@/types';
 import { listArchivePageTypes } from '@/lib/archive-page-types';
+import { listSavedArchiveHits } from '@/lib/archive-saved-urls';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,10 +65,19 @@ export async function GET(req: NextRequest) {
     /* table may not exist yet */
   }
 
+  const savedUrls: string[] = [];
+  try {
+    const hits = await listSavedArchiveHits(userId, null);
+    savedUrls.push(...hits.keys());
+  } catch {
+    /* ignore */
+  }
+
   return NextResponse.json({
     success: true,
     folders,
     tags: Array.from(tagSet).sort(),
     categories: Array.from(catSet).sort((a, b) => a.localeCompare(b)),
+    savedUrls,
   });
 }

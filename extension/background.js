@@ -122,6 +122,14 @@ function dbgSend(tabId, method, params) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function withTimeout(promise, ms, message) {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(message || 'timeout')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 // Kept well under Netlify's ~6MB function request-body limit: base64 inflates
 // bytes by ~33%, so 4MB of media -> ~5.3MB body. Larger media is fetched
 // server-side from its URL instead of being shipped inline.
@@ -259,7 +267,7 @@ async function captureViewport(tabId, { width, height, mobile, dsf }) {
 }
 
 async function captureScreenshots(tabId) {
-  await dbgAttach(tabId);
+  await withTimeout(dbgAttach(tabId), 8000, 'debugger attach timed out');
   try {
     await dbgSend(tabId, 'Page.enable').catch(() => {});
     let desktop = null;
@@ -300,6 +308,46 @@ function canonUrl(u) {
   } catch {
     return String(u || '').toLowerCase().replace(/\/+$/, '');
   }
+}
+
+function pageIdentity(raw) {
+  try {
+    const x = new URL(String(raw || '').trim());
+    const host = x.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    return `${x.protocol}//${host}${path.toLowerCase()}`;
+  } catch {
+    return String(raw || '').toLowerCase().replace(/\/+$/, '').split('?')[0];
+  }
+}
+
+async function loadKnownSavedIds(token, extra) {
+  const ids = new Set();
+  const add = (u) => {
+    const id = pageIdentity(u);
+    if (id) ids.add(id);
+  };
+  (extra || []).forEach(add);
+  try {
+    const local = (await chrome.storage.local.get('wasabi_saved_page_ids')).wasabi_saved_page_ids;
+    if (Array.isArray(local)) local.forEach(add);
+  } catch { /* ignore */ }
+  if (token) {
+    try {
+      const res = await fetch(`${TOOL_ORIGIN}/api/extension/folders`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      (data.savedUrls || []).forEach(add);
+    } catch { /* older API */ }
+  }
+  return ids;
+}
+
+async function rememberSavedIds(ids) {
+  try {
+    await chrome.storage.local.set({ wasabi_saved_page_ids: [...ids].slice(-8000) });
+  } catch { /* ignore */ }
 }
 
 // Hosts where we stop BEFORE navigating (external payment/social — a competitor
@@ -1384,8 +1432,38 @@ function normalizeBulkUrls(list) {
   return out;
 }
 
+async function waitUntilPageReady(tabId, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 18000);
+  await waitForLoad(tabId, timeoutMs || 18000);
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const r = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const href = location.href || '';
+          const t = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim();
+          return {
+            href,
+            ready: document.readyState === 'complete',
+            len: t.length,
+            title: document.title || '',
+          };
+        },
+      });
+      last = r && r[0] && r[0].result;
+      if (last && last.ready && /^https?:/i.test(last.href) && last.len > 80) return last;
+    } catch {
+      /* tab not scriptable yet */
+    }
+    await sleep(400);
+  }
+  return last;
+}
+
 async function runBulkImport(opts) {
   const urls = normalizeBulkUrls(opts.urls);
+  const startIndex = Math.max(0, Math.min(urls.length, Number(opts.startIndex) || 0));
   const pageType = String(opts.pageType || 'advertorial').slice(0, 60) || 'advertorial';
   const pageTypeLabel = opts.pageTypeLabel || undefined;
   const category = String(opts.category || '').slice(0, 60);
@@ -1398,54 +1476,125 @@ async function runBulkImport(opts) {
   bulkStopRequested = false;
 
   if (!urls.length) {
-    await setBulkState({ running: false, done: true, error: 'empty', status: 'No URLs to import.', total: 0, savedCount: 0, failedCount: 0, skippedCount: 0 });
+    await setBulkState({ running: false, done: true, error: 'empty', status: 'No URLs to import.', total: 0, savedCount: 0, failedCount: 0, skippedCount: 0, urls: [] });
     bulkRunning = false;
     return;
   }
 
   const token = await getValidToken();
   if (!token) {
-    await setBulkState({ running: false, done: true, error: 'auth', status: 'Session expired — open the tool and log in.', total: urls.length, savedCount: 0, failedCount: 0, skippedCount: 0, projectId });
+    await setBulkState({ running: false, done: true, error: 'auth', status: 'Session expired — open the tool and log in.', total: urls.length, savedCount: 0, failedCount: 0, skippedCount: 0, projectId, urls });
     bulkRunning = false;
     return;
   }
 
+  const known = await loadKnownSavedIds(token, opts.savedUrls);
   let workerTabId = null;
-  let savedCount = 0;
-  let failedCount = 0;
-  let skippedCount = 0;
+  let workerWinId = null;
+  let savedCount = Number(opts.savedCount) || 0;
+  let failedCount = Number(opts.failedCount) || 0;
+  let skippedCount = Number(opts.skippedCount) || 0;
+
+  let cursor = startIndex;
+  while (cursor < urls.length && known.has(pageIdentity(urls[cursor]))) {
+    skippedCount += 1;
+    cursor += 1;
+  }
 
   await setBulkState({
-    running: true, done: false, error: null, status: `Starting ${urls.length} pages…`,
-    total: urls.length, index: 0, savedCount: 0, failedCount: 0, skippedCount: 0, projectId,
+    running: true, done: false, error: null,
+    status: cursor >= urls.length
+      ? `All ${urls.length} already in archive.`
+      : `Starting ${urls.length} pages (${skippedCount} already in archive)…`,
+    total: urls.length, index: cursor, savedCount, failedCount, skippedCount,
+    projectId, pageType, pageTypeLabel, category, tags, wantDesktop, wantMobile, urls,
   });
 
+  if (cursor >= urls.length) {
+    await setBulkState({
+      running: false, done: true,
+      savedCount, failedCount, skippedCount, urls,
+      status: `Done. ${skippedCount} already in archive, nothing new.`,
+    });
+    bulkRunning = false;
+    return;
+  }
+
+  const ping = setInterval(() => {
+    try { chrome.runtime.getPlatformInfo(() => {}); } catch { /* keep SW warm */ }
+  }, 12000);
   try {
-    const tab = await chrome.tabs.create({ url: 'about:blank', active: false });
-    workerTabId = tab && tab.id;
+    chrome.alarms.create('wasabi-bulk-keepalive', { periodInMinutes: 1 });
+  } catch { /* ignore */ }
+
+  try {
+    const firstUrl = urls[cursor];
+    try {
+      const win = await chrome.windows.create({
+        url: firstUrl,
+        type: 'popup',
+        focused: true,
+        width: 1100,
+        height: 860,
+        left: 48,
+        top: 48,
+      });
+      workerWinId = win && win.id;
+      workerTabId = win && win.tabs && win.tabs[0] && win.tabs[0].id;
+    } catch {
+      const tab = await chrome.tabs.create({ url: firstUrl, active: true });
+      workerTabId = tab && tab.id;
+    }
     if (!workerTabId) throw new Error('Could not open a worker tab');
 
-    for (let i = 0; i < urls.length; i++) {
+    let openedAt = cursor;
+    for (let i = cursor; i < urls.length; i++) {
       if (bulkStopRequested) {
-        await setBulkState({ status: `Stopped at ${i}/${urls.length}.` });
+        await setBulkState({ status: `Stopped at ${i}/${urls.length}.`, index: i, urls });
         break;
       }
       const url = urls[i];
       const n = i + 1;
-      await setBulkState({ index: i, status: `${n}/${urls.length}: opening…` });
+      const listedId = pageIdentity(url);
+      if (listedId && known.has(listedId)) {
+        skippedCount += 1;
+        await setBulkState({
+          savedCount, failedCount, skippedCount, index: i + 1, urls,
+          status: `${n}/${urls.length}: already in archive`,
+        });
+        continue;
+      }
+      await setBulkState({ index: i, status: `${n}/${urls.length}: opening…`, urls });
       try {
-        const g = await funnelGoto(workerTabId, url);
-        if (!g || !g.ok) {
-          // First nav from about:blank sometimes reports timeout even if loaded.
-          await sleep(2500);
-        } else {
-          await sleep(1800);
+        let tabAlive = true;
+        try { await chrome.tabs.get(workerTabId); } catch { tabAlive = false; }
+        if (!tabAlive) throw new Error('Worker tab was closed');
+
+        if (i !== openedAt) {
+          const g = await funnelGoto(workerTabId, url);
+          if (!g || !g.ok) await sleep(2000);
         }
-        await setBulkState({ status: `${n}/${urls.length}: reading page…` });
+        openedAt = i;
+        await waitUntilPageReady(workerTabId, 18000);
+        await setBulkState({ status: `${n}/${urls.length}: reading page…`, index: i });
         const page = await bgCaptureHtml(workerTabId);
-        await setBulkState({ status: `${n}/${urls.length}: screenshots…` });
+        if (!page.html || page.html.length < 80) {
+          throw new Error('Page was empty (blocked or still loading)');
+        }
+        const liveId = pageIdentity(page.url || url);
+        if (liveId && known.has(liveId)) {
+          skippedCount += 1;
+          if (listedId) known.add(listedId);
+          await rememberSavedIds(known);
+          await setBulkState({
+            savedCount, failedCount, skippedCount, index: i + 1, urls,
+            status: `${n}/${urls.length}: already in archive`,
+          });
+          continue;
+        }
+        await setBulkState({ status: `${n}/${urls.length}: screenshots…`, index: i });
         const screenshotPaths = await bgCaptureShots(token, workerTabId, wantDesktop, wantMobile);
-        await setBulkState({ status: `${n}/${urls.length}: saving…` });
+        await setBulkState({ status: `${n}/${urls.length}: saving…`, index: i });
         const name = String(page.title || domainOf(page.url) || `Page ${n}`).slice(0, 180);
         const data = await bgSavePage(token, {
           url: page.url || url,
@@ -1460,25 +1609,32 @@ async function runBulkImport(opts) {
           tags,
           projectId,
         });
+        if (listedId) known.add(listedId);
+        if (liveId) known.add(liveId);
+        await rememberSavedIds(known);
         if (data.duplicate) skippedCount += 1;
         else savedCount += 1;
         await setBulkState({
-          savedCount, failedCount, skippedCount,
+          savedCount, failedCount, skippedCount, index: i + 1, urls,
           status: `${n}/${urls.length}: ${data.duplicate ? 'already saved' : 'saved'} ✓`,
         });
       } catch (e) {
         failedCount += 1;
         console.warn('[bulk] page failed', url, e);
         await setBulkState({
-          savedCount, failedCount, skippedCount,
+          savedCount, failedCount, skippedCount, index: i + 1, urls,
           status: `${n}/${urls.length}: skipped (${String((e && e.message) || e).slice(0, 80)})`,
         });
       }
     }
   } catch (e) {
-    await setBulkState({ error: String((e && e.message) || e) });
+    await setBulkState({ error: String((e && e.message) || e), urls });
   } finally {
-    if (workerTabId) {
+    clearInterval(ping);
+    try { chrome.alarms.clear('wasabi-bulk-keepalive'); } catch { /* ignore */ }
+    if (workerWinId) {
+      try { await chrome.windows.remove(workerWinId); } catch { /* already closed */ }
+    } else if (workerTabId) {
       try { await chrome.tabs.remove(workerTabId); } catch { /* already closed */ }
     }
   }
@@ -1495,10 +1651,35 @@ async function runBulkImport(opts) {
     savedCount,
     failedCount,
     skippedCount,
+    urls,
     status: stopped ? `Stopped. ${summary}.` : `Done. ${summary}.`,
   });
   bulkRunning = false;
   bulkStopRequested = false;
+}
+
+async function resumeBulkIfNeeded() {
+  if (bulkRunning || walkRunning) return;
+  const st = await getBulkState();
+  if (!st || st.done || !st.running) return;
+  const urls = normalizeBulkUrls(st.urls);
+  if (!urls.length) return;
+  const startIndex = Math.max(0, Number(st.index) || 0);
+  if (startIndex >= urls.length) return;
+  runBulkImport({
+    urls,
+    startIndex,
+    pageType: st.pageType,
+    pageTypeLabel: st.pageTypeLabel,
+    category: st.category,
+    tags: st.tags,
+    projectId: st.projectId,
+    wantDesktop: st.wantDesktop,
+    wantMobile: st.wantMobile,
+    savedCount: st.savedCount,
+    failedCount: st.failedCount,
+    skippedCount: st.skippedCount,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1534,12 +1715,39 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'BULK_START') {
-    if (bulkRunning || walkRunning) {
-      sendResponse({ ok: false, error: 'Another import is already running.' });
-      return true;
-    }
-    runBulkImport(msg);
-    sendResponse({ ok: true, started: true });
+    (async () => {
+      if (bulkRunning || walkRunning) {
+        sendResponse({ ok: false, error: 'Another import is already running.' });
+        return;
+      }
+      const urls = normalizeBulkUrls(msg.urls);
+      if (!urls.length) {
+        sendResponse({ ok: false, error: 'No URLs to import.' });
+        return;
+      }
+      bulkRunning = true;
+      await setBulkState({
+        running: true,
+        done: false,
+        error: null,
+        status: `Starting ${urls.length} pages…`,
+        total: urls.length,
+        index: 0,
+        savedCount: 0,
+        failedCount: 0,
+        skippedCount: 0,
+        projectId: msg.projectId || null,
+        pageType: msg.pageType,
+        pageTypeLabel: msg.pageTypeLabel,
+        category: msg.category,
+        tags: Array.isArray(msg.tags) ? msg.tags : [],
+        wantDesktop: !!msg.wantDesktop,
+        wantMobile: !!msg.wantMobile,
+        urls,
+      });
+      runBulkImport({ ...msg, urls, startIndex: 0 });
+      sendResponse({ ok: true, started: true });
+    })();
     return true;
   }
   if (msg.type === 'BULK_STATUS') {
@@ -1865,3 +2073,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   return false;
 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm && alarm.name === 'wasabi-bulk-keepalive') resumeBulkIfNeeded();
+});
+resumeBulkIfNeeded();

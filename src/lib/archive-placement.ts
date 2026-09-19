@@ -14,18 +14,35 @@ export function canonPageUrl(raw: string): string {
   try {
     const x = new URL(u);
     x.hash = '';
+    x.hostname = x.hostname.replace(/^www\./i, '').toLowerCase();
     for (const k of [
       'fbclid', 'gclid', 'gbraid', 'wbraid', 'msclkid', 'ttclid',
       'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'utm_id',
       'c1', 'c2', 'c3', 'aff_id', 'affiliate_id', 'transaction_id', 'clickid',
+      'sid', 'subid', 'sub_id', 'click_id', 'cid', 'pid', 'tid', 'oid',
+      '_ga', '_gl', 'mc_eid', 'igshid', 'ref', 'referrer', 'source',
     ]) {
       x.searchParams.delete(k);
     }
     const path = x.pathname.replace(/\/+$/, '') || '/';
     const q = x.searchParams.toString();
-    return `${x.protocol}//${x.host.toLowerCase()}${path.toLowerCase()}${q ? `?${q}` : ''}`;
+    return `${x.protocol}//${x.hostname}${path.toLowerCase()}${q ? `?${q}` : ''}`;
   } catch {
     return u.toLowerCase().replace(/\/+$/, '');
+  }
+}
+
+/** Same landing even when AdSpends (or the page) adds a unique tracking query. */
+export function pageIdentity(raw: string): string {
+  const u = String(raw || '').trim();
+  if (!u) return '';
+  try {
+    const x = new URL(u);
+    const host = x.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    return `${x.protocol}//${host}${path.toLowerCase()}`;
+  } catch {
+    return canonPageUrl(u).split('?')[0];
   }
 }
 
