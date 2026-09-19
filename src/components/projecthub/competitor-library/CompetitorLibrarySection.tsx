@@ -791,7 +791,7 @@ function CreativeDetailPanel({
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/segment`, { method: "POST" });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        toast({ title: j.queued === false ? "Already queued" : "Queued for splitting", description: "The local ffmpeg worker will process it." });
+        toast({ title: j.queued === false ? "Already running" : "Re-split queued", description: "New action cuts, then caption cleanup on this video." });
         if (!segPoll.current) segPoll.current = setInterval(loadSegStatus, 4000);
       } else {
         setSegStatus("");
@@ -1370,7 +1370,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Real footage shots</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                AI watches the action, describes each scene and cuts when it changes. If this video was already cleaned, Re-split cuts from the <b>clean file</b> — no extra Replicate per clip.
+                New videos split and clean on their own. Re-split recuts <b>this</b> one with the action system and removes burned-in captions.
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -3538,7 +3538,7 @@ function ShotsLibraryView({
         <div>
           <h3 className="text-lg font-bold text-foreground">Real footage shots</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Pieces cut from competitor videos (audio removed). Use the <b>CLEAN</b> ones as B-roll to <b>compose a new video from your copy</b>.
+            Pieces cut from competitor videos (audio removed). <b>New videos</b> split and clean automatically. Existing ones: open the ad and click <b>Re-split</b>.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">

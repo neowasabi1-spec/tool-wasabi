@@ -177,6 +177,8 @@ export async function insertCompetitorAd(opts: {
   reach?: number | null;
   /** Advertiser destination URL (Meta snapshot.link_url). */
   landingUrl?: string;
+  /** Site origin so auto-split can fire the Netlify background worker. */
+  origin?: string;
 }): Promise<{ ok: true; ad: Record<string, unknown> } | { ok: false; error: string }> {
   const { projectId, brandId, buffer, contentType, remoteUrl, meta = {} } = opts;
   const mediaType = mediaTypeForContentType(contentType);
@@ -269,7 +271,7 @@ export async function insertCompetitorAd(opts: {
   if (mediaType === 'video' && filePath) {
     const adId = Number((data as { id?: number }).id);
     if (Number.isFinite(adId)) {
-      await autoSplitIfVideo({ projectId, brandId, adId, mediaType, filePath });
+      await autoSplitIfVideo({ projectId, brandId, adId, mediaType, filePath, origin: opts.origin });
     }
   }
 
