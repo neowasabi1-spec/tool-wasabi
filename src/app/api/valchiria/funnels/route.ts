@@ -17,7 +17,7 @@ import { loadSlimArchivedFunnels } from '@/lib/slim-archived-funnels';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 26;
+export const maxDuration = 60;
 
 interface ValchiriaFunnelRow {
   id: string;
@@ -92,21 +92,31 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await getUserAccessContext(req);
 
-    const slim = await loadSlimArchivedFunnels(null, 800);
-    if (slim.error) throw new Error(slim.error);
+    const slim = await loadSlimArchivedFunnels(null, 400);
+    if (slim.error && !slim.rows.length) throw new Error(slim.error);
 
-    const metaRes = await supabaseAdmin
-      .from('archived_funnels')
-      .select('id, owner_user_id, show_in_valchiria, share_with_users')
-      .is('project_id', null);
-    const metaById = new Map(
-      (metaRes.data || []).map((m: {
-        id: string;
-        owner_user_id: string | null;
-        show_in_valchiria: boolean | null;
-        share_with_users: boolean | null;
-      }) => [m.id, m]),
-    );
+    const metaById = new Map<string, {
+      id: string;
+      owner_user_id: string | null;
+      show_in_valchiria: boolean | null;
+      share_with_users: boolean | null;
+    }>();
+    const ids = slim.rows.map((r) => r.id).filter(Boolean);
+    for (let i = 0; i < ids.length; i += 120) {
+      const chunk = ids.slice(i, i + 120);
+      const metaRes = await supabaseAdmin
+        .from('archived_funnels')
+        .select('id, owner_user_id, show_in_valchiria, share_with_users')
+        .in('id', chunk);
+      for (const m of metaRes.data || []) {
+        metaById.set(m.id, m as {
+          id: string;
+          owner_user_id: string | null;
+          show_in_valchiria: boolean | null;
+          share_with_users: boolean | null;
+        });
+      }
+    }
 
     let pickedIds = new Set<string>();
     if (ctx.userId && !ctx.isMaster) {

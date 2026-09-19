@@ -75,6 +75,7 @@ export async function POST(
     buffer,
     contentType,
     originalName: file.name,
+    origin: new URL(req.url).origin,
     meta: {
       name: String(fd.get('name') || file.name.replace(/\.[^.]+$/, '')),
       headline: String(fd.get('headline') || ''),

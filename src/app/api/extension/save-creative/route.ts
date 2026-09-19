@@ -290,6 +290,7 @@ export async function POST(req: NextRequest) {
     contentType,
     preUploadedPath: storagePath || undefined,
     remoteUrl: mediaUrl,
+    origin: new URL(req.url).origin,
     meta: {
       name: body.name || body.pageTitle || brandName,
       headline: body.headline,

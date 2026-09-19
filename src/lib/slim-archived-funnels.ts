@@ -125,6 +125,15 @@ export function slimOneStep(raw: Record<string, unknown>): Record<string, unknow
   return step;
 }
 
+/** `archived_funnels.total_steps` is TEXT in the DB, so Supabase returns
+ *  strings like "8". Treating those as "not a number" zeroed the count,
+ *  made every funnel look like a single page and dropped it from the
+ *  Templates/Chimera lists entirely. Coerce robustly instead. */
+function asTotalSteps(raw: unknown, fallback: number): number {
+  const n = typeof raw === 'number' ? raw : parseInt(String(raw ?? '').trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 function asRows(data: unknown): SlimArchiveRow[] {
   const arr = Array.isArray(data) ? data : [];
   return arr
@@ -135,7 +144,7 @@ function asRows(data: unknown): SlimArchiveRow[] {
         id: String(r.id || ''),
         name: String(r.name || ''),
         created_at: String(r.created_at || ''),
-        total_steps: typeof r.total_steps === 'number' ? r.total_steps : steps.length,
+        total_steps: asTotalSteps(r.total_steps, steps.length),
         project_id: r.project_id ? String(r.project_id) : null,
         section: typeof r.section === 'string' ? r.section : null,
         steps,
@@ -145,74 +154,648 @@ function asRows(data: unknown): SlimArchiveRow[] {
 }
 
 const META_COLS = 'id, name, created_at, total_steps, project_id, section';
-const PAGE = 20;
-const WAVE = 3;
+/** Netlify edge wraps this route and kills it ~36s. Stay well under that. */
+const TEMPLATE_BUDGET_MS = 12_000;
+const PATH_BATCH = 12;
 
-async function loadStepsForIds(ids: string[]): Promise<Map<string, SlimArchiveStep[]>> {
+/**
+ * Scalars only — never `steps` or `cloned_data` objects (those still contain
+ * 1–5 MB HTML and are what timed out Template → Pages).
+ */
+const PATH_SELECT = [
+  META_COLS,
+  'step_name:steps->0->>name',
+  'page_type:steps->0->>page_type',
+  'step_type:steps->0->>step_type',
+  'page_id:steps->0->>page_id',
+  'url_to_swipe:steps->0->>url_to_swipe',
+  'prompt:steps->0->>prompt',
+  'source_url:steps->0->cloned_data->>source_url',
+  'screenshot_desktop:steps->0->cloned_data->>screenshotDesktopUrl',
+  'screenshot_mobile:steps->0->cloned_data->>screenshotMobileUrl',
+  'html_url:steps->0->cloned_data->>htmlUrl',
+  'category:steps->0->cloned_data->>category',
+].join(', ');
+
+const CREATE_TEMPLATE_PAGES_FN = `
+CREATE OR REPLACE FUNCTION public.slim_template_pages(p_limit int DEFAULT 40, p_offset int DEFAULT 0)
+RETURNS TABLE (
+  id uuid,
+  name text,
+  created_at timestamptz,
+  total_steps int,
+  project_id uuid,
+  section text,
+  steps jsonb
+)
+LANGUAGE sql
+STABLE
+SET statement_timeout TO '8s'
+AS $$
+  SELECT
+    f.id,
+    f.name,
+    f.created_at,
+    COALESCE(
+      CASE
+        WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+        THEN btrim(f.total_steps::text)::integer
+        ELSE NULL
+      END,
+      0
+    ) AS total_steps,
+    f.project_id,
+    f.section::text,
+    COALESCE((
+      SELECT jsonb_agg(s.step ORDER BY s.ord)
+      FROM (
+        SELECT
+          e.ord,
+          jsonb_build_object(
+            'name', e.elem->>'name',
+            'page_type', COALESCE(e.elem->>'page_type', e.elem->>'step_type', 'landing'),
+            'step_type', e.elem->>'step_type',
+            'page_id', e.elem->>'page_id',
+            'step_index', e.elem->'step_index',
+            'url_to_swipe', e.elem->>'url_to_swipe',
+            'prompt', e.elem->>'prompt',
+            'cloned_data', jsonb_build_object(
+              'source_url', COALESCE(e.elem#>>'{cloned_data,source_url}', e.elem->>'url_to_swipe'),
+              'screenshotDesktopUrl', e.elem#>>'{cloned_data,screenshotDesktopUrl}',
+              'screenshotMobileUrl', e.elem#>>'{cloned_data,screenshotMobileUrl}',
+              'htmlUrl', e.elem#>>'{cloned_data,htmlUrl}',
+              'category', COALESCE(e.elem#>>'{cloned_data,category}', f.name),
+              'tags', COALESCE(e.elem#>'{cloned_data,tags}', '[]'::jsonb)
+            )
+          ) AS step
+        FROM jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array' THEN COALESCE(f.steps::jsonb, '[]'::jsonb)
+            ELSE '[]'::jsonb
+          END
+        ) WITH ORDINALITY AS e(elem, ord)
+      ) s
+    ), '[]'::jsonb) AS steps
+  FROM archived_funnels f
+  WHERE f.project_id IS NULL
+    AND (
+      COALESCE(f.section::text, '') = 'page'
+      OR COALESCE(
+        CASE
+          WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+          THEN btrim(f.total_steps::text)::integer
+          ELSE NULL
+        END,
+        1
+      ) <= 1
+    )
+  ORDER BY f.created_at DESC
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 40), 80))
+  OFFSET GREATEST(0, COALESCE(p_offset, 0));
+$$;
+GRANT EXECUTE ON FUNCTION public.slim_template_pages(int, int) TO service_role;
+GRANT EXECUTE ON FUNCTION public.slim_template_pages(int, int) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.slim_template_pages(int, int) TO anon;
+`;
+
+/** Mirror of slim_template_pages for the FUNNEL rows (multi-step, not
+ *  section='page'). Returns slim steps (no HTML) so Templates → Funnel and
+ *  the Chimera funnel picker get real step lists without heavy payloads. */
+const CREATE_TEMPLATE_FUNNELS_FN = `
+CREATE OR REPLACE FUNCTION public.slim_template_funnels(p_limit int DEFAULT 40, p_offset int DEFAULT 0)
+RETURNS TABLE (
+  id uuid,
+  name text,
+  created_at timestamptz,
+  total_steps int,
+  project_id uuid,
+  section text,
+  steps jsonb
+)
+LANGUAGE sql
+STABLE
+SET statement_timeout TO '8s'
+AS $$
+  SELECT
+    f.id,
+    f.name,
+    f.created_at,
+    COALESCE(
+      CASE
+        WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+        THEN btrim(f.total_steps::text)::integer
+        ELSE NULL
+      END,
+      0
+    ) AS total_steps,
+    f.project_id,
+    f.section::text,
+    COALESCE((
+      SELECT jsonb_agg(s.step ORDER BY s.ord)
+      FROM (
+        SELECT
+          e.ord,
+          jsonb_build_object(
+            'name', e.elem->>'name',
+            'page_type', COALESCE(e.elem->>'page_type', e.elem->>'step_type', 'landing'),
+            'step_type', e.elem->>'step_type',
+            'page_id', e.elem->>'page_id',
+            'step_index', e.elem->'step_index',
+            'url_to_swipe', e.elem->>'url_to_swipe',
+            'prompt', e.elem->>'prompt',
+            'cloned_data', jsonb_build_object(
+              'source_url', COALESCE(e.elem#>>'{cloned_data,source_url}', e.elem->>'url_to_swipe'),
+              'screenshotDesktopUrl', e.elem#>>'{cloned_data,screenshotDesktopUrl}',
+              'screenshotMobileUrl', e.elem#>>'{cloned_data,screenshotMobileUrl}',
+              'htmlUrl', e.elem#>>'{cloned_data,htmlUrl}',
+              'category', COALESCE(e.elem#>>'{cloned_data,category}', f.name),
+              'tags', COALESCE(e.elem#>'{cloned_data,tags}', '[]'::jsonb)
+            )
+          ) AS step
+        FROM jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array' THEN COALESCE(f.steps::jsonb, '[]'::jsonb)
+            ELSE '[]'::jsonb
+          END
+        ) WITH ORDINALITY AS e(elem, ord)
+      ) s
+    ), '[]'::jsonb) AS steps
+  FROM archived_funnels f
+  WHERE f.project_id IS NULL
+    AND COALESCE(f.section::text, '') <> 'page'
+    AND GREATEST(
+      COALESCE(
+        CASE
+          WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+          THEN btrim(f.total_steps::text)::integer
+          ELSE NULL
+        END,
+        0
+      ),
+      CASE
+        WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array'
+        THEN jsonb_array_length(COALESCE(f.steps::jsonb, '[]'::jsonb))
+        ELSE 0
+      END
+    ) >= 2
+  ORDER BY f.created_at DESC
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 40), 80))
+  OFFSET GREATEST(0, COALESCE(p_offset, 0));
+$$;
+GRANT EXECUTE ON FUNCTION public.slim_template_funnels(int, int) TO service_role;
+GRANT EXECUTE ON FUNCTION public.slim_template_funnels(int, int) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.slim_template_funnels(int, int) TO anon;
+`;
+
+function isPageRow(r: { section?: string | null; total_steps?: number | null; steps?: unknown[] }): boolean {
+  if (r.section === 'page') return true;
+  const n = Array.isArray(r.steps) && r.steps.length
+    ? r.steps.length
+    : asTotalSteps(r.total_steps, 1);
+  return n <= 1;
+}
+
+function pickField(row: Record<string, unknown>, keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (v == null) continue;
+    const s = String(v).trim();
+    if (s) return s;
+  }
+  return '';
+}
+
+function pathRowToStep(row: Record<string, unknown>): SlimArchiveStep {
+  const pageId = pickField(row, ['page_id', 'steps->0->>page_id']);
+  const htmlUrl =
+    pickField(row, ['html_url', 'htmlUrl', 'steps->0->cloned_data->>htmlUrl']) ||
+    (pageId ? `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop` : undefined);
+  return {
+    name: pickField(row, ['step_name', 'steps->0->>name']) || String(row.name || ''),
+    page_type: pickField(row, ['page_type', 'steps->0->>page_type', 'step_type']) || 'landing',
+    step_type: pickField(row, ['step_type', 'steps->0->>step_type']) || undefined,
+    page_id: pageId || undefined,
+    url_to_swipe: pickField(row, ['url_to_swipe', 'steps->0->>url_to_swipe']),
+    prompt: pickField(row, ['prompt', 'steps->0->>prompt']) || undefined,
+    cloned_data: {
+      source_url: pickField(row, ['source_url', 'url_to_swipe']) || undefined,
+      screenshotDesktopUrl: pickField(row, ['screenshot_desktop', 'steps->0->cloned_data->>screenshotDesktopUrl']) || null,
+      screenshotMobileUrl: pickField(row, ['screenshot_mobile', 'steps->0->cloned_data->>screenshotMobileUrl']) || null,
+      htmlUrl,
+      category: pickField(row, ['category', 'steps->0->cloned_data->>category']) || String(row.name || '') || undefined,
+      tags: [],
+    },
+  };
+}
+
+async function loadMeta(projectId: string | null, limit: number): Promise<SlimArchiveRow[]> {
+  let q = supabaseAdmin
+    .from('archived_funnels')
+    .select(META_COLS)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  q = projectId ? q.eq('project_id', projectId) : q.is('project_id', null);
+  const meta = await q;
+  if (meta.error) throw new Error(meta.error.message);
+  return asRows((meta.data || []).map((r) => ({ ...r, steps: [] })));
+}
+
+async function hydrateViaJsonPaths(
+  ids: string[],
+  deadline: number,
+): Promise<Map<string, SlimArchiveStep[]>> {
   const out = new Map<string, SlimArchiveStep[]>();
   if (ids.length === 0) return out;
+  let select = PATH_SELECT;
+  let aliasFailed = false;
 
-  const { data, error } = await supabaseAdmin.from('archived_funnels').select('id, steps').in('id', ids);
-
-  if (!error && Array.isArray(data)) {
-    for (const row of data) {
-      out.set(
-        String((row as { id: string }).id),
-        asSteps((row as { steps?: unknown }).steps).map(
-          (s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep,
-        ),
+  for (let i = 0; i < ids.length && Date.now() < deadline; i += PATH_BATCH) {
+    const slice = ids.slice(i, i + PATH_BATCH);
+    const ms = Math.max(800, Math.min(6_000, deadline - Date.now()));
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('archived_funnels')
+        .select(select)
+        .in('id', slice)
+        .abortSignal(AbortSignal.timeout(ms));
+      if (error || !Array.isArray(data)) {
+        const msg = error?.message || '';
+        console.warn('[slim-archived-funnels] path select:', msg);
+        if (!aliasFailed && /parse|syntax|could not|invalid/i.test(msg)) {
+          aliasFailed = true;
+          select = `${META_COLS}, steps->0->>page_type, steps->0->>name, steps->0->>url_to_swipe, steps->0->cloned_data->>screenshotDesktopUrl, steps->0->cloned_data->>htmlUrl`;
+          i -= PATH_BATCH;
+        }
+        continue;
+      }
+      for (const raw of data) {
+        const row = raw as Record<string, unknown>;
+        const id = String(row.id || '');
+        if (!id) continue;
+        out.set(id, [pathRowToStep(row)]);
+      }
+    } catch (e) {
+      console.warn(
+        '[slim-archived-funnels] path select aborted:',
+        e instanceof Error ? e.message : e,
       );
     }
-    return out;
-  }
-
-  console.warn('[slim-archived-funnels] batch steps failed, per-row:', error?.message);
-  for (const id of ids) {
-    const one = await supabaseAdmin.from('archived_funnels').select('id, steps').eq('id', id).maybeSingle();
-    if (one.error || !one.data) {
-      out.set(id, []);
-      continue;
-    }
-    out.set(
-      id,
-      asSteps((one.data as { steps?: unknown }).steps).map(
-        (s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep,
-      ),
-    );
   }
   return out;
 }
 
-async function loadPaged(projectId: string | null, limit: number): Promise<SlimArchiveRow[]> {
-  let q = supabaseAdmin.from('archived_funnels').select(META_COLS).order('created_at', { ascending: false }).limit(limit);
-  q = projectId ? q.eq('project_id', projectId) : q.is('project_id', null);
-  const meta = await q;
-  if (meta.error) throw new Error(meta.error.message);
-  const rows = asRows((meta.data || []).map((r) => ({ ...r, steps: [] })));
-  const batches: SlimArchiveRow[][] = [];
-  for (let i = 0; i < rows.length; i += PAGE) batches.push(rows.slice(i, i + PAGE));
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(WAVE, Math.max(batches.length, 1)) }, async () => {
-      for (;;) {
-        const idx = cursor++;
-        if (idx >= batches.length) return;
-        const slice = batches[idx];
-        const stepsById = await loadStepsForIds(slice.map((r) => r.id));
-        for (const r of slice) {
-          const steps = stepsById.get(r.id) || [];
-          r.steps = steps;
-          if (!r.total_steps) r.total_steps = steps.length;
-        }
+async function loadTemplateRpc(fn: string, deadline: number): Promise<SlimArchiveRow[] | null> {
+  const rows: SlimArchiveRow[] = [];
+  const pageSize = 30;
+  for (let offset = 0; Date.now() < deadline; offset += pageSize) {
+    const ms = Math.max(800, Math.min(7_000, deadline - Date.now()));
+    try {
+      const { data, error } = await supabaseAdmin.rpc(
+        fn,
+        { p_limit: pageSize, p_offset: offset },
+        { abortSignal: AbortSignal.timeout(ms) },
+      );
+      if (error) {
+        if (/does not exist|42883/i.test(error.message || '')) return null;
+        console.warn(`[slim-archived-funnels] ${fn}:`, error.message);
+        break;
       }
-    }),
-  );
+      const batch = asRows(data);
+      if (!batch.length) break;
+      rows.push(...batch);
+      if (batch.length < pageSize) break;
+    } catch (e) {
+      console.warn(
+        `[slim-archived-funnels] ${fn} aborted:`,
+        e instanceof Error ? e.message : e,
+      );
+      break;
+    }
+  }
   return rows;
 }
 
+const loadTemplatePagesRpc = (deadline: number) => loadTemplateRpc('slim_template_pages', deadline);
+const loadTemplateFunnelsRpc = (deadline: number) => loadTemplateRpc('slim_template_funnels', deadline);
+
+/** Fallback when the slim_template_funnels RPC is missing (e.g. exec_sql not
+ *  available on this Supabase): rebuild each funnel's step list from SCALAR
+ *  json-path selects only. Never pull the raw `steps` jsonb — walk saves can
+ *  carry 1–5 MB of HTML per step and the fetch times out (that's exactly how
+ *  tryrosabella/nooro stayed empty while 2-step funnels hydrated fine). */
+const MAX_FUNNEL_STEPS = 24;
+
+function funnelShellSelect(count: number): string {
+  const cols: string[] = ['id', 'name'];
+  for (let i = 0; i < count; i++) {
+    cols.push(
+      `s${i}_name:steps->${i}->>name`,
+      `s${i}_ptype:steps->${i}->>page_type`,
+      `s${i}_stype:steps->${i}->>step_type`,
+      `s${i}_pid:steps->${i}->>page_id`,
+      `s${i}_url:steps->${i}->>url_to_swipe`,
+    );
+  }
+  return cols.join(', ');
+}
+
+function stepFromPathRow(row: Record<string, unknown>, i: number, rowName: string): SlimArchiveStep | null {
+  const g = (k: string) => {
+    const v = row[`s${i}_${k}`];
+    return v == null ? '' : String(v).trim();
+  };
+  const name = g('name');
+  const ptype = g('ptype') || g('stype');
+  const url = g('url') || g('src');
+  if (!name && !ptype && !url) return null; // past the end of the array
+  const pageId = g('pid');
+  const htmlUrl =
+    g('html') ||
+    (pageId ? `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop` : undefined);
+  return {
+    name: name || `Step ${i + 1}`,
+    page_type: ptype || 'landing',
+    step_type: g('stype') || undefined,
+    page_id: pageId || undefined,
+    step_index: i + 1,
+    url_to_swipe: url,
+    prompt: g('prompt') || undefined,
+    cloned_data: {
+      source_url: g('src') || url || undefined,
+      screenshotDesktopUrl: g('shot') || null,
+      screenshotMobileUrl: g('shotm') || null,
+      htmlUrl,
+      category: g('cat') || rowName || undefined,
+      tags: [],
+    },
+  };
+}
+
+async function hydrateFunnelSteps(rows: SlimArchiveRow[], deadline: number): Promise<void> {
+  const todo = rows.filter((r) => !r.steps.length);
+  for (const row of todo) {
+    if (Date.now() >= deadline) break;
+    const count = Math.max(2, Math.min(MAX_FUNNEL_STEPS, asTotalSteps(row.total_steps, 2)));
+    const ms = Math.max(800, Math.min(6_000, deadline - Date.now()));
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('archived_funnels')
+        .select(funnelShellSelect(count))
+        .eq('id', row.id)
+        .abortSignal(AbortSignal.timeout(ms))
+        .maybeSingle();
+      if (error || !data) {
+        console.warn('[slim-archived-funnels] funnel steps hydrate:', error?.message);
+        continue;
+      }
+      const steps: SlimArchiveStep[] = [];
+      for (let i = 0; i < count; i++) {
+        const s = stepFromPathRow(data as unknown as Record<string, unknown>, i, row.name);
+        if (!s) break;
+        steps.push(s);
+      }
+      if (steps.length) {
+        row.steps = steps;
+        if (!row.total_steps) row.total_steps = steps.length;
+      }
+    } catch (e) {
+      console.warn(
+        '[slim-archived-funnels] funnel steps hydrate aborted:',
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+}
+
+const CREATE_STEP_SHELLS_FN = `
+CREATE OR REPLACE FUNCTION public.slim_funnel_step_shells(p_id uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET statement_timeout TO '12s'
+AS $$
+  SELECT COALESCE((
+    SELECT jsonb_agg(s.step ORDER BY s.ord)
+    FROM (
+      SELECT
+        e.ord,
+        jsonb_build_object(
+          'name', e.elem->>'name',
+          'page_type', COALESCE(e.elem->>'page_type', e.elem->>'step_type', 'landing'),
+          'step_type', e.elem->>'step_type',
+          'page_id', e.elem->>'page_id',
+          'step_index', e.elem->'step_index',
+          'url_to_swipe', COALESCE(e.elem->>'url_to_swipe', e.elem#>>'{cloned_data,source_url}')
+        ) AS step
+      FROM archived_funnels f
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array'
+            THEN COALESCE(f.steps::jsonb, '[]'::jsonb)
+          WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'string'
+            THEN COALESCE((f.steps#>>'{}')::jsonb, '[]'::jsonb)
+          ELSE '[]'::jsonb
+        END
+      ) WITH ORDINALITY AS e(elem, ord)
+      WHERE f.id = p_id
+    ) s
+  ), '[]'::jsonb);
+$$;
+GRANT EXECUTE ON FUNCTION public.slim_funnel_step_shells(uuid) TO service_role;
+GRANT EXECUTE ON FUNCTION public.slim_funnel_step_shells(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.slim_funnel_step_shells(uuid) TO anon;
+`;
+
+function stepsFromShellRow(data: Record<string, unknown>, name: string, count: number): SlimArchiveStep[] {
+  const steps: SlimArchiveStep[] = [];
+  for (let i = 0; i < count; i++) {
+    const s = stepFromPathRow(data, i, name);
+    if (!s) break;
+    steps.push(s);
+  }
+  return steps;
+}
+
+/** Lightweight step list for the Chimera picker (name / type / url only). */
+export async function loadFunnelStepShells(id: string): Promise<SlimArchiveStep[]> {
+  if (!id) return [];
+  await ensureSlimFn();
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      'slim_funnel_step_shells',
+      { p_id: id },
+      { abortSignal: AbortSignal.timeout(12_000) },
+    );
+    if (!error && data != null) {
+      const steps = asSteps(data).map((s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep);
+      if (steps.length) return steps;
+    } else if (error && /does not exist|42883/i.test(error.message || '')) {
+      ensurePromise = null;
+      await ensureSlimFn();
+      const retry = await supabaseAdmin.rpc(
+        'slim_funnel_step_shells',
+        { p_id: id },
+        { abortSignal: AbortSignal.timeout(12_000) },
+      );
+      if (!retry.error && retry.data != null) {
+        const steps = asSteps(retry.data).map((s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep);
+        if (steps.length) return steps;
+      }
+    } else if (error) {
+      console.warn('[slim-archived-funnels] step shells rpc:', error.message);
+    }
+  } catch (e) {
+    console.warn('[slim-archived-funnels] step shells rpc aborted:', e instanceof Error ? e.message : e);
+  }
+
+  const meta = await supabaseAdmin
+    .from('archived_funnels')
+    .select('id, name, total_steps')
+    .eq('id', id)
+    .maybeSingle();
+  if (meta.error || !meta.data) return [];
+  const name = String(meta.data.name || '');
+  const count = Math.max(2, Math.min(MAX_FUNNEL_STEPS, asTotalSteps(meta.data.total_steps, 24)));
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('archived_funnels')
+      .select(funnelShellSelect(count))
+      .eq('id', id)
+      .abortSignal(AbortSignal.timeout(12_000))
+      .maybeSingle();
+    if (error || !data) {
+      console.warn('[slim-archived-funnels] step shells path:', error?.message);
+      return [];
+    }
+    return stepsFromShellRow(data as Record<string, unknown>, name, count);
+  } catch (e) {
+    console.warn('[slim-archived-funnels] step shells path aborted:', e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
+let ensurePromise: Promise<void> | null = null;
+
 async function ensureSlimFn(): Promise<void> {
-  const { error } = await supabaseAdmin.rpc('exec_sql', { sql: CREATE_SLIM_FN });
-  if (error) console.warn('[slim-archived-funnels] could not create RPC:', error.message);
+  if (!ensurePromise) {
+    ensurePromise = (async () => {
+      const a = await supabaseAdmin.rpc('exec_sql', { sql: CREATE_SLIM_FN }, { abortSignal: AbortSignal.timeout(4_000) });
+      if (a.error) console.warn('[slim-archived-funnels] could not create slim RPC:', a.error.message);
+      const b = await supabaseAdmin.rpc(
+        'exec_sql',
+        { sql: CREATE_TEMPLATE_PAGES_FN },
+        { abortSignal: AbortSignal.timeout(4_000) },
+      );
+      if (b.error) console.warn('[slim-archived-funnels] could not create template RPC:', b.error.message);
+      const c = await supabaseAdmin.rpc(
+        'exec_sql',
+        { sql: CREATE_TEMPLATE_FUNNELS_FN },
+        { abortSignal: AbortSignal.timeout(4_000) },
+      );
+      if (c.error) console.warn('[slim-archived-funnels] could not create funnel RPC:', c.error.message);
+      const d = await supabaseAdmin.rpc(
+        'exec_sql',
+        { sql: CREATE_STEP_SHELLS_FN },
+        { abortSignal: AbortSignal.timeout(4_000) },
+      );
+      if (d.error) console.warn('[slim-archived-funnels] could not create step-shell RPC:', d.error.message);
+    })().catch((e) => {
+      console.warn('[slim-archived-funnels] ensure failed:', e);
+    });
+  }
+  await ensurePromise;
+}
+
+async function loadViaProjectRpc(
+  projectId: string,
+  cap: number,
+): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
+  const args = { p_project_id: projectId, p_limit: cap };
+  let { data, error } = await supabaseAdmin.rpc('slim_archived_funnels', args, {
+    abortSignal: AbortSignal.timeout(10_000),
+  });
+  if (error && /does not exist|42883/i.test(error.message || '')) {
+    await ensureSlimFn();
+    const retry = await supabaseAdmin.rpc('slim_archived_funnels', args, {
+      abortSignal: AbortSignal.timeout(10_000),
+    });
+    data = retry.data;
+    error = retry.error;
+  }
+  if (!error) return { rows: asRows(data), error: null };
+  console.warn('[slim-archived-funnels] project RPC failed, json-path hydrate:', error.message);
+  try {
+    const rows = await loadMeta(projectId, cap);
+    const stepsById = await hydrateViaJsonPaths(
+      rows.map((r) => r.id),
+      Date.now() + 10_000,
+    );
+    for (const r of rows) {
+      const steps = stepsById.get(r.id);
+      if (steps?.length) {
+        r.steps = steps;
+        if (!r.total_steps) r.total_steps = steps.length;
+      }
+    }
+    return { rows, error: null };
+  } catch (e) {
+    return { rows: [], error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
+  const deadline = Date.now() + TEMPLATE_BUDGET_MS;
+  void ensureSlimFn();
+
+  try {
+    const viaRpc = await loadTemplatePagesRpc(deadline);
+    if (viaRpc && viaRpc.length) {
+      // Merge with the multi-step FUNNEL rows. Prefer the dedicated RPC:
+      // it ships slim steps, so the Funnel tab and the Chimera picker get
+      // real step lists. Fall back to bare meta shells if the RPC is
+      // missing (steps empty, but the funnels at least stay visible).
+      let funnels: SlimArchiveRow[] = [];
+      const have = new Set(viaRpc.map((r) => r.id));
+      try {
+        const viaFunnels = await loadTemplateFunnelsRpc(deadline);
+        if (viaFunnels && viaFunnels.length) {
+          funnels = viaFunnels.filter((r) => !have.has(r.id));
+        } else {
+          const all = await loadMeta(null, cap);
+          funnels = all.filter((r) => !have.has(r.id) && !isPageRow(r));
+        }
+        // The picker needs the actual step list (checkboxes): if any funnel
+        // came back as a bare shell, hydrate its steps directly.
+        if (funnels.some((r) => !r.steps.length)) {
+          await hydrateFunnelSteps(funnels, Date.now() + 10_000);
+        }
+      } catch (e) {
+        console.warn('[slim-archived-funnels] funnel meta:', e);
+      }
+      return { rows: [...viaRpc, ...funnels], error: null };
+    }
+
+    const rows = await loadMeta(null, cap);
+    const pageIds = rows.filter((r) => isPageRow(r)).map((r) => r.id);
+    const stepsById = await hydrateViaJsonPaths(pageIds, deadline);
+    for (const r of rows) {
+      const steps = stepsById.get(r.id);
+      if (steps?.length) {
+        r.steps = steps;
+        if (!r.total_steps) r.total_steps = steps.length;
+      }
+    }
+    // FUNNEL rows (multi-step) still have no steps here: the json-path
+    // hydrate above only grabs step 0 for pages. Pull the full slim step
+    // lists so Templates → Funnel and the Chimera picker stay usable.
+    const funnelRows = rows.filter((r) => !isPageRow(r) && !r.steps.length);
+    if (funnelRows.length) {
+      await hydrateFunnelSteps(funnelRows, Date.now() + 10_000);
+    }
+    return { rows, error: null };
+  } catch (e) {
+    return { rows: [], error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 /** Funnels for one project, or templates when projectId is null. */
@@ -221,23 +804,6 @@ export async function loadSlimArchivedFunnels(
   limit = 400,
 ): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
   const cap = Math.max(1, Math.min(limit, 2000));
-
-  if (projectId) {
-    const args = { p_project_id: projectId, p_limit: cap };
-    let { data, error } = await supabaseAdmin.rpc('slim_archived_funnels', args);
-    if (error && /does not exist|42883/i.test(error.message || '')) {
-      await ensureSlimFn();
-      const retry = await supabaseAdmin.rpc('slim_archived_funnels', args);
-      data = retry.data;
-      error = retry.error;
-    }
-    if (!error) return { rows: asRows(data), error: null };
-    console.warn('[slim-archived-funnels] RPC failed, paging steps:', error.message);
-  }
-
-  try {
-    return { rows: await loadPaged(projectId, cap), error: null };
-  } catch (e) {
-    return { rows: [], error: e instanceof Error ? e.message : String(e) };
-  }
+  if (projectId) return loadViaProjectRpc(projectId, cap);
+  return loadTemplateArchives(cap);
 }

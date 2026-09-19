@@ -22,14 +22,18 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       .select('*')
       .eq('project_id', id)
       .order('created_at', { ascending: false }),
-    supabaseAdmin.from('competitor_brands').select('id, name').eq('project_id', id),
+    supabaseAdmin.from('competitor_brands').select('id, name, ads_library_url').eq('project_id', id),
     loadSeenAt(id),
   ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   const nameById = new Map<number, string>();
-  for (const b of (brands || []) as { id: number; name: string }[]) nameById.set(b.id, b.name);
+  const urlById = new Map<number, string>();
+  for (const b of (brands || []) as { id: number; name: string; ads_library_url?: string }[]) {
+    nameById.set(b.id, b.name);
+    if (b.ads_library_url) urlById.set(b.id, b.ads_library_url);
+  }
 
   const result = tagNewAds(
     (ads || []) as { brand_id: number; created_at?: string }[],
@@ -37,6 +41,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   ).map((a) => ({
     ...a,
     brand_name: nameById.get(a.brand_id) || '',
+    ads_library_url: urlById.get(a.brand_id) || '',
   }));
 
   return NextResponse.json(result);

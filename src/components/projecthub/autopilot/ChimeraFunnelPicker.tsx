@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveReload } from '@/lib/live-refresh';
 import { authFetch } from '@/lib/auth/client-fetch';
 import {
@@ -14,6 +14,17 @@ export type ChimeraFunnelPick = {
   funnelId: string;
   steps: PickerStep[];
 };
+
+function withSteps(f: PickerFunnel, steps: PickerStep[]): PickerFunnel {
+  const counts = countProductsFromSteps(steps);
+  return {
+    ...f,
+    steps,
+    totalSteps: Math.max(f.totalSteps, steps.length),
+    upsells: counts.upsells,
+    products: counts.products,
+  };
+}
 
 export function ChimeraFunnelPicker({
   value,
@@ -31,6 +42,20 @@ export function ChimeraFunnelPicker({
   const [funnels, setFunnels] = useState<PickerFunnel[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [stepsLoading, setStepsLoading] = useState(false);
+  const [stepsError, setStepsError] = useState<string | null>(null);
+  const loadedSteps = useRef<Set<string>>(new Set());
+  const funnelsRef = useRef(funnels);
+  funnelsRef.current = funnels;
+
+  const mergeList = (rows: unknown[]) => {
+    const next = pickerFunnelsFromArchive(rows as Parameters<typeof pickerFunnelsFromArchive>[0]);
+    setFunnels((prev) => next.map((f) => {
+      const old = prev.find((p) => p.id === f.id);
+      if (old?.steps.length && !f.steps.length) return withSteps(f, old.steps);
+      return f;
+    }));
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -44,7 +69,7 @@ export function ChimeraFunnelPicker({
           return;
         }
         const rows = Array.isArray(data?.funnels) ? data.funnels : [];
-        setFunnels(pickerFunnelsFromArchive(rows));
+        mergeList(rows);
         setError(null);
       } catch (e) {
         if (!cancelled) setError((e as Error).message || 'Could not load funnels');
@@ -63,7 +88,7 @@ export function ChimeraFunnelPicker({
         const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
         const data = await res.json().catch(() => null);
         if (!res.ok || !Array.isArray(data?.funnels)) return;
-        setFunnels(pickerFunnelsFromArchive(data.funnels));
+        mergeList(data.funnels);
       } catch { /* keep last list */ }
     })();
   });
@@ -72,13 +97,57 @@ export function ChimeraFunnelPicker({
   const selectedIdx = useMemo(() => new Set(value.steps.map((s) => s.index)), [value.steps]);
   const counts = countProductsFromSteps(value.steps);
 
+  useEffect(() => {
+    const funnelId = value.funnelId;
+    if (!funnelId || !loaded) return;
+    const f = funnelsRef.current.find((x) => x.id === funnelId);
+    if (f?.steps.length) {
+      loadedSteps.current.add(funnelId);
+      return;
+    }
+    if (loadedSteps.current.has(funnelId)) return;
+    loadedSteps.current.add(funnelId);
+    let cancelled = false;
+    setStepsLoading(true);
+    setStepsError(null);
+    void (async () => {
+      try {
+        const res = await authFetch(`/api/valchiria/funnels/${encodeURIComponent(funnelId)}/steps`, {
+          cache: 'no-store',
+        });
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (!res.ok) {
+          setStepsError((data && data.error) || `Could not load steps (${res.status})`);
+          return;
+        }
+        const steps = Array.isArray(data?.steps) ? (data.steps as PickerStep[]) : [];
+        if (!steps.length) {
+          setStepsError('This funnel has no steps to swipe.');
+          return;
+        }
+        setFunnels((prev) => prev.map((x) => (x.id === funnelId ? withSteps(x, steps) : x)));
+        onChange({ funnelId, steps });
+      } catch (e) {
+        if (!cancelled) setStepsError((e as Error).message || 'Could not load steps');
+      } finally {
+        if (!cancelled) setStepsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value.funnelId, loaded]);
+
   const applyFunnel = (funnelId: string) => {
     if (!funnelId) {
+      setStepsError(null);
       onChange({ funnelId: '', steps: [] });
       return;
     }
     const f = funnels.find((x) => x.id === funnelId);
-    onChange({ funnelId, steps: f ? [...f.steps] : [] });
+    onChange({ funnelId, steps: f?.steps.length ? [...f.steps] : [] });
   };
 
   const toggleStep = (step: PickerStep) => {
@@ -98,6 +167,8 @@ export function ChimeraFunnelPicker({
     if (!value.funnelId) return;
     onChange({ funnelId: value.funnelId, steps: [] });
   };
+
+  const stepTotal = Math.max(selectedFunnel?.steps.length || 0, selectedFunnel?.totalSteps || 0);
 
   return (
     <div className="space-y-1.5">
@@ -124,13 +195,13 @@ export function ChimeraFunnelPicker({
         <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2">
           <div className="flex items-center justify-between gap-2 flex-wrap">
             <p className="text-xs font-medium text-foreground">
-              Steps to swipe · {value.steps.length}/{selectedFunnel.steps.length}
+              Steps to swipe · {value.steps.length}/{stepTotal}
             </p>
             <div className="flex items-center gap-2 text-xs">
               <button
                 type="button"
                 onClick={selectAll}
-                disabled={disabled}
+                disabled={disabled || !selectedFunnel.steps.length}
                 className="text-primary hover:underline disabled:opacity-50"
               >
                 All
@@ -147,6 +218,9 @@ export function ChimeraFunnelPicker({
             </div>
           </div>
           <div className="max-h-48 overflow-y-auto space-y-1">
+            {stepsLoading && selectedFunnel.steps.length === 0 && (
+              <p className="text-xs text-muted-foreground py-2">Loading steps…</p>
+            )}
             {selectedFunnel.steps.map((step) => {
               const checked = selectedIdx.has(step.index);
               return (
@@ -178,8 +252,11 @@ export function ChimeraFunnelPicker({
               );
             })}
           </div>
+          {stepsError && <p className="text-xs text-red-500">{stepsError}</p>}
           <p className="text-xs font-medium text-foreground">
-            {value.steps.length === 0
+            {stepsLoading && value.steps.length === 0
+              ? 'Loading the funnel steps…'
+              : value.steps.length === 0
               ? 'Select at least one step, or Chimera builds the main product only.'
               : `Creates ${counts.products} product${counts.products === 1 ? '' : 's'}${
                   counts.upsells > 0

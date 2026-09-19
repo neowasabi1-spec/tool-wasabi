@@ -44,7 +44,7 @@ const { pickShotsForScene, sectionForScene } = mod.exports;
 
   const { data: rows } = await s
     .from('competitor_shots')
-    .select('id, has_text, clean_path, section, tags, caption, duration_sec')
+    .select('id, has_text, clean_path, section, tags, caption, duration_sec, action, people, context, people_count')
     .eq('project_id', job.project_id)
     .limit(120);
 
@@ -56,6 +56,10 @@ const { pickShotsForScene, sectionForScene } = mod.exports;
       dur: r.duration_sec || 1.5,
       tags: Array.isArray(r.tags) ? r.tags : [],
       caption: r.caption || '',
+      action: r.action || '',
+      people: r.people || '',
+      context: r.context || '',
+      peopleCount: Number(r.people_count) || 0,
       section: r.section || 'body',
     }));
   const count = (sec) => pool.filter((p) => p.section === sec).length;

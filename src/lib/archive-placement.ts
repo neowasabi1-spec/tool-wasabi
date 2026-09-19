@@ -143,9 +143,15 @@ export function isStandaloneTemplatePage(
 }
 
 export const UPSELL_RE = /upsell|downsell|\boto\b|bump/i;
+const PRODUCT_PAGE_RE = /product[_-]?page|offer[_-]?page/i;
 
-export function isUpsellPageType(pageType: string): boolean {
-  return UPSELL_RE.test(pageType || '');
+export function isUpsellPageType(pageType: string, pageName = '', url = ''): boolean {
+  return (
+    UPSELL_RE.test(pageType || '')
+    || UPSELL_RE.test(pageName || '')
+    || UPSELL_RE.test(url || '')
+    || PRODUCT_PAGE_RE.test(pageType || '')
+  );
 }
 
 /** One Chimera product per selected funnel: the first non-upsell step is
@@ -160,7 +166,7 @@ export type ChimeraProductSlot = {
 };
 
 export function productsFromSelectedSteps(
-  steps: Array<{ index?: number; name?: string; pageType?: string; page_type?: string; isUpsell?: boolean }>,
+  steps: Array<{ index?: number; name?: string; pageType?: string; page_type?: string; isUpsell?: boolean; url?: string }>,
 ): ChimeraProductSlot[] {
   const sorted = [...steps].sort((a, b) => (Number(a.index) || 0) - (Number(b.index) || 0));
   const slots: ChimeraProductSlot[] = [];
@@ -169,10 +175,10 @@ export function productsFromSelectedSteps(
   const seenOffer = new Set<string>();
   for (const s of sorted) {
     const pageType = String(s.pageType || s.page_type || '');
-    const isUp = s.isUpsell ?? isUpsellPageType(pageType);
     const name = String(s.name || '').trim();
+    const isUp = Boolean(s.isUpsell) || isUpsellPageType(pageType, name, String(s.url || ''));
     const stepIndex = Number.isFinite(Number(s.index)) ? Number(s.index) : slots.length;
-    if (isUp) {
+    if (isUp && hasMain) {
       upsellN += 1;
       slots.push({
         key: `upsell-${stepIndex}-${upsellN}`,
@@ -203,14 +209,14 @@ export function productsFromSelectedSteps(
 
 /** 1 main (if any non-upsell step) + one product per selected upsell/OTO. */
 export function countProductsFromSteps(
-  steps: Array<{ pageType?: string; page_type?: string; isUpsell?: boolean }>,
+  steps: Array<{ pageType?: string; page_type?: string; isUpsell?: boolean; name?: string; url?: string }>,
 ): { products: number; upsells: number; hasMain: boolean } {
   if (!steps.length) return { products: 0, upsells: 0, hasMain: false };
   const upsells = steps.filter((s) =>
-    s.isUpsell ?? isUpsellPageType(String(s.pageType || s.page_type || '')),
+    Boolean(s.isUpsell) || isUpsellPageType(String(s.pageType || s.page_type || ''), String(s.name || ''), String(s.url || '')),
   ).length;
   const hasMain = steps.some(
-    (s) => !(s.isUpsell ?? isUpsellPageType(String(s.pageType || s.page_type || ''))),
+    (s) => !(Boolean(s.isUpsell) || isUpsellPageType(String(s.pageType || s.page_type || ''), String(s.name || ''), String(s.url || ''))),
   );
   return { products: (hasMain ? 1 : 0) + upsells || 1, upsells, hasMain };
 }
@@ -236,6 +242,11 @@ export type PickerFunnel = {
   steps: PickerStep[];
 };
 
+export function pickerStepsFromArchive(raw: unknown): PickerStep[] {
+  const arr = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [];
+  return dedupeStepsByUrl(arr).map((s, i) => slimPickerStep(s, i));
+}
+
 function slimPickerStep(s: Record<string, unknown>, i: number): PickerStep {
   const pageType = String(s.page_type || s.step_type || '');
   const cloned =
@@ -249,7 +260,7 @@ function slimPickerStep(s: Record<string, unknown>, i: number): PickerStep {
     index: i,
     name: String(s.name || `Step ${i + 1}`),
     pageType,
-    isUpsell: isUpsellPageType(pageType),
+    isUpsell: isUpsellPageType(pageType, String(s.name || ''), url),
     url: url || undefined,
     pageId: pageId || undefined,
     htmlUrl: htmlUrl || undefined,

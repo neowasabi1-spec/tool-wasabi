@@ -151,6 +151,7 @@ export async function POST(req: NextRequest) {
     buffer,
     contentType,
     remoteUrl: mediaUrl,
+    origin: new URL(req.url).origin,
     meta: {
       name: String(body.name || body.pageTitle || brandName || '').slice(0, 300),
       headline: body.headline !== undefined ? String(body.headline) : undefined,

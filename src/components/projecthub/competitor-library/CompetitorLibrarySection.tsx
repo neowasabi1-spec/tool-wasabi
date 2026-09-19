@@ -26,6 +26,7 @@ import { getSupabaseBrowser } from "@/lib/supabase-browser";
 import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
 import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
+import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 
 const BASE_URL = "";
 
@@ -87,6 +88,11 @@ type CompetitorAd = {
   reach?: number | null;
   // Phase 1: Claude-rewritten script adapted to the user's product.
   rewritten_script?: string | null;
+  /** Meta / TikTok / Google archive id from the scraper. */
+  external_id?: string | null;
+  source?: string | null;
+  /** Brand Ads Library URL when the row is joined (All creatives / overview). */
+  ads_library_url?: string | null;
 };
 
 function formatDate(d: string | null) {
@@ -257,6 +263,38 @@ function countryFromAdLibraryUrl(url?: string | null): string {
     return c && c !== "ALL" ? c : "";
   } catch {
     return "";
+  }
+}
+
+/** Per-creative Ads Library URL (Meta / TikTok / Google). */
+function adLibraryUrlForCreative(
+  ad: { external_id?: string | null; source?: string | null },
+  brandUrl?: string | null,
+): string {
+  const id = String(ad.external_id || "").trim();
+  const brand = String(brandUrl || "").trim();
+  if (!id && !brand) return "";
+  if (!id) return brand;
+  const hint = `${ad.source || ""} ${brand}`.toLowerCase();
+  if (hint.includes("tiktok") || hint.includes("library.tiktok")) {
+    return `https://library.tiktok.com/ads?id=${encodeURIComponent(id)}`;
+  }
+  if (hint.includes("adstransparency") || hint.includes("transparency.google")) {
+    return `https://adstransparency.google.com/?creative_id=${encodeURIComponent(id)}`;
+  }
+  try {
+    const u = new URL("https://www.facebook.com/ads/library/");
+    u.searchParams.set("id", id);
+    if (brand) {
+      const b = new URL(brand);
+      const country = (b.searchParams.get("country") || "").toUpperCase();
+      if (country && country !== "ALL") u.searchParams.set("country", country);
+      const active = b.searchParams.get("active_status");
+      if (active) u.searchParams.set("active_status", active);
+    }
+    return u.toString();
+  } catch {
+    return `https://www.facebook.com/ads/library/?id=${encodeURIComponent(id)}`;
   }
 }
 
@@ -485,6 +523,10 @@ type Shot = {
   caption?: string | null;
   tags?: string[] | null;
   section?: string | null;
+  action?: string | null;
+  people_count?: number | null;
+  people?: string | null;
+  context?: string | null;
   clean_path?: string | null;
   inpaint_status?: string | null;
   inpaint_error?: string | null;
@@ -516,11 +558,40 @@ function ShotsGrid({
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [ad.id]);
   useLiveReload(() => { void load(true); });
 
+  const cleaningCount = shots.filter(
+    (s) => s.inpaint_status === "pending" || s.inpaint_status === "processing",
+  ).length;
+  useEffect(() => {
+    if (cleaningCount === 0) return;
+    const t = setTimeout(() => load(true), 8000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shots]);
+
   const remove = async (s: Shot) => {
     setShots((p) => p.filter((x) => x.id !== s.id));
     try {
       await fetch(`/api/projecthub/projects/${projectId}/shots/${s.id}`, { method: "DELETE" });
     } catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  const inpaint = async (shotId: number) => {
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/shots/inpaint`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shotId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: "Could not start", description: j.error || "Unknown error", variant: "destructive" });
+        return;
+      }
+      toast({ title: "Removing subtitles…", description: "AI is reconstructing the frames — a few minutes." });
+      load(true);
+    } catch {
+      toast({ title: "Could not start", variant: "destructive" });
+    }
   };
 
   return (
@@ -540,29 +611,57 @@ function ShotsGrid({
             <p className="text-sm text-muted-foreground py-10 text-center">Loading shots…</p>
           ) : shots.length === 0 ? (
             <p className="text-sm text-muted-foreground py-10 text-center">
-              No shots yet. Use “Split into shots” — the local ffmpeg worker must be running.
+              No shots yet. Use “Split into shots”.
             </p>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
               {shots.map((s) => {
                 const hasText = s.has_text === true;
+                const cleaned = !!s.clean_path;
+                const cleaning = !cleaned && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
+                const who = typeof s.people_count === 'number'
+                  ? (s.people_count === 0 ? 'no people' : `${s.people_count} ${s.people_count === 1 ? 'person' : 'people'}`)
+                  : '';
                 return (
                   <div key={s.id} className="group relative rounded-xl overflow-hidden border border-border bg-slate-50">
-                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-slate-100">
+                    <button onClick={() => setPlaying(s)} className="block w-full aspect-[9/16] bg-slate-100 relative">
                       {s.thumb_path
                         ? <img src={getUploadUrl(s.thumb_path)} alt="" className="w-full h-full object-cover" />
                         : <div className="w-full h-full flex items-center justify-center text-slate-400"><Play className="w-6 h-6" /></div>}
+                      <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
+                        {s.duration_sec}s
+                      </span>
+                      <span
+                        title={cleaned
+                          ? "Subtitles removed with AI"
+                          : cleaning
+                            ? "AI is removing the subtitles…"
+                            : hasText
+                              ? "Has burned-in subtitles — excluded from builds until cleaned"
+                              : "Detector saw no captions — if you still see them, click Remove subs"}
+                        className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${
+                          cleaned ? "bg-emerald-500 text-white"
+                          : cleaning ? "bg-amber-500 text-white"
+                          : hasText ? "bg-rose-500 text-white"
+                          : "bg-emerald-500 text-white"}`}>
+                        {cleaned ? "CLEANED" : cleaning ? "CLEANING…" : hasText ? "SUBS" : "CLEAN"}
+                      </span>
+                      {!cleaned && !cleaning && (
+                        <span
+                          onClick={(e) => { e.stopPropagation(); e.preventDefault(); void inpaint(s.id); }}
+                          className="absolute inset-x-1.5 bottom-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 hover:bg-indigo-500 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1">
+                          <Sparkles className="w-3 h-3" /> Remove subs
+                        </span>
+                      )}
                     </button>
-                    <span className="absolute top-1.5 left-1.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
-                      {s.duration_sec}s
-                    </span>
-                    <span
-                      title={hasText
-                        ? "Has burned-in subtitles — excluded from builds (needs AI inpainting to remove)"
-                        : "Clean (no subtitles detected)"}
-                      className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${hasText ? "bg-rose-500 text-white" : "bg-emerald-500 text-white"}`}>
-                      {hasText ? "SUBS" : "CLEAN"}
-                    </span>
+                    <div className="p-1.5 pr-7 min-h-[3.2rem]">
+                      <p className="text-[10px] font-medium text-foreground leading-tight line-clamp-2">
+                        {s.action || s.caption || s.label || `${s.duration_sec}s shot`}
+                      </p>
+                      <p className="text-[9px] text-muted-foreground leading-tight line-clamp-2 mt-0.5">
+                        {[who, s.people, s.context].filter(Boolean).join(' · ')}
+                      </p>
+                    </div>
                     <button
                       onClick={() => remove(s)}
                       className="absolute bottom-1.5 right-1.5 opacity-0 group-hover:opacity-100 transition-opacity bg-slate-900/70 text-white rounded-md p-1"
@@ -579,12 +678,25 @@ function ShotsGrid({
       {playing && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" onClick={() => setPlaying(null)}>
           <div className="absolute inset-0 bg-black/80" />
-          <video
-            src={getUploadUrl(playing.file_path)}
-            controls autoPlay loop playsInline
-            className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <div className="relative flex flex-col items-center gap-3 max-w-lg w-full" onClick={(e) => e.stopPropagation()}>
+            <video
+              src={getUploadUrl(playing.file_path)}
+              controls autoPlay loop playsInline
+              className="max-h-[70vh] max-w-full rounded-xl bg-black"
+            />
+            {(playing.action || playing.context || playing.people) && (
+              <div className="w-full rounded-xl bg-black/70 text-white p-3 text-left">
+                {playing.action && <p className="text-xs font-medium leading-snug">{playing.action}</p>}
+                <p className="text-[11px] text-white/70 mt-1">
+                  {typeof playing.people_count === 'number'
+                    ? `${playing.people_count} ${playing.people_count === 1 ? 'person' : 'people'}`
+                    : ''}
+                  {playing.people ? ` — ${playing.people}` : ''}
+                </p>
+                {playing.context && <p className="text-[11px] text-white/70 mt-0.5">{playing.context}</p>}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -595,12 +707,13 @@ function ShotsGrid({
 // with player, download, transcript + copy, and delete. Reused by the
 // per-competitor view and the flat "All creatives" view.
 function CreativeDetailPanel({
-  ad, placeholderIndex, brandName, projectId, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange, onOpenCreated,
+  ad, placeholderIndex, brandName, projectId, adsLibraryUrl, onClose, onSaveTemplate, onDelete, onTranscribed, onWinnerChange, onOpenCreated,
 }: {
   ad: CompetitorAd;
   placeholderIndex: number;
   brandName?: string;
   projectId: string;
+  adsLibraryUrl?: string | null;
   onClose: () => void;
   onSaveTemplate: (id: number) => void;
   onDelete: (id: number) => void;
@@ -678,7 +791,7 @@ function CreativeDetailPanel({
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/segment`, { method: "POST" });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        toast({ title: j.queued === false ? "Already queued" : "Queued for splitting", description: "The local ffmpeg worker will process it." });
+        toast({ title: j.queued === false ? "Already running" : "Re-split queued", description: "New action cuts, then caption cleanup on this video." });
         if (!segPoll.current) segPoll.current = setInterval(loadSegStatus, 4000);
       } else {
         setSegStatus("");
@@ -969,6 +1082,7 @@ function CreativeDetailPanel({
     } catch { toast({ title: "Transcription failed", variant: "destructive" }); }
     finally { setTranscribing(false); }
   };
+  const libraryUrl = adLibraryUrlForCreative(ad, adsLibraryUrl || ad.ads_library_url);
   return (
     <>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -978,12 +1092,32 @@ function CreativeDetailPanel({
           <div className="min-w-0">
             <span className="text-sm font-semibold text-foreground">Creative Detail</span>
             {brandName && <p className="text-[11px] text-muted-foreground truncate">{brandName}</p>}
+            {libraryUrl && (
+              <a
+                href={libraryUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-primary hover:underline"
+              >
+                <ExternalLink className="w-3 h-3" /> Ads Library
+              </a>
+            )}
           </div>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground"><X className="w-4 h-4" /></button>
         </div>
         <div className="p-4 border-b border-border space-y-2">
+          {libraryUrl && (
+            <a
+              href={libraryUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-md border border-border text-sm font-medium hover:bg-muted/50"
+            >
+              <ExternalLink className="w-4 h-4" /> Open this creative in Ads Library
+            </a>
+          )}
           <Button onClick={() => onSaveTemplate(ad.id)} className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
-            <Bookmark className="w-4 h-4" /> Add to my templates
+            <Bookmark className="w-4 h-4" /> Save template
           </Button>
           {ad.file_path && (
             <Button variant="outline" onClick={() => downloadCreative(ad)} className="w-full gap-2">
@@ -1236,7 +1370,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Real footage shots</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Split this video into individual shots (audio removed) to reuse as real B-roll. Runs on the server — may take a minute or two.
+                New videos split and clean on their own. Re-split recuts <b>this</b> one with the action system and removes burned-in captions.
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -1725,7 +1859,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   // the brand is stamped as seen as soon as they are shown.
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [saving, setSaving] = useState(false);
+  const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1851,19 +1985,15 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
     toast({ title: `${ids.length} creative${ids.length > 1 ? "s" : ""} removed` });
   };
 
-  const saveToTemplates = async (ids: number[]) => {
-    if (ids.length === 0) return;
-    setSaving(true);
-    try {
-      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads/save-to-templates`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: ids }),
-      });
-      if (r.ok) {
-        const saved = await r.json();
-        setSelected(new Set());
-        toast({ title: `${saved.length} ad${saved.length > 1 ? "s" : ""} saved to templates!` });
-      }
-    } catch { toast({ title: "Save error", variant: "destructive" }); } finally { setSaving(false); }
+  const saveToTemplates = (ids: number[]) => {
+    const picked = ads.filter((a) => ids.includes(a.id));
+    if (picked.length === 0) return;
+    setTplItems(picked.map((a) => ({
+      id: a.id,
+      brandId: a.brand_id || competitor.id,
+      mediaType: a.media_type,
+      name: a.name || a.headline,
+    })));
   };
 
   const toggleSelect = (id: number, e: React.MouseEvent) => {
@@ -2017,11 +2147,9 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
                 className="gap-1.5 h-8 text-xs px-4 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700">
                 <Trash2 className="w-3.5 h-3.5" /> Delete ({selected.size})
               </Button>
-              <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))} disabled={saving}
+              <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))}
                 variant="ghost" className="gap-1.5 h-8 text-xs px-3 text-muted-foreground">
-                {saving
-                  ? <><RefreshCw className="w-3 h-3 animate-spin" /> Saving...</>
-                  : <><Bookmark className="w-3.5 h-3.5" /> Templates</>}
+                <Bookmark className="w-3.5 h-3.5" /> Templates
               </Button>
             </div>
           )}
@@ -2123,6 +2251,17 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
                     {ad.hook && (
                       <p className="text-[10px] text-muted-foreground truncate">{ad.hook}</p>
                     )}
+                    {adLibraryUrlForCreative(ad, competitor.ads_library_url) && (
+                      <a
+                        href={adLibraryUrlForCreative(ad, competitor.ads_library_url)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Ads Library
+                      </a>
+                    )}
                   </div>
                   <button
                     title="Delete creative"
@@ -2144,14 +2283,23 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           placeholderIndex={ads.indexOf(detailAd)}
           brandName={competitor.name}
           projectId={projectId}
+          adsLibraryUrl={competitor.ads_library_url || libUrl}
           onClose={() => setDetailAd(null)}
-          onSaveTemplate={(id) => { saveToTemplates([id]); setDetailAd(null); }}
+          onSaveTemplate={(id) => { saveToTemplates([id]); }}
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
           onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setAds(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />
       )}
+
+      <SaveAdTemplateDialog
+        open={tplItems.length > 0}
+        projectId={projectId}
+        items={tplItems}
+        onClose={() => setTplItems([])}
+        onSaved={() => setSelected(new Set())}
+      />
 
       {/* Upload dialog */}
       <Dialog open={uploadOpen} onOpenChange={v => { setUploadOpen(v); if (!v) { setAdForm({ name: "", headline: "", hook: "", body_text: "" }); setFileLabel(""); } }}>
@@ -2239,6 +2387,7 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+  const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
   // brand_id -> market (from each competitor's Ad Library country=), used to
   // pick the right CPM when estimating spend.
   const [countryByBrand, setCountryByBrand] = useState<Map<number, string>>(new Map());
@@ -2265,11 +2414,13 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}`, { method: "DELETE" });
     toast({ title: "Creative removed" });
   };
-  const saveTpl = async (ad: CreativeWithBrand) => {
-    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/save-to-templates`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: [ad.id] }),
-    });
-    if (r.ok) toast({ title: "Saved to templates!" });
+  const saveTpl = (ad: CreativeWithBrand) => {
+    setTplItems([{
+      id: ad.id,
+      brandId: ad.brand_id,
+      mediaType: ad.media_type,
+      name: ad.name || ad.headline,
+    }]);
   };
 
   const brands = [...new Set(creatives.map(c => c.brand_name).filter(Boolean))];
@@ -2353,6 +2504,17 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
                 <div className="min-w-0">
                   <p className="text-xs font-semibold text-foreground truncate leading-tight">{ad.headline || ad.name || "Creative"}</p>
                   <p className="text-[10px] text-muted-foreground truncate">{ad.brand_name}</p>
+                  {adLibraryUrlForCreative(ad, ad.ads_library_url) && (
+                    <a
+                      href={adLibraryUrlForCreative(ad, ad.ads_library_url)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline"
+                    >
+                      <ExternalLink className="w-3 h-3" /> Ads Library
+                    </a>
+                  )}
                 </div>
                 <button title="Delete creative" onClick={e => { e.stopPropagation(); del(ad); }}
                   className="flex-shrink-0 p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors">
@@ -2370,14 +2532,22 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
           placeholderIndex={filtered.indexOf(detailAd)}
           brandName={detailAd.brand_name}
           projectId={projectId}
+          adsLibraryUrl={detailAd.ads_library_url}
           onClose={() => setDetailAd(null)}
-          onSaveTemplate={() => { saveTpl(detailAd); setDetailAd(null); }}
+          onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { del(detailAd); setDetailAd(null); }}
           onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
           onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />
       )}
+
+      <SaveAdTemplateDialog
+        open={tplItems.length > 0}
+        projectId={projectId}
+        items={tplItems}
+        onClose={() => setTplItems([])}
+      />
     </div>
   );
 }
@@ -3164,6 +3334,7 @@ function ShotsLibraryView({
   const [playing, setPlaying] = useState<Shot | null>(null);
   // Compose a brand-new video from these shots + your own copy.
   const [showCreate, setShowCreate] = useState(false);
+  const [recutting, setRecutting] = useState(false);
 
   const load = async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -3203,8 +3374,34 @@ function ShotsLibraryView({
     catch { toast({ title: "Delete failed", variant: "destructive" }); }
   };
 
-  // Kick AI inpainting for one shot or all subtitled shots. `force` re-cleans
-  // shots that already have a cleaned copy (e.g. to retry with a better model).
+  const recutFromCleaned = async () => {
+    setRecutting(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/recut-clean`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: j.error || "Could not recut", variant: "destructive" });
+        return;
+      }
+      if (!j.queued) {
+        toast({
+          title: "Nothing to recut yet",
+          description: j.message || "Clean each competitor video once (Remove subtitles on the full video), then recut from those files.",
+        });
+        return;
+      }
+      toast({
+        title: `Recutting ${j.queued} cleaned video${j.queued === 1 ? "" : "s"}`,
+        description: "Cuts new shots from the already-cleaned file. No extra Replicate per clip.",
+      });
+      void load(true);
+    } catch {
+      toast({ title: "Could not recut", variant: "destructive" });
+    } finally {
+      setRecutting(false);
+    }
+  };
+
   const inpaint = async (shotId?: number, force = false) => {
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/inpaint`, {
@@ -3260,9 +3457,9 @@ function ShotsLibraryView({
 
   const renderCard = (s: Shot) => {
     const hasText = s.has_text === true;
-    const cleaned = hasText && !!s.clean_path;
-    const cleaning = hasText && !s.clean_path && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
-    const failed = hasText && !s.clean_path && s.inpaint_status === "error";
+    const cleaned = !!s.clean_path;
+    const cleaning = !cleaned && (s.inpaint_status === "pending" || s.inpaint_status === "processing");
+    const failed = !cleaned && s.inpaint_status === "error";
     return (
       <div key={s.id} className="group rounded-xl overflow-hidden border border-border bg-slate-50">
         <div className="relative">
@@ -3281,7 +3478,7 @@ function ShotsLibraryView({
                 ? "AI is removing the subtitles…"
                 : hasText
                   ? (failed ? `AI cleanup failed: ${s.inpaint_error || "unknown error"} — click Remove subs to retry` : "Has burned-in subtitles — excluded from builds until cleaned")
-                  : "Clean (no subtitles detected)"}
+                  : "Detector saw no captions — if you still see them, click Remove subs"}
             className={`absolute top-1.5 right-1.5 text-[9px] font-black px-1.5 py-0.5 rounded-full ${
               cleaned ? "bg-emerald-500 text-white"
               : cleaning ? "bg-amber-500 text-white"
@@ -3294,7 +3491,7 @@ function ShotsLibraryView({
               {brandNames[s.brand_id]}
             </span>
           )}
-          {hasText && !cleaned && !cleaning && (
+          {!cleaned && !cleaning && (
             <button
               onClick={() => inpaint(s.id)}
               className="absolute inset-x-1.5 bottom-8 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-600 hover:bg-indigo-500 text-white rounded-md px-1.5 py-1 text-[10px] font-bold flex items-center justify-center gap-1"
@@ -3341,10 +3538,21 @@ function ShotsLibraryView({
         <div>
           <h3 className="text-lg font-bold text-foreground">Real footage shots</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Pieces cut from competitor videos (audio removed). Use the <b>CLEAN</b> ones as B-roll to <b>compose a new video from your copy</b>.
+            Pieces cut from competitor videos (audio removed). <b>New videos</b> split and clean automatically. Existing ones: open the ad and click <b>Re-split</b>.
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void recutFromCleaned()}
+            disabled={recutting}
+            title="Re-cut shots from videos that already had subtitles removed. ffmpeg + scene labels only — no Replicate per clip."
+            className="gap-1.5 h-8">
+            {recutting
+              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Recutting…</>
+              : <><Scissors className="w-3.5 h-3.5" /> Re-cut from cleaned videos</>}
+          </Button>
           <Button
             size="sm"
             onClick={() => setShowCreate(true)}
@@ -4114,17 +4322,20 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
+  const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
 
   const delAd = async (ad: CompetitorAd) => {
     setCreatives(p => p.filter(a => a.id !== ad.id));
     await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}`, { method: "DELETE" });
     toast({ title: "Creative removed" });
   };
-  const saveTpl = async (ad: CompetitorAd) => {
-    const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/save-to-templates`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ad_ids: [ad.id] }),
-    });
-    if (r.ok) toast({ title: "Saved to templates!" });
+  const saveTpl = (ad: CompetitorAd) => {
+    setTplItems([{
+      id: ad.id,
+      brandId: ad.brand_id,
+      mediaType: ad.media_type,
+      name: ad.name || ad.headline,
+    }]);
   };
 
   useEffect(() => {
@@ -4489,6 +4700,7 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           placeholderIndex={topAds.findIndex(t => t.ad.id === detailAd.id)}
           brandName={detailAd.brand_name}
           projectId={projectId}
+          adsLibraryUrl={detailAd.ads_library_url}
           onClose={() => setDetailAd(null)}
           onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { delAd(detailAd); setDetailAd(null); }}
@@ -4497,6 +4709,13 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           onOpenCreated={onOpenCreated}
         />
       )}
+
+      <SaveAdTemplateDialog
+        open={tplItems.length > 0}
+        projectId={projectId}
+        items={tplItems}
+        onClose={() => setTplItems([])}
+      />
     </div>
   );
 }

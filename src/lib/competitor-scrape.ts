@@ -525,6 +525,7 @@ export async function ingestDataset(opts: {
         buffer: dl?.buffer || null,
         contentType,
         remoteUrl: mapped.mediaUrl,
+        origin: siteBaseUrl() || undefined,
         externalId: mapped.externalId,
         source: 'apify',
         adStartedAt: mapped.adStartedAt || undefined,

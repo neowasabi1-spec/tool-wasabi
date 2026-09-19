@@ -11,14 +11,22 @@ export const runtime = 'nodejs';
 // they gain tags + a measured subtitle band and become usable in builds.
 const BAND_RE = /[01]?\.\d+-[01]?\.\d+/;
 const reanalyzeFiredAt = new Map<string, number>();
-const REANALYZE_COOLDOWN_MS = 10 * 60 * 1000;
+const REANALYZE_COOLDOWN_MS = 2 * 60 * 1000;
 
 function maybeTriggerReanalysis(projectId: string, rows: Array<Record<string, unknown>>, origin: string) {
   const legacy = rows.some((r) => {
     if (!r.thumb_path) return false;
     const tags = r.tags as string[] | null | undefined;
     if (!Array.isArray(tags) || tags.length === 0) return true;
-    return r.has_text === true && !BAND_RE.test(String(r.text_region || ''));
+    if (r.has_text === true && !BAND_RE.test(String(r.text_region || ''))) return true;
+    // Column present (migration applied) but scene JSON never filled.
+    if ('action' in r && !String(r.action || '').trim()) return true;
+    // Old CLEAN stamps often missed CapCut/TikTok captions (score ~0.1).
+    if (r.has_text !== true) {
+      const score = Number(r.text_score);
+      if (!Number.isFinite(score) || score < 0.92) return true;
+    }
+    return false;
   });
   if (!legacy) return;
   const last = reanalyzeFiredAt.get(projectId) || 0;

@@ -5,13 +5,14 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { supabase } from '@/lib/supabase';
+import { authFetch } from '@/lib/auth/client-fetch';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
 import {
   Plus, FolderOpen, ChevronRight, ChevronDown, Layers,
   Trash2, Search, Save, X, Upload, Loader2, FileText, Eye,
-  ShieldCheck, LayoutGrid, LayoutList, Share2, Users,
+  ShieldCheck, LayoutGrid, LayoutList, Share2, Users, User,
   Rocket, Sparkles,
 } from 'lucide-react';
 import {
@@ -52,6 +53,8 @@ interface Project {
    *  client-side to tell "owned by me" (no badge) apart from "shared
    *  with me" (SHARED badge, no delete button). */
   owner_user_id?: string | null;
+  /** Present only for the master: email of the user who created the project. */
+  owner_email?: string | null;
   // brief is TEXT; brief_files is JSONB with the file list.
   brief?: string | null;
   brief_files?: any;
@@ -100,6 +103,18 @@ const STATUS_COLOR: Record<string, string> = {
   completed: 'bg-emerald-100 text-emerald-700',
   archived: 'bg-slate-100 text-slate-500',
 };
+
+function CreatorLine({ email }: { email?: string | null }) {
+  return (
+    <p
+      className="text-slate-400 text-[10px] mt-1 flex items-center gap-1 min-w-0"
+      title={email || 'No owner'}
+    >
+      <User className="w-3 h-3 shrink-0" />
+      <span className="truncate">{email || 'No owner'}</span>
+    </p>
+  );
+}
 
 function StatusPicker({
   projectId,
@@ -1263,29 +1278,16 @@ export default function ProjectsPage() {
 
   async function loadProjects() {
     setLoading(true);
-    // owner_user_id is included so the UI can tell apart "owned by me"
-    // (no badge, can delete) from "shared with me" (SHARED badge, no
-    // delete button). On older installs without the multi-tenancy
-    // column this just comes back as undefined and the UI degrades to
-    // the legacy "everything looks owned by me" behavior.
-    const COLS = 'id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, brief_files, front_end, back_end, compliance_funnel, funnel, owner_user_id';
-    const { data, error } = await supabase
-      .from('projects')
-      .select(COLS)
-      .order('created_at', { ascending: false });
-
-    // brief_files was added in a later migration; if it's missing fall back
-    // to selecting without it so the page still renders.
-    const rows = !error
-      ? data
-      : (await supabase
-          .from('projects')
-          .select('id, name, status, description, domain, notes, created_at, updated_at, market_research, brief, front_end, back_end, compliance_funnel, funnel, owner_user_id')
-          .order('created_at', { ascending: false })).data;
-
-    if (rows) {
+    // Go through the API so:
+    //   - master sees every project
+    //   - regular users see owned UNION shared
+    //   - master-only owner_email is attached server-side
+    try {
+      const res = await authFetch('/api/projecthub/projects', { cache: 'no-store' });
+      const raw = await res.json().catch(() => null);
+      const rows = Array.isArray(raw) ? raw : [];
       setProjects(
-        rows.map((p: any) => ({
+        rows.map((p: Record<string, unknown>) => ({
           id: String(p.id || ''),
           name: typeof p.name === 'string' ? p.name : 'Untitled',
           status: typeof p.status === 'string' ? p.status : 'active',
@@ -1295,6 +1297,7 @@ export default function ProjectsPage() {
           created_at: typeof p.created_at === 'string' ? p.created_at : '',
           updated_at: typeof p.updated_at === 'string' ? p.updated_at : '',
           owner_user_id: typeof p.owner_user_id === 'string' ? p.owner_user_id : null,
+          owner_email: typeof p.owner_email === 'string' ? p.owner_email : null,
           brief: typeof p.brief === 'string' ? p.brief : '',
           brief_files: p.brief_files ?? null,
           market_research: p.market_research ?? null,
@@ -1304,6 +1307,9 @@ export default function ProjectsPage() {
           funnel: p.funnel ?? null,
         })),
       );
+    } catch (e) {
+      console.warn('[projects] list failed:', e);
+      setProjects([]);
     }
     setLoading(false);
   }
@@ -1326,7 +1332,7 @@ export default function ProjectsPage() {
     // path: it verifies the user JWT server-side (getCurrentUserId),
     // uses supabaseAdmin (service-role → bypasses RLS), and sets
     // owner_user_id explicitly. Works regardless of trigger state.
-    const res = await fetch('/api/projecthub/projects', {
+    const res = await authFetch('/api/projecthub/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName.trim() }),
@@ -1345,6 +1351,7 @@ export default function ProjectsPage() {
       status?: string;
       created_at?: string;
       updated_at?: string;
+      owner_user_id?: string | null;
     };
 
     const newProject: Project = {
@@ -1356,6 +1363,8 @@ export default function ProjectsPage() {
       notes: '',
       created_at: String(data.created_at || ''),
       updated_at: String(data.updated_at || ''),
+      owner_user_id: data.owner_user_id || currentUserId,
+      owner_email: isMaster ? (currentUser?.email || null) : null,
       brief: '',
       brief_files: null,
       market_research: null,
@@ -1776,6 +1785,7 @@ export default function ProjectsPage() {
                     {project.description.replace(/\s+/g, ' ').trim()}
                   </p>
                 ) : null}
+                {isMaster && <CreatorLine email={project.owner_email} />}
                 <div className="mt-auto pt-3 flex items-center justify-between gap-2">
                   <button
                     type="button"
@@ -1845,6 +1855,7 @@ export default function ProjectsPage() {
                         {project.domain ? (
                           <p className="text-blue-600 text-xs mt-0.5 truncate">{project.domain}</p>
                         ) : null}
+                        {isMaster && <CreatorLine email={project.owner_email} />}
                       </div>
                     </div>
 

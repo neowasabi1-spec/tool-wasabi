@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ChevronRight, FolderOpen, Loader2, Megaphone, Play, Plus, Search,
+  CheckSquare, ChevronRight, FolderOpen, Loader2, Megaphone, Play, Plus, Search, Sparkles, Square, Tag,
   Trash2, Upload, X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { authFetch } from '@/lib/auth/client-fetch';
 import { confirmDialog } from '@/components/ui/confirm';
+import { adMatchesQuery, formatAdTags, parseAdTags } from '@/lib/ad-tags';
 import { getUploadUrl } from '@/lib/projecthub-storage';
+import AdsRecreatePanel, { type RecreatePreview } from './AdsRecreatePanel';
 import {
   AD_TYPE_CATEGORIES,
   BUILT_IN_AD_TYPE_OPTIONS,
@@ -31,6 +33,11 @@ export type ArchiveAd = {
 
 const UNFILED = '__unfiled__';
 
+function downloadHref(path: string) {
+  const url = getUploadUrl(path);
+  return url + (url.includes('?') ? '&' : '?') + 'download=1';
+}
+
 type Props = {
   search: string;
   onFolderCount?: (count: number) => void;
@@ -49,6 +56,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   const [missingTable, setMissingTable] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [preview, setPreview] = useState<ArchiveAd | null>(null);
+  const [recreateQueue, setRecreateQueue] = useState<ArchiveAd[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [recreated, setRecreated] = useState<RecreatePreview | null>(null);
+  const [tagFilter, setTagFilter] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
 
   const items = useMemo(() => rows.filter((r) => r.media_type !== 'folder'), [rows]);
@@ -109,6 +120,31 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     const n = new Set(items.map((a) => a.ad_type).filter(Boolean)).size;
     onFolderCount?.(n);
   }, [items, onFolderCount]);
+
+  useEffect(() => {
+    setRecreated(null);
+  }, [preview?.id]);
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const selectedAds = useMemo(() => {
+    const byId = new Map(items.map((a) => [a.id, a]));
+    return selectedIds.map((id) => byId.get(id)).filter((a): a is ArchiveAd => Boolean(a));
+  }, [items, selectedIds]);
+
+  const openRecreate = (ads?: ArchiveAd[]) => {
+    const queue = (ads && ads.length > 0 ? ads : selectedAds)
+      .filter((a) => a.media_type !== 'folder' && a.file_path);
+    if (queue.length === 0) {
+      toast.error('Select at least one image or video');
+      return;
+    }
+    setRecreateQueue(queue);
+    setPreview(queue[0]);
+    setRecreated(null);
+  };
 
   const itemsInType = (type: string) => items.filter((a) => (a.ad_type || 'image') === type);
 
@@ -241,15 +277,16 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     if (ko > 0) toast.error(lastError || `${ko} file${ko === 1 ? '' : 's'} failed`);
   };
 
-  const moveAd = async (ad: ArchiveAd, patch: { ad_type?: string; category?: string }) => {
-    setRows((prev) => prev.map((x) => (x.id === ad.id ? { ...x, ...patch } : x)));
+  const moveAd = async (ad: ArchiveAd, patch: { ad_type?: string; category?: string; tags?: string }) => {
+    const next = { ...ad, ...patch };
+    setRows((prev) => prev.map((x) => (x.id === ad.id ? next : x)));
     const res = await authFetch(`/api/templates/ads/${ad.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
     if (!res.ok) {
-      toast.error('Move failed');
+      toast.error('Update failed');
       void loadAds();
     }
   };
@@ -263,7 +300,11 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     });
     if (!ok) return;
     setRows((prev) => prev.filter((x) => x.id !== ad.id));
-    if (preview?.id === ad.id) setPreview(null);
+    setSelectedIds((prev) => prev.filter((id) => id !== ad.id));
+    if (preview?.id === ad.id) {
+      setPreview(null);
+      setRecreateQueue([]);
+    }
     const res = await authFetch(`/api/templates/ads/${ad.id}`, { method: 'DELETE' });
     if (!res.ok) {
       toast.error('Delete failed');
@@ -274,9 +315,16 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   };
 
   const matchingAds = useMemo(() => {
-    if (!q) return [] as ArchiveAd[];
-    return items.filter((a) => a.name.toLowerCase().includes(q) || a.tags.toLowerCase().includes(q));
-  }, [items, q]);
+    if (!q && !tagFilter) return [] as ArchiveAd[];
+    return items.filter((a) => {
+      if (q && !adMatchesQuery(a, q)) return false;
+      if (tagFilter) {
+        const want = tagFilter.toLowerCase();
+        if (!parseAdTags(a.tags).some((t) => t.toLowerCase() === want)) return false;
+      }
+      return true;
+    });
+  }, [items, q, tagFilter]);
 
   const typeColor = (type: string) => {
     const opt = typeFolderOptions.find((o) => o.value === type);
@@ -287,6 +335,71 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
     const names = categoryFolders(type);
     return [{ value: '', label: 'Uncategorized' }, ...names.map((n) => ({ value: n, label: n }))];
   };
+
+  const selectionBar = (list: ArchiveAd[]) => {
+    const folderIds = list.map((a) => a.id);
+    const selectedHere = folderIds.filter((id) => selectedIds.includes(id));
+    const allInFolder = list.length > 0 && selectedHere.length === list.length;
+    const globalCount = selectedAds.length;
+    const fromOther = Math.max(0, globalCount - selectedHere.length);
+    return (
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={() => {
+            if (allInFolder) {
+              setSelectedIds((prev) => prev.filter((id) => !folderIds.includes(id)));
+            } else {
+              setSelectedIds((prev) => {
+                const have = new Set(prev);
+                return [...prev, ...folderIds.filter((id) => !have.has(id))];
+              });
+            }
+          }}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 bg-white text-sm text-gray-700 hover:border-indigo-300"
+        >
+          {allInFolder ? <CheckSquare className="w-4 h-4 text-indigo-600" /> : <Square className="w-4 h-4" />}
+          {allInFolder ? 'Deselect folder' : 'Select all in folder'}
+        </button>
+        {globalCount > 0 && (
+          <>
+            <span className="text-sm text-gray-500">
+              {globalCount} selected{fromOther > 0 ? ` · ${fromOther} from other folders` : ''}
+            </span>
+            <button
+              type="button"
+              onClick={() => openRecreate()}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500"
+            >
+              <Sparkles className="w-4 h-4" /> Recreate {globalCount}
+            </button>
+            <button type="button" onClick={() => setSelectedIds([])} className="text-sm text-gray-500 hover:text-gray-800">
+              Clear
+            </button>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  const globalRecreateBar = selectedAds.length > 0 ? (
+    <div className="sticky top-0 z-20 flex items-center gap-2 flex-wrap rounded-xl border border-violet-200 bg-violet-50 px-3 py-2">
+      <CheckSquare className="w-4 h-4 text-violet-700" />
+      <span className="text-sm text-violet-900 font-medium">
+        {selectedAds.length} selected across folders
+      </span>
+      <button
+        type="button"
+        onClick={() => openRecreate()}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-500"
+      >
+        <Sparkles className="w-4 h-4" /> Recreate {selectedAds.length}
+      </button>
+      <button type="button" onClick={() => setSelectedIds([])} className="text-sm text-violet-800 hover:text-violet-950">
+        Clear
+      </button>
+    </div>
+  ) : null;
 
   return (
     <div className="space-y-5">
@@ -310,32 +423,59 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
           <p className="text-gray-700 font-medium">Ads library is not installed yet</p>
           <p className="text-sm text-gray-500 mt-1">Run <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">supabase-migration-archive-ads.sql</code> on Supabase, then reload.</p>
         </div>
-      ) : q ? (
+      ) : (
+        <>
+          {globalRecreateBar}
+          {(q || tagFilter) ? (
         matchingAds.length === 0 ? (
           <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
             <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-            <p className="text-gray-500">No ads match “{search.trim()}”.</p>
+            <p className="text-gray-500">
+              No ads match {q ? `“${search.trim()}”` : ''}{q && tagFilter ? ' and ' : ''}{tagFilter ? `tag #${tagFilter}` : ''}.
+            </p>
+            {tagFilter && (
+              <button type="button" onClick={() => setTagFilter('')} className="mt-3 text-sm text-indigo-600 hover:underline">
+                Clear tag
+              </button>
+            )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+          <div className="space-y-3">
+            {tagFilter && (
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-800 text-xs font-semibold">
+                  <Tag className="w-3 h-3" /> #{tagFilter}
+                  <button type="button" onClick={() => setTagFilter('')} className="hover:text-indigo-950"><X className="w-3 h-3" /></button>
+                </span>
+                <span className="text-xs text-gray-400">{matchingAds.length} {matchingAds.length === 1 ? 'ad' : 'ads'}</span>
+              </div>
+            )}
+            {selectionBar(matchingAds)}
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
             {matchingAds.map((ad) => (
               <AdCard
                 key={ad.id}
                 ad={ad}
+                selected={selectedIds.includes(ad.id)}
+                onToggleSelect={() => toggleSelect(ad.id)}
                 typeOptions={typeFolderOptions}
                 categoryOptions={categoryOptionsFor(ad.ad_type)}
-                onPreview={() => setPreview(ad)}
+                onPreview={() => openRecreate([ad])}
                 onMoveType={(t) => void moveAd(ad, { ad_type: t })}
                 onMoveCategory={(c) => void moveAd(ad, { category: c })}
+                onTags={(tags) => void moveAd(ad, { tags: formatAdTags(parseAdTags(tags)) })}
+                onTagClick={setTagFilter}
                 onDelete={() => void deleteAd(ad)}
               />
             ))}
+            </div>
           </div>
         )
       ) : openType === null ? (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {typeFolderOptions.map((opt) => {
             const count = itemsInType(opt.value).length;
+            const selectedHere = itemsInType(opt.value).filter((a) => selectedIds.includes(a.id)).length;
             return (
               <button
                 key={opt.value}
@@ -349,7 +489,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                   <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                 </div>
                 <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${typeColor(opt.value)}`}>{opt.label}</span>
-                <span className="text-[11px] text-gray-400">{count === 1 ? '1 ad' : `${count} ads`}</span>
+                <span className="text-[11px] text-gray-400">
+                  {count === 1 ? '1 ad' : `${count} ads`}
+                  {selectedHere > 0 ? ` · ${selectedHere} selected` : ''}
+                </span>
               </button>
             );
           })}
@@ -389,7 +532,9 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
         (() => {
           const opt = typeFolderOptions.find((o) => o.value === openType);
           const folders = categoryFolders(openType);
-          const unfiled = adsInFolder(openType, UNFILED).length;
+          const unfiledAds = adsInFolder(openType, UNFILED);
+          const unfiled = unfiledAds.length;
+          const unfiledSelected = unfiledAds.filter((a) => selectedIds.includes(a.id)).length;
           return (
             <div className="space-y-4">
               <div className="flex items-center gap-3 flex-wrap">
@@ -403,6 +548,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
                 {folders.map((name) => {
                   const count = adsInFolder(openType, name).length;
+                  const selectedHere = adsInFolder(openType, name).filter((a) => selectedIds.includes(a.id)).length;
                   return (
                     <div key={name} className="relative group">
                       <button
@@ -416,7 +562,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                           <span className="text-3xl font-bold text-gray-800 tabular-nums">{count}</span>
                         </div>
                         <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-100 text-indigo-800">{name}</span>
-                        <span className="text-[11px] text-gray-400">{count === 1 ? '1 ad' : `${count} ads`}</span>
+                        <span className="text-[11px] text-gray-400">
+                          {count === 1 ? '1 ad' : `${count} ads`}
+                          {selectedHere > 0 ? ` · ${selectedHere} selected` : ''}
+                        </span>
                       </button>
                       <button
                         type="button"
@@ -441,7 +590,10 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                       <span className="text-3xl font-bold text-gray-800 tabular-nums">{unfiled}</span>
                     </div>
                     <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">Uncategorized</span>
-                    <span className="text-[11px] text-gray-400">{unfiled === 1 ? '1 ad' : `${unfiled} ads`}</span>
+                    <span className="text-[11px] text-gray-400">
+                      {unfiled === 1 ? '1 ad' : `${unfiled} ads`}
+                      {unfiledSelected > 0 ? ` · ${unfiledSelected} selected` : ''}
+                    </span>
                   </button>
                 )}
                 {addingCategory ? (
@@ -530,44 +682,99 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                {folderAds.map((ad) => (
-                  <AdCard
-                    key={ad.id}
-                    ad={ad}
-                    typeOptions={typeFolderOptions}
-                    categoryOptions={categoryOptionsFor(openType)}
-                    onPreview={() => setPreview(ad)}
-                    onMoveType={(t) => void moveAd(ad, { ad_type: t })}
-                    onMoveCategory={(c) => void moveAd(ad, { category: c })}
-                    onDelete={() => void deleteAd(ad)}
-                  />
-                ))}
-              </div>
+              <>
+                {selectionBar(folderAds)}
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                  {folderAds.map((ad) => (
+                    <AdCard
+                      key={ad.id}
+                      ad={ad}
+                      selected={selectedIds.includes(ad.id)}
+                      onToggleSelect={() => toggleSelect(ad.id)}
+                      typeOptions={typeFolderOptions}
+                      categoryOptions={categoryOptionsFor(openType)}
+                      onPreview={() => openRecreate([ad])}
+                      onMoveType={(t) => void moveAd(ad, { ad_type: t })}
+                      onMoveCategory={(c) => void moveAd(ad, { category: c })}
+                      onTags={(tags) => void moveAd(ad, { tags: formatAdTags(parseAdTags(tags)) })}
+                      onTagClick={setTagFilter}
+                      onDelete={() => void deleteAd(ad)}
+                    />
+                  ))}
+                </div>
+              </>
             )}
           </div>
         );
       })()}
+        </>
+      )}
 
       {preview && preview.media_type !== 'folder' && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setPreview(null)}>
-          <div className="w-full max-w-3xl bg-gray-950 rounded-2xl overflow-hidden shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => { setPreview(null); setRecreateQueue([]); }}>
+          <div className="w-full max-w-6xl max-h-[92vh] bg-gray-950 rounded-2xl overflow-hidden shadow-2xl flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
               <div>
-                <h3 className="text-white font-semibold">{preview.name}</h3>
-                <p className="text-xs text-gray-400">{humanizeAdTypeSlug(preview.ad_type)}{preview.category ? ` · ${preview.category}` : ''}</p>
+                <h3 className="text-white font-semibold">{recreated?.name || preview.name}</h3>
+                <p className="text-xs text-gray-400">
+                  {recreateQueue.length > 1
+                    ? `Queue ${recreateQueue.findIndex((a) => a.id === preview.id) + 1}/${recreateQueue.length} · images and videos run one by one`
+                    : recreated
+                      ? 'Preview — not in this Ads folder until you save it to a project'
+                      : `${humanizeAdTypeSlug(preview.ad_type)}${preview.category ? ` · ${preview.category}` : ''}`}
+                </p>
               </div>
-              <button onClick={() => setPreview(null)} className="p-1 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
+              <button onClick={() => { setPreview(null); setRecreateQueue([]); }} className="p-1 text-gray-400 hover:text-white"><X className="w-5 h-5" /></button>
             </div>
-            <div className="bg-black flex items-center justify-center max-h-[70vh]">
-              {preview.media_type === 'video' ? (
-                <video src={getUploadUrl(preview.file_path)} controls autoPlay className="max-h-[70vh] w-full" />
-              ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[70vh] w-full object-contain" />
-              )}
+            <div className="flex-1 min-h-0 overflow-y-auto flex flex-col lg:flex-row">
+              <div className="bg-black flex items-center justify-center lg:flex-1 min-h-[40vh] min-w-0 p-3">
+                {recreated ? (
+                  <div className="flex flex-col items-center gap-3 w-full">
+                    <p className="text-[11px] uppercase tracking-wide text-violet-300">Recreated</p>
+                    {recreated.mediaType === 'video' ? (
+                      <video
+                        key={recreated.previewUrl || recreated.filePath}
+                        src={recreated.previewUrl || getUploadUrl(recreated.filePath)}
+                        controls
+                        autoPlay
+                        className="max-h-[62vh] w-full rounded-lg bg-black ring-1 ring-violet-400/40"
+                      />
+                    ) : (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        key={recreated.previewUrl || recreated.filePath}
+                        src={recreated.previewUrl || getUploadUrl(recreated.filePath)}
+                        alt={recreated.name}
+                        className="max-h-[62vh] w-full object-contain rounded-lg bg-black ring-1 ring-violet-400/40"
+                      />
+                    )}
+                    <details className="w-full max-w-xs">
+                      <summary className="text-[11px] text-gray-400 cursor-pointer text-center">Show original</summary>
+                      {preview.media_type === 'video' ? (
+                        <video src={getUploadUrl(preview.file_path)} controls className="mt-2 max-h-40 w-full rounded-md opacity-80" />
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="mt-2 max-h-40 w-full object-contain rounded-md opacity-80" />
+                      )}
+                    </details>
+                  </div>
+                ) : preview.media_type === 'video' ? (
+                  <video src={getUploadUrl(preview.file_path)} controls autoPlay className="max-h-[70vh] w-full" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={getUploadUrl(preview.file_path)} alt={preview.name} className="max-h-[70vh] w-full object-contain" />
+                )}
+              </div>
+              <AdsRecreatePanel
+                ads={recreateQueue.length > 0 ? recreateQueue : [preview]}
+                onResult={setRecreated}
+                onActiveAd={(ad) => {
+                  const next = items.find((a) => a.id === ad.id);
+                  if (next) setPreview(next);
+                }}
+              />
             </div>
-            <div className="px-4 py-3 flex items-center justify-end gap-2">
+            <div className="px-4 py-3 flex items-center justify-end gap-2 border-t border-white/10">
               <button
                 onClick={() => void deleteAd(preview)}
                 className="px-3 py-1.5 text-sm text-red-400 hover:text-red-300"
@@ -575,7 +782,11 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 Delete
               </button>
               <a
-                href={getUploadUrl(preview.file_path) + (getUploadUrl(preview.file_path).includes('?') ? '&' : '?') + 'download=1'}
+                href={
+                  recreated?.filePath
+                    ? downloadHref(recreated.filePath)
+                    : (recreated?.previewUrl || downloadHref(preview.file_path))
+                }
                 className="px-3 py-1.5 bg-white text-gray-900 rounded-lg text-sm font-medium"
               >
                 Download
@@ -590,24 +801,46 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
 
 function AdCard({
   ad,
+  selected,
+  onToggleSelect,
   typeOptions,
   categoryOptions,
   onPreview,
   onMoveType,
   onMoveCategory,
+  onTags,
+  onTagClick,
   onDelete,
 }: {
   ad: ArchiveAd;
+  selected?: boolean;
+  onToggleSelect?: () => void;
   typeOptions: AdTypeOption[];
   categoryOptions: { value: string; label: string }[];
   onPreview: () => void;
   onMoveType: (adType: string) => void;
   onMoveCategory: (category: string) => void;
+  onTags: (tags: string) => void;
+  onTagClick: (tag: string) => void;
   onDelete: () => void;
 }) {
   const src = getUploadUrl(ad.file_path);
+  const chips = parseAdTags(ad.tags);
+  const [tagDraft, setTagDraft] = useState(ad.tags);
+  useEffect(() => { setTagDraft(ad.tags); }, [ad.tags]);
   return (
-    <div className="group bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden hover:border-indigo-300 hover:shadow-md transition-all">
+    <div className={`group bg-white rounded-xl border shadow-sm overflow-hidden hover:border-indigo-300 hover:shadow-md transition-all ${selected ? 'border-indigo-500 ring-2 ring-indigo-200' : 'border-gray-200'}`}>
+      <div className="relative">
+        {onToggleSelect && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
+            className={`absolute top-2 left-2 z-10 w-8 h-8 rounded-md flex items-center justify-center shadow-sm ${selected ? 'bg-indigo-600 text-white' : 'bg-white/90 text-gray-500 hover:bg-white'}`}
+            title={selected ? 'Deselect' : 'Select'}
+          >
+            {selected ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
+          </button>
+        )}
       <button type="button" onClick={onPreview} className="relative block w-full aspect-[4/5] bg-gray-100">
         {ad.media_type === 'video' ? (
           <>
@@ -623,8 +856,40 @@ function AdCard({
           <img src={src} alt={ad.name} className="w-full h-full object-cover" />
         )}
       </button>
+      </div>
       <div className="p-2.5 space-y-1.5">
         <p className="text-sm font-medium text-gray-900 truncate" title={ad.name}>{ad.name}</p>
+        {chips.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {chips.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                onClick={() => onTagClick(tag)}
+                className="px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-medium hover:bg-indigo-100"
+              >
+                #{tag}
+              </button>
+            ))}
+          </div>
+        )}
+        <input
+          value={tagDraft}
+          onChange={(e) => setTagDraft(e.target.value)}
+          onBlur={() => {
+            const next = formatAdTags(parseAdTags(tagDraft));
+            setTagDraft(next);
+            if (next !== formatAdTags(parseAdTags(ad.tags))) onTags(next);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          placeholder="Tags: hook, ugc…"
+          className="w-full px-2 py-1.5 border border-gray-200 rounded-lg text-[11px] bg-white text-gray-700 focus:ring-2 focus:ring-indigo-500 outline-none"
+        />
         <select
           value={ad.ad_type}
           onChange={(e) => onMoveType(e.target.value)}

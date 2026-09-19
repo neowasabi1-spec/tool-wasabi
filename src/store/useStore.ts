@@ -235,6 +235,9 @@ interface AppFunnelPage {
     price: string | null;
     benefits: string[];
   };
+  /** Master-only: who created this Clone/Swipe step. */
+  ownerUserId?: string | null;
+  ownerEmail?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -543,6 +546,14 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
     analysisStatus: p.analysis_status || undefined,
     analysisResult: p.analysis_result || undefined,
     extractedData: p.extracted_data as AppFunnelPage['extractedData'],
+    ownerUserId:
+      typeof (p as { owner_user_id?: unknown }).owner_user_id === 'string'
+        ? (p as { owner_user_id: string }).owner_user_id
+        : null,
+    ownerEmail:
+      typeof (p as { owner_email?: unknown }).owner_email === 'string'
+        ? (p as { owner_email: string }).owner_email
+        : null,
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };
@@ -1469,7 +1480,10 @@ export const useStore = create<Store>()((set, get) => ({
       // Supabase query so the rest of the app keeps working â€” RLS will
       // still scope rows to the caller, so this is a strict superset.
       try {
-        const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
+        const res = await authFetch('/api/valchiria/funnels', {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(25_000),
+        });
         const raw = await res.text();
         let json: { success?: boolean; funnels?: unknown; error?: string } | null = null;
         try {
@@ -1500,31 +1514,18 @@ export const useStore = create<Store>()((set, get) => ({
         }`;
         console.warn('[loadArchivedFunnels]', apiReason);
       }
-      // Direct Supabase fallback â€” RLS scopes rows; for the master this
-      // returns everything via `is_master(auth.uid())`.
-      try {
-        const data = await supabaseOps.fetchArchivedFunnels();
-        set({
-          archivedFunnels: data,
-          archivedFunnelsLoaded: true,
-          archivedFunnelsLoading: false,
-          archivedFunnelsError: null,
-        });
-      } catch (fallbackErr) {
-        const fallbackReason =
-          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-        const kept = get().archivedFunnels || [];
-        if (kept.length > 0) {
-          set({ archivedFunnelsLoading: false });
-          return;
-        }
-        set({
-          archivedFunnels: kept,
-          archivedFunnelsLoaded: false,
-          archivedFunnelsLoading: false,
-          archivedFunnelsError: `${apiReason || 'API failed'}. Fallback also failed: ${fallbackReason}`,
-        });
+      const kept = get().archivedFunnels || [];
+      const keptHasSteps = kept.some((f) => Array.isArray(f.steps) && f.steps.length > 0);
+      if (keptHasSteps) {
+        set({ archivedFunnelsLoading: false });
+        return;
       }
+      set({
+        archivedFunnels: kept,
+        archivedFunnelsLoaded: false,
+        archivedFunnelsLoading: false,
+        archivedFunnelsError: apiReason || 'Could not load page templates',
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Error loading archived funnels:', error);
