@@ -46,20 +46,35 @@ export default async (req: Request) => {
   const srcFile = path.join(workDir, 'src.mp4');
   let shotsCount = 0;
   const subtitled: number[] = [];
+  const newShotIds: number[] = [];
   try {
-    const { data: ad } = await supabase
+    let { data: ad, error: adErr } = await supabase
       .from('competitor_ads')
-      .select('id, file_path, media_type')
+      .select('id, file_path, media_type, clean_full_path')
       .eq('id', adId)
       .maybeSingle();
+    if (adErr && /clean_full_path/i.test(adErr.message || '')) {
+      ({ data: ad } = await supabase
+        .from('competitor_ads')
+        .select('id, file_path, media_type')
+        .eq('id', adId)
+        .maybeSingle());
+    }
     if (!ad) throw new Error('ad not found');
     if (ad.media_type !== 'video') throw new Error('ad is not a video');
-    if (!ad.file_path) throw new Error('ad has no file_path');
+    const cleanFull = typeof (ad as { clean_full_path?: string }).clean_full_path === 'string'
+      ? String((ad as { clean_full_path?: string }).clean_full_path).trim()
+      : '';
+    const srcPath = cleanFull || ad.file_path;
+    if (!srcPath) throw new Error('ad has no file_path');
+    // One Replicate pass on the full video is enough: new shots inherit the
+    // cleaned pixels, so we skip per-clip inpaint (that's the expensive part).
+    const fromClean = !!cleanFull;
 
-    await downloadSource(supabase, ad.file_path, srcFile);
+    await downloadSource(supabase, srcPath, srcFile);
     const info = await ffprobeInfo(srcFile);
     if (!info.duration) throw new Error('could not read video duration');
-    log(`duration ${info.duration.toFixed(1)}s ${info.width}x${info.height}`);
+    log(`duration ${info.duration.toFixed(1)}s ${info.width}x${info.height}${fromClean ? ' · from cleaned full video' : ''}`);
 
     const cuts = await detectScenes(srcFile);
     const planned = await planShotsFromVideo(srcFile, info.duration, cuts, workDir);
@@ -131,7 +146,7 @@ export default async (req: Request) => {
         duration_sec: +(end - start).toFixed(2),
         width: info.width,
         height: info.height,
-        has_text: vision.hasText,
+        has_text: fromClean ? false : vision.hasText,
         text_score: vision.score,
         text_region: vision.region,
         label: label || null,
@@ -162,12 +177,50 @@ export default async (req: Request) => {
       if (insErr) log(`shot ${i} insert failed: ${insErr.message}`);
       else {
         shotsCount++;
-        if (vision.hasText && ins?.id) subtitled.push(ins.id as number);
+        if (ins?.id) newShotIds.push(ins.id as number);
+        if (!fromClean && vision.hasText && ins?.id) subtitled.push(ins.id as number);
+      }
+    }
+
+    if (newShotIds.length) {
+      const prevQ = await supabase
+        .from('competitor_shots')
+        .select('id, file_path, thumb_path, clean_path')
+        .eq('ad_id', adId)
+        .eq('project_id', projectId);
+      let prev = prevQ.data;
+      if (prevQ.error && /clean_path/i.test(prevQ.error.message || '')) {
+        const retry = await supabase
+          .from('competitor_shots')
+          .select('id, file_path, thumb_path')
+          .eq('ad_id', adId)
+          .eq('project_id', projectId);
+        prev = retry.data;
+      }
+      const keep = new Set(newShotIds);
+      const stale = (prev || []).filter((s) => !keep.has(s.id as number));
+      if (stale.length) {
+        const files = stale.flatMap((s) =>
+          [s.file_path, s.thumb_path, (s as { clean_path?: string }).clean_path]
+            .filter((p): p is string => !!p && !/^https?:\/\//i.test(p)),
+        );
+        if (files.length) {
+          await supabase.storage.from('project-files').remove(files).catch(() => {});
+        }
+        await supabase
+          .from('competitor_shots')
+          .delete()
+          .eq('ad_id', adId)
+          .eq('project_id', projectId)
+          .not('id', 'in', `(${newShotIds.join(',')})`);
+        log(`replaced ${stale.length} previous shots`);
       }
     }
 
     // Burned-in subtitles lock a shot out of builds, so clean them right away
     // instead of waiting for someone to press "Remove subs".
+    // Already-cleaned full videos skip this — cutting them again must not
+    // re-bill Replicate per clip.
     if (subtitled.length) {
       const queued = await autoCleanShots(supabase, selfOrigin(req.url), projectId, subtitled);
       log(queued

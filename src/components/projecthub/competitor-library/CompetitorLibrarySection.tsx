@@ -1370,7 +1370,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Real footage shots</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                AI watches the action, describes each scene (what happens, how many people, setting) and cuts when the action changes — not every 2 seconds. Audio is removed so you can reuse the footage.
+                AI watches the action, describes each scene and cuts when it changes. If this video was already cleaned, Re-split cuts from the <b>clean file</b> — no extra Replicate per clip.
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -3334,6 +3334,7 @@ function ShotsLibraryView({
   const [playing, setPlaying] = useState<Shot | null>(null);
   // Compose a brand-new video from these shots + your own copy.
   const [showCreate, setShowCreate] = useState(false);
+  const [recutting, setRecutting] = useState(false);
 
   const load = async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -3373,8 +3374,34 @@ function ShotsLibraryView({
     catch { toast({ title: "Delete failed", variant: "destructive" }); }
   };
 
-  // Kick AI inpainting for one shot or all subtitled shots. `force` re-cleans
-  // shots that already have a cleaned copy (e.g. to retry with a better model).
+  const recutFromCleaned = async () => {
+    setRecutting(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/recut-clean`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: j.error || "Could not recut", variant: "destructive" });
+        return;
+      }
+      if (!j.queued) {
+        toast({
+          title: "Nothing to recut yet",
+          description: j.message || "Clean each competitor video once (Remove subtitles on the full video), then recut from those files.",
+        });
+        return;
+      }
+      toast({
+        title: `Recutting ${j.queued} cleaned video${j.queued === 1 ? "" : "s"}`,
+        description: "Cuts new shots from the already-cleaned file. No extra Replicate per clip.",
+      });
+      void load(true);
+    } catch {
+      toast({ title: "Could not recut", variant: "destructive" });
+    } finally {
+      setRecutting(false);
+    }
+  };
+
   const inpaint = async (shotId?: number, force = false) => {
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/inpaint`, {
@@ -3515,6 +3542,17 @@ function ShotsLibraryView({
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void recutFromCleaned()}
+            disabled={recutting}
+            title="Re-cut shots from videos that already had subtitles removed. ffmpeg + scene labels only — no Replicate per clip."
+            className="gap-1.5 h-8">
+            {recutting
+              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Recutting…</>
+              : <><Scissors className="w-3.5 h-3.5" /> Re-cut from cleaned videos</>}
+          </Button>
           <Button
             size="sm"
             onClick={() => setShowCreate(true)}
