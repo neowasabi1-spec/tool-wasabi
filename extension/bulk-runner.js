@@ -107,6 +107,7 @@ async function run() {
         wantMobile: !!start.wantMobile,
       });
       if (r && r.tabId) tabId = r.tabId;
+      if (stopRequested || (r && r.error === 'Stopped')) break;
       if (!r || !r.ok) throw new Error((r && r.error) || 'Save failed');
       if (r.skipped || r.duplicate) skippedCount += 1;
       else savedCount += 1;
@@ -120,6 +121,7 @@ async function run() {
       });
       render(st);
     } catch (e) {
+      if (stopRequested || /stopped/i.test(String((e && e.message) || e))) break;
       failedCount += 1;
       st = await patchState({
         index: index + 1,
@@ -159,10 +161,14 @@ async function run() {
   }
 }
 
-els.stop.addEventListener('click', async () => {
+els.stop.addEventListener('click', () => {
   stopRequested = true;
-  els.now.textContent = 'Stopping after this page…';
-  await send({ type: 'BULK_STOP' }).catch(() => {});
+  if (els.now) els.now.textContent = 'Stopping…';
+  if (els.phase) els.phase.textContent = 'stopping';
+  send({ type: 'BULK_STOP' }).catch(() => {});
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') els.stop && els.stop.click();
 });
 
 els.resume.addEventListener('click', () => {

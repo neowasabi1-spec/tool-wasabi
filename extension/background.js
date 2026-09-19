@@ -662,6 +662,7 @@ async function waitForChange(tabId, beforeUrl, beforeSig, timeoutMs) {
 async function waitForLoad(tabId, timeoutMs) {
   const deadline = Date.now() + (timeoutMs || 12000);
   while (Date.now() < deadline) {
+    if (bulkStopRequested && tabId === bulkLandingTabId) throw new Error('Stopped');
     let st = 'complete';
     try { st = (await chrome.tabs.get(tabId)).status || 'complete'; } catch { return; }
     if (st === 'complete') { await sleep(600); return; }
@@ -1395,6 +1396,26 @@ async function runFunnelWalk(opts) {
 const BULK_KEY = 'wasabi_bulk_import';
 const BULK_MAX = 400;
 let bulkStopRequested = false;
+let bulkLandingTabId = null;
+
+function throwIfBulkStopped() {
+  if (bulkStopRequested) throw new Error('Stopped');
+}
+
+async function abortBulkNow() {
+  bulkStopRequested = true;
+  const ids = new Set();
+  if (bulkLandingTabId) ids.add(bulkLandingTabId);
+  bulkLandingTabId = null;
+  try {
+    const st = await getBulkState();
+    if (st && st.tabId) ids.add(st.tabId);
+  } catch { /* ignore */ }
+  for (const id of ids) {
+    try { await dbgDetach(id); } catch { /* ignore */ }
+    try { await chrome.tabs.remove(id); } catch { /* ignore */ }
+  }
+}
 
 async function setBulkState(patch) {
   const cur = (await chrome.storage.local.get(BULK_KEY))[BULK_KEY] || {};
@@ -1436,6 +1457,7 @@ async function waitUntilPageReady(tabId, timeoutMs) {
   await waitForLoad(tabId, timeoutMs || 18000);
   let last = null;
   while (Date.now() < deadline) {
+    throwIfBulkStopped();
     try {
       const r = await chrome.scripting.executeScript({
         target: { tabId },
@@ -1509,6 +1531,7 @@ async function ensureLandingTab(tabId, url) {
 }
 
 async function processBulkOnePage(opts) {
+  throwIfBulkStopped();
   const url = String(opts.url || '').trim();
   if (!url) throw new Error('Missing URL');
   const token = await getValidToken();
@@ -1522,6 +1545,8 @@ async function processBulkOnePage(opts) {
 
   const tabId = await ensureLandingTab(opts.tabId, url);
   if (!tabId) throw new Error('Could not open a landing tab');
+  bulkLandingTabId = tabId;
+  throwIfBulkStopped();
 
   let current = '';
   try { current = (await chrome.tabs.get(tabId)).url || ''; } catch { /* ignore */ }
@@ -1725,8 +1750,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg.type === 'BULK_STOP') {
-    bulkStopRequested = true;
-    sendResponse({ ok: true });
+    abortBulkNow().then(() => sendResponse({ ok: true, stopped: true }));
     return true;
   }
   if (msg.type === 'BULK_RESET') {
