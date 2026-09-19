@@ -50,31 +50,20 @@ export default async (req: Request) => {
   try {
     let { data: ad, error: adErr } = await supabase
       .from('competitor_ads')
-      .select('id, file_path, media_type, clean_full_path')
+      .select('id, file_path, media_type')
       .eq('id', adId)
       .maybeSingle();
-    if (adErr && /clean_full_path/i.test(adErr.message || '')) {
-      ({ data: ad } = await supabase
-        .from('competitor_ads')
-        .select('id, file_path, media_type')
-        .eq('id', adId)
-        .maybeSingle());
+    if (adErr) {
+      log('ad lookup failed:', adErr.message);
     }
     if (!ad) throw new Error('ad not found');
     if (ad.media_type !== 'video') throw new Error('ad is not a video');
-    const cleanFull = typeof (ad as { clean_full_path?: string }).clean_full_path === 'string'
-      ? String((ad as { clean_full_path?: string }).clean_full_path).trim()
-      : '';
-    const srcPath = cleanFull || ad.file_path;
-    if (!srcPath) throw new Error('ad has no file_path');
-    // One Replicate pass on the full video is enough: new shots inherit the
-    // cleaned pixels, so we skip per-clip inpaint (that's the expensive part).
-    const fromClean = !!cleanFull;
+    if (!ad.file_path) throw new Error('ad has no file_path');
 
-    await downloadSource(supabase, srcPath, srcFile);
+    await downloadSource(supabase, ad.file_path, srcFile);
     const info = await ffprobeInfo(srcFile);
     if (!info.duration) throw new Error('could not read video duration');
-    log(`duration ${info.duration.toFixed(1)}s ${info.width}x${info.height}${fromClean ? ' · from cleaned full video' : ''}`);
+    log(`duration ${info.duration.toFixed(1)}s ${info.width}x${info.height}`);
 
     const cuts = await detectScenes(srcFile);
     const planned = await planShotsFromVideo(srcFile, info.duration, cuts, workDir);
@@ -146,7 +135,7 @@ export default async (req: Request) => {
         duration_sec: +(end - start).toFixed(2),
         width: info.width,
         height: info.height,
-        has_text: fromClean ? false : vision.hasText,
+        has_text: vision.hasText,
         text_score: vision.score,
         text_region: vision.region,
         label: label || null,
@@ -178,7 +167,7 @@ export default async (req: Request) => {
       else {
         shotsCount++;
         if (ins?.id) newShotIds.push(ins.id as number);
-        if (!fromClean && vision.hasText && ins?.id) subtitled.push(ins.id as number);
+        if (vision.hasText && ins?.id) subtitled.push(ins.id as number);
       }
     }
 
@@ -219,8 +208,6 @@ export default async (req: Request) => {
 
     // Burned-in subtitles lock a shot out of builds, so clean them right away
     // instead of waiting for someone to press "Remove subs".
-    // Already-cleaned full videos skip this — cutting them again must not
-    // re-bill Replicate per clip.
     if (subtitled.length) {
       const queued = await autoCleanShots(supabase, selfOrigin(req.url), projectId, subtitled);
       log(queued

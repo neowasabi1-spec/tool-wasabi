@@ -884,14 +884,21 @@ export async function buildSceneVisual(
 
 /** Base URL to reach our own background functions from inside a function. */
 export function selfOrigin(reqUrl?: string): string {
+  // Prefer the public site URL. Background functions often arrive with an
+  // internal origin; chaining inpaint off that URL silently never starts.
   let fromReq = '';
   try { fromReq = reqUrl ? new URL(reqUrl).origin : ''; } catch { /* not a URL */ }
-  const raw =
-    fromReq ||
+  const publicUrl =
     process.env.URL ||
-    process.env.DEPLOY_URL ||
     process.env.DEPLOY_PRIME_URL ||
-    'http://localhost:8888';
+    process.env.DEPLOY_URL ||
+    process.env.SITE_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    '';
+  const lookInternal = (u: string) =>
+    !u || /localhost|127\.0\.0\.1|::1|0\.0\.0\.0|\[::\]|:8081|:8888/i.test(u)
+    || /^https?:\/\/\d+\.\d+\.\d+\.\d+/i.test(u);
+  const raw = (!lookInternal(publicUrl) && publicUrl) || (!lookInternal(fromReq) && fromReq) || publicUrl || fromReq || 'http://localhost:8888';
   return raw.replace(/\/$/, '');
 }
 
