@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Wasabi bulk import</title>
+    <link rel="stylesheet" href="popup.css" />
+    <style>
+      body { width: auto; min-width: 380px; padding: 0 0 16px; }
+      .wrap { padding: 14px 16px; }
+      h1 { font-size: 15px; margin: 0 0 6px; }
+      .bar { height: 8px; background: #262b36; border-radius: 99px; overflow: hidden; margin: 12px 0 8px; }
+      .bar > i { display: block; height: 100%; width: 0; background: #7bc043; }
+      .nums { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; margin: 8px 0 12px; }
+      .nums b { color: #e7e9ee; }
+      .now { font-size: 12px; word-break: break-all; min-height: 2.4em; }
+      .row { display: flex; gap: 8px; margin-top: 14px; }
+      button { flex: 1; border: 0; border-radius: 8px; padding: 10px 12px; font-weight: 700; cursor: pointer; }
+      #stop { background: #2a1b1b; color: #ff6b6b; }
+      #resume { background: #7bc043; color: #0f1115; display: none; }
+    </style>
+  </head>
+  <body>
+    <header class="hdr">
+      <div class="brand"><span class="dot"></span><span>Bulk import</span></div>
+      <div id="phase" class="auth muted">starting…</div>
+    </header>
+    <div class="wrap">
+      <h1>Keep this window open</h1>
+      <p class="muted" style="margin:0;font-size:12px">Chrome kills the extension after a few minutes. This window is what actually walks all 400 pages.</p>
+      <div class="bar"><i id="fill"></i></div>
+      <div class="nums">
+        <span>Saved <b id="saved">0</b></span>
+        <span>Already in archive <b id="skipped">0</b></span>
+        <span>Failed <b id="failed">0</b></span>
+        <span>Left <b id="left">0</b></span>
+      </div>
+      <div class="now muted" id="now">Preparing…</div>
+      <div class="row">
+        <button type="button" id="stop">Stop</button>
+        <button type="button" id="resume">Resume</button>
+      </div>
+    </div>
+    <script src="bulk-runner.js"></script>
+  </body>
+</html>

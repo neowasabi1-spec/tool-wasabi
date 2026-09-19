@@ -43,9 +43,10 @@ Don't save one advertorial at a time. On an AdSpends (or similar) list:
 2. Click the **Wasabi Saver** icon — Bulk turns on and **Scan** collects the
    landing URLs from the cards (or click Scan yourself / paste URLs).
 3. Pick **Type** (Advertorial, Landing, …) and Category.
-4. Click **Save N pages**. A hidden tab opens each URL, saves HTML + screenshots
-   into the archive, then moves on. The list tab stays open. You can close the
-   popup; reopen it to see progress.
+4. Click **Save N pages**. A small **importer window** opens and walks each
+   URL (HTML + screenshots). **Leave that window open** until it says Done —
+   Chrome otherwise kills the job after a few minutes (~80 pages). You can
+   close the popup; use **Resume remaining pages** if it stops.
 
 Cap is 400 URLs per run. Scan scrolls the open list; it cannot see AdSpends pages that were never loaded. Duplicates already in the archive are skipped.
 

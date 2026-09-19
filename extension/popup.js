@@ -31,6 +31,7 @@ const els = {
   bulkScan: $('bulkScan'),
   bulkUrls: $('bulkUrls'),
   bulkCount: $('bulkCount'),
+  bulkResume: $('bulkResume'),
   save: $('save'),
   status: $('status'),
 };
@@ -857,23 +858,40 @@ function stopBulkPoll() {
   if (bulkPollTimer) { clearInterval(bulkPollTimer); bulkPollTimer = null; }
 }
 
+function bulkProgressLine(st) {
+  const total = Number(st.total) || (st.urls || []).length || 0;
+  const saved = Number(st.savedCount) || 0;
+  const skipped = Number(st.skippedCount) || 0;
+  const failed = Number(st.failedCount) || 0;
+  const left = Math.max(0, total - (Number(st.index) || 0));
+  return `${saved} saved · ${skipped} already in archive · ${failed} failed · ${left} left`;
+}
+
 async function refreshBulkStatusOnce() {
   const r = await sendMessage({ type: 'BULK_STATUS' });
   const st = r && r.state;
+  if (els.bulkResume) els.bulkResume.classList.add('hidden');
   if (!st) {
-    if (r && r.running) {
-      setStatus('<span class="spinner"></span>Starting…');
-      return;
-    }
     stopBulkPoll();
     if (els.save) els.save.disabled = false;
     syncBulkUi();
     return;
   }
-  if (!st.done && !(r && r.running) && st.updatedAt && Date.now() - st.updatedAt > 60000) {
+  const inProgress = !st.done && (st.running || r.running);
+  if (inProgress) {
+    if (els.save) {
+      els.save.disabled = true;
+      els.save.textContent = 'Importing…';
+    }
+    setStatus(`<span class="spinner"></span>${st.status || 'Importing…'}<br>${bulkProgressLine(st)}`);
+    return;
+  }
+  if (!st.done && st.urls && st.urls.length && (Number(st.index) || 0) < st.urls.length) {
     stopBulkPoll();
     if (els.save) els.save.disabled = false;
-    setStatus(`Import interrupted at ${st.savedCount || 0}/${st.total || '?'}. Reopen Save to retry remaining URLs.`, 'err');
+    if (els.bulkResume) els.bulkResume.classList.remove('hidden');
+    setStatus(`${st.status || `Interrupted at ${st.savedCount || 0}/${st.total || '?'}.`} ${bulkProgressLine(st)}`, 'err');
+    syncBulkUi();
     return;
   }
   if (st.done) {
@@ -883,7 +901,7 @@ async function refreshBulkStatusOnce() {
     const link = st.projectId
       ? ` &nbsp;<a href="${TOOL}/projects/${st.projectId}" target="_blank">open project</a>`
       : ` &nbsp;<a href="${TOOL}" target="_blank">open archive</a>`;
-    setStatus(`${st.status || 'Done'}${st.savedCount ? link : ''}`, cls);
+    setStatus(`${st.status || 'Done'} · ${bulkProgressLine(st)}${st.savedCount ? link : ''}`, cls);
     await sendMessage({ type: 'BULK_RESET' });
     syncBulkUi();
   } else {
@@ -911,7 +929,7 @@ async function startBackgroundBulk(projectId) {
   const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
   const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
   const { pageType, pageTypeLabel } = resolveSavePageType();
-  setStatus(`<span class="spinner"></span>Starting ${urls.length} pages… a window will open each landing.`);
+  setStatus(`<span class="spinner"></span>Starting ${urls.length} pages… keep the importer window open until it says Done.`);
   if (els.save) {
     els.save.disabled = true;
     els.save.textContent = 'Importing…';
@@ -941,14 +959,40 @@ async function resumeBulkIfRunning() {
   try {
     const r = await sendMessage({ type: 'BULK_STATUS' });
     const st = r && r.state;
-    if (st && st.running && !st.done) {
+    if (!st) return;
+    if (st.done) {
+      await sendMessage({ type: 'BULK_RESET' });
+      return;
+    }
+    if (st.running || r.running) {
       if (els.bulkMode) els.bulkMode.checked = true;
       syncBulkUi();
       startBulkPoll();
-    } else if (st && st.done) {
-      await sendMessage({ type: 'BULK_RESET' });
+      return;
+    }
+    if (st.urls && st.urls.length && (Number(st.index) || 0) < st.urls.length) {
+      if (els.bulkMode) els.bulkMode.checked = true;
+      syncBulkUi();
+      if (els.bulkResume) els.bulkResume.classList.remove('hidden');
+      setStatus(`${st.status || 'Import paused.'} ${bulkProgressLine(st)}`, 'err');
     }
   } catch { /* ignore */ }
+}
+
+async function resumeBackgroundBulk() {
+  if (els.bulkMode) els.bulkMode.checked = true;
+  syncBulkUi();
+  if (els.save) {
+    els.save.disabled = true;
+    els.save.textContent = 'Importing…';
+  }
+  const r = await sendMessage({ type: 'BULK_RESUME' });
+  if (!r || !r.ok) {
+    setStatus((r && r.error) || 'Could not resume bulk import.', 'err');
+    if (els.save) els.save.disabled = false;
+    return;
+  }
+  startBulkPoll();
 }
 
 els.save.addEventListener('click', onSave);
@@ -968,6 +1012,7 @@ if (els.funnelMode) {
   });
 }
 if (els.bulkScan) els.bulkScan.addEventListener('click', (e) => { e.preventDefault(); scanListingUrls(); });
+if (els.bulkResume) els.bulkResume.addEventListener('click', (e) => { e.preventDefault(); resumeBackgroundBulk(); });
 if (els.bulkUrls) els.bulkUrls.addEventListener('input', updateBulkCount);
 if (els.addTypeBtn) {
   els.addTypeBtn.addEventListener('click', (e) => {

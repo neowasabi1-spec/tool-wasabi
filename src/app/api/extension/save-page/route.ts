@@ -66,6 +66,7 @@ interface SaveBody {
   category?: string;
   tags?: string[];
   projectId?: string | null; // when set, link the page to a project's Competitor Landings
+  skipDuplicateScan?: boolean;
   // Funnel-walk mode: instead of one single-step row per page, all the steps of
   // a walked funnel go into ONE `archived_funnels` row (the "folder"). The first
   // step creates the folder and returns its `funnelId`; every next step passes
@@ -192,7 +193,9 @@ export async function POST(req: NextRequest) {
     if (allowed) projectId = requestedProjectId;
   }
 
-  const alreadySaved = await findSavedArchivePage(userId, url, projectId);
+  const alreadySaved = body.skipDuplicateScan
+    ? null
+    : await findSavedArchivePage(userId, url, projectId);
   if (alreadySaved && !body.funnelGroup) {
     return NextResponse.json({
       success: true,
