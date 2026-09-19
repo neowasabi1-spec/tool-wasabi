@@ -8,6 +8,8 @@ import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-t
 import { resolvePageType, upsertArchivePageType } from '@/lib/archive-page-types';
 import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl } from '@/lib/archive-placement';
 import { extractLandingMediaFromHtml } from '@/lib/landing-media';
+import { inferPageTags } from '@/lib/page-niche-tags';
+import { inferPageGeo } from '@/lib/page-geo';
 
 async function saveLandingMedia(
   projectId: string | null,
@@ -146,9 +148,19 @@ export async function POST(req: NextRequest) {
         return 'Saved page';
       }
     })();
-  const tags = Array.isArray(body.tags)
-    ? body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 30)
+  const extraTags = Array.isArray(body.tags)
+    ? body.tags.map((t) => String(t).trim()).filter(Boolean)
     : [];
+  let knownTags: string[] = [];
+  try {
+    const { data: cats } = await supabaseAdmin
+      .from('archive_categories')
+      .select('name')
+      .eq('owner_user_id', userId);
+    knownTags = (cats || []).map((c) => String(c.name || '').trim()).filter(Boolean);
+  } catch {
+    /* table may not exist */
+  }
 
   const requestedType = String(body.pageType || body.folderId || '').trim();
   const resolvedType = resolvePageType(requestedType || 'landing', body.pageTypeLabel);
@@ -187,6 +199,14 @@ export async function POST(req: NextRequest) {
     /* keep raw html on failure */
   }
 
+  const tags = inferPageTags({
+    title: `${name} ${title}`,
+    html,
+    extra: extraTags,
+    known: knownTags,
+  });
+  const { geo, lang } = inferPageGeo({ url, html, title: `${name} ${title}` });
+
   const clonedData: Record<string, unknown> = {
     html,
     title,
@@ -195,6 +215,8 @@ export async function POST(req: NextRequest) {
     cloned_at: new Date().toISOString(),
     category,
     tags,
+    geo,
+    lang,
   };
 
   // ── Funnel-walk mode: one folder row, many steps ──────────────────────────

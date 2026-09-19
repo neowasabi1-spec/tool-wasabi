@@ -6,7 +6,7 @@ import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
 import { BUILT_IN_PAGE_TYPE_OPTIONS, PAGE_TYPE_CATEGORIES, PageType, PageTypeOption, TemplateCategory, TEMPLATE_CATEGORY_OPTIONS, TemplateViewFormat, TEMPLATE_VIEW_FORMAT_OPTIONS, LIBRARY_TEMPLATES, normalizeArchiveType, humanizePageTypeSlug } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
-import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Upload, Link2, Megaphone } from 'lucide-react';
+import { Plus, Trash2, Edit2, Save, X, FileCode, ExternalLink, Tag, Filter, Eye, EyeOff, Maximize2, Layers, HelpCircle, FolderPlus, Settings, Monitor, Smartphone, BookOpen, ChevronDown, ChevronRight, ChevronLeft, FolderOpen, Archive, CheckSquare, Square, Package, Sparkles, Send, Loader2, MessageCircle, Search, Download, Swords, Lock, Upload, Link2, Megaphone, Globe } from 'lucide-react';
 import CachedScreenshot from '@/components/CachedScreenshot';
 import QuizArchiveView from './QuizArchiveView';
 import AdsArchiveView from './AdsArchiveView';
@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
 import { countProductsFromSteps, dedupeStepsByUrl, isStandaloneTemplatePage } from '@/lib/archive-placement';
 import { emitLiveRefresh } from '@/lib/live-refresh';
+import { flagEmoji, geoLabel, geoMatchesSearch, resolvePageGeo, sortGeos } from '@/lib/page-geo';
 
 interface SelectedPage {
   name: string;
@@ -395,6 +396,9 @@ type ClonedShots = {
   screenshotDesktopUrl?: string | null;
   screenshotMobileUrl?: string | null;
   category?: string;
+  tags?: string[];
+  geo?: string;
+  lang?: string;
 };
 
 function cardShotUrl(cd?: ClonedShots | null): string | null {
@@ -408,6 +412,8 @@ type TypeFolderPage = {
   url_to_swipe: string;
   prompt: string;
   category: string;
+  tags: string[];
+  geo: string;
   savedHtml: string | null;
   savedHtmlUrl: string | null;
   screenshotUrl: string | null;
@@ -460,6 +466,14 @@ function TypeFolderPageCard({
             ? <CheckSquare className="w-5 h-5 text-green-600" />
             : <Square className="w-5 h-5 text-gray-400" />}
         </button>
+        {page.geo && (
+          <span
+            className="absolute top-2 right-2 z-10 px-1.5 py-0.5 rounded-md bg-white/95 shadow text-[11px] font-semibold text-gray-800 tabular-nums"
+            title={geoLabel(page.geo)}
+          >
+            {flagEmoji(page.geo)} {page.geo}
+          </span>
+        )}
         <div className="absolute inset-x-0 bottom-0 z-10 flex items-center justify-end gap-2 p-2 bg-gradient-to-t from-black/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none [&>button]:pointer-events-auto">
           {(page.savedHtml || page.savedHtmlUrl || page.url_to_swipe) && (
             <button
@@ -491,6 +505,15 @@ function TypeFolderPageCard({
       <div className="p-3">
         <p className="font-semibold text-sm text-gray-900 truncate">{page.name}</p>
         {page.category && <p className="text-[10px] text-indigo-500 truncate">{page.category}</p>}
+        {page.tags && page.tags.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {page.tags.slice(0, 4).map((tag) => (
+              <span key={tag} className="px-1.5 py-0.5 bg-slate-100 text-slate-600 text-[10px] rounded-full">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
         <p className="text-[10px] text-gray-400 truncate">from: {page.funnel_name}</p>
         <select
           value={pageType}
@@ -854,7 +877,7 @@ export default function TemplatesPage() {
   );
 
   const pagesByType = useMemo(() => {
-    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; savedHtml: string | null; savedHtmlUrl: string | null; screenshotUrl: string | null }[]> = {};
+    const map: Record<string, { funnel_name: string; funnel_id: string; name: string; url_to_swipe: string; prompt: string; template_name: string; product_name: string; swipe_status: string; category: string; tags: string[]; geo: string; savedHtml: string | null; savedHtmlUrl: string | null; screenshotUrl: string | null }[]> = {};
     const all = archivedFunnels || [];
     all.forEach((f: ArchivedFunnel) => {
       if (!isStandaloneTemplatePage(f, all)) return;
@@ -872,6 +895,13 @@ export default function TemplatesPage() {
           product_name: s.product_name || '',
           swipe_status: s.swipe_status || '',
           category: s.category || s.cloned_data?.category || '',
+          tags: Array.isArray(s.cloned_data?.tags) ? s.cloned_data.tags.map(String).filter(Boolean) : [],
+          geo: resolvePageGeo({
+            geo: s.cloned_data?.geo,
+            url: s.url_to_swipe,
+            html: s.cloned_data?.html,
+            title: `${s.name || ''} ${f.name || ''}`,
+          }),
           savedHtml: s.swiped_data?.html || s.cloned_data?.html || null,
           savedHtmlUrl: s.swiped_data?.htmlUrl || s.cloned_data?.htmlUrl || null,
           screenshotUrl: cardShotUrl(s.cloned_data),
@@ -1104,6 +1134,7 @@ export default function TemplatesPage() {
   // Archive categories (niches) — user-defined, orthogonal to page type.
   const [archiveCategories, setArchiveCategories] = useState<string[]>([]);
   const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedGeo, setSelectedGeo] = useState('');
   const [addingCategory, setAddingCategory] = useState(false);
   const [newCategory, setNewCategory] = useState('');
   const [addingType, setAddingType] = useState(false);
@@ -1309,12 +1340,34 @@ export default function TemplatesPage() {
         p.name.toLowerCase().includes(q) ||
         p.funnel_name.toLowerCase().includes(q) ||
         (p.category || '').toLowerCase().includes(q) ||
+        (p.tags || []).some((t) => t.toLowerCase().includes(q)) ||
+        geoMatchesSearch(p.geo, q) ||
         getPageTypeLabel(type).toLowerCase().includes(q)
       );
       if (filtered.length > 0) result[type] = filtered;
     });
     return result;
   }, [pagesByType, archiveSearch]);
+
+  const geoOptions = useMemo(() => {
+    const codes: string[] = [];
+    let unlabeled = 0;
+    for (const pages of Object.values(pagesByType)) {
+      for (const p of pages) {
+        if (p.geo) codes.push(p.geo);
+        else unlabeled += 1;
+      }
+    }
+    return { codes: sortGeos(codes), unlabeled };
+  }, [pagesByType]);
+
+  const filterFolderPages = (pages: { category: string; geo: string }[]) =>
+    pages.filter((p) => {
+      if (selectedCategory && (p.category || '') !== selectedCategory) return false;
+      if (selectedGeo === '_') return !p.geo;
+      if (selectedGeo && p.geo !== selectedGeo) return false;
+      return true;
+    });
 
   const [activeTab, setActiveTab] = useState<TemplateCategory>('standard');
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1622,7 +1675,7 @@ export default function TemplatesPage() {
                 type="text"
                 value={archiveSearch}
                 onChange={(e) => setArchiveSearch(e.target.value)}
-                placeholder={mainView === 'ads' ? 'Search ads by name or tag…' : 'Search a name across folders…'}
+                placeholder={mainView === 'ads' ? 'Search ads by name or tag…' : 'Search by name, tag or geo…'}
                 className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none"
               />
               {archiveSearch && (
@@ -2117,15 +2170,55 @@ export default function TemplatesPage() {
               )}
             </div>
 
+            {(geoOptions.codes.length > 0 || geoOptions.unlabeled > 0) && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-4 flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-2 mr-1">
+                  <Globe className="w-4 h-4 text-indigo-500" />
+                  <span className="text-sm font-semibold text-gray-700">Geo</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedGeo('')}
+                  className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors ${
+                    !selectedGeo ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  All
+                </button>
+                {geoOptions.codes.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setSelectedGeo(selectedGeo === g ? '' : g)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-semibold tabular-nums transition-colors ${
+                      selectedGeo === g ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                    title={geoLabel(g)}
+                  >
+                    {flagEmoji(g)} {g}
+                  </button>
+                ))}
+                {geoOptions.unlabeled > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedGeo(selectedGeo === '_' ? '' : '_')}
+                    className={`px-2.5 py-1 rounded-full text-xs font-semibold transition-colors ${
+                      selectedGeo === '_' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                    }`}
+                  >
+                    Unlabeled
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Folder grid, search hits across folders, or one opened folder */}
             {archiveSearch.trim() ? (
               (() => {
                 const groups = typeFolderOptions
                   .map((opt) => {
                     const allPages = filteredPagesByType[opt.value] || [];
-                    const pages = selectedCategory
-                      ? allPages.filter((p) => (p.category || '') === selectedCategory)
-                      : allPages;
+                    const pages = filterFolderPages(allPages);
                     return { opt, pages };
                   })
                   .filter((g) => g.pages.length > 0);
@@ -2212,9 +2305,7 @@ export default function TemplatesPage() {
                 {typeFolderOptions.map((opt) => {
                   const typeValue = opt.value;
                   const allPages = filteredPagesByType[typeValue] || [];
-                  const count = selectedCategory
-                    ? allPages.filter((p) => (p.category || '') === selectedCategory).length
-                    : allPages.length;
+                  const count = filterFolderPages(allPages).length;
                   const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt.category);
                   const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
                   return (
@@ -2269,9 +2360,7 @@ export default function TemplatesPage() {
             ) : (() => {
               const opt = typeFolderOptions.find((o) => o.value === openType);
               const allPages = filteredPagesByType[openType] || [];
-              const pages = selectedCategory
-                ? allPages.filter((p) => (p.category || '') === selectedCategory)
-                : allPages;
+              const pages = filterFolderPages(allPages);
               const catInfo = PAGE_TYPE_CATEGORIES.find((c) => c.value === opt?.category);
               const colorClass = catInfo?.color || 'bg-gray-100 text-gray-700';
               const selectedHere = pages.map((p) => asSelected(p, openType));
@@ -2284,6 +2373,10 @@ export default function TemplatesPage() {
                     <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${colorClass}`}>{opt?.label || openType}</span>
                     <span className="text-sm text-gray-400">{pages.length} {pages.length === 1 ? 'page' : 'pages'}</span>
                     {selectedCategory && <span className="text-xs text-indigo-500">· {selectedCategory}</span>}
+                    {selectedGeo && selectedGeo !== '_' && (
+                      <span className="text-xs text-indigo-500">· {geoLabel(selectedGeo)}</span>
+                    )}
+                    {selectedGeo === '_' && <span className="text-xs text-indigo-500">· unlabeled geo</span>}
                     <div className="ml-auto flex items-center gap-3">
                       <button
                         type="button"
@@ -2307,7 +2400,7 @@ export default function TemplatesPage() {
                   {pages.length === 0 ? (
                     <div className="bg-white rounded-xl border border-gray-200 p-12 text-center">
                       <FolderOpen className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-                      <p className="text-gray-500">No pages in this folder{selectedCategory ? ` for "${selectedCategory}"` : ''}.</p>
+                      <p className="text-gray-500">No pages in this folder{selectedCategory ? ` for "${selectedCategory}"` : ''}{selectedGeo && selectedGeo !== '_' ? ` · ${selectedGeo}` : ''}{selectedGeo === '_' ? ' · unlabeled geo' : ''}.</p>
                       <button
                         type="button"
                         onClick={() => setUploadOpen(true)}

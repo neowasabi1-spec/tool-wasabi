@@ -26,6 +26,11 @@ const els = {
   shotMobile: $('shotMobile'),
   funnelMode: $('funnelMode'),
   pageUrl: $('pageUrl'),
+  bulkMode: $('bulkMode'),
+  bulkBox: $('bulkBox'),
+  bulkScan: $('bulkScan'),
+  bulkUrls: $('bulkUrls'),
+  bulkCount: $('bulkCount'),
   save: $('save'),
   status: $('status'),
 };
@@ -112,8 +117,15 @@ async function init() {
   syncDestination();
   revealForm();
 
-  // A funnel walk runs in the background; if one is in progress, show it.
+  if (els.bulkMode && /adspend/i.test((activeTab && activeTab.url) || '')) {
+    els.bulkMode.checked = true;
+    syncBulkUi();
+    scanListingUrls();
+  }
+
+  // A funnel walk / bulk import runs in the background; if one is in progress, show it.
   resumeFunnelWalkIfRunning();
+  resumeBulkIfRunning();
 }
 
 async function loadProjects() {
@@ -188,12 +200,23 @@ async function loadFolders() {
     const data = await res.json();
     if ((data.folders || []).length) {
       els.folder.innerHTML = '';
+      const preferAdvertorial = /adspend/i.test((activeTab && activeTab.url) || '');
+      const prefer = preferAdvertorial ? 'advertorial' : 'landing';
+      let picked = false;
       for (const f of data.folders) {
         const opt = document.createElement('option');
         opt.value = f.id;
         opt.textContent = f.name;
-        if (f.id === 'landing') opt.selected = true;
+        if (!picked && f.id === prefer) {
+          opt.selected = true;
+          picked = true;
+        }
         els.folder.appendChild(opt);
+      }
+      if (!picked) {
+        for (const opt of els.folder.options) {
+          if (opt.value === 'landing') { opt.selected = true; break; }
+        }
       }
     }
     for (const t of data.tags || []) {
@@ -375,6 +398,11 @@ async function onSave() {
     // popup being closed/reopened. The popup only shows live progress.
     if (els.funnelMode.checked) {
       await startBackgroundFunnelWalk(toProject ? projectId : null);
+      return;
+    }
+
+    if (els.bulkMode && els.bulkMode.checked) {
+      await startBackgroundBulk(toProject ? projectId : null);
       return;
     }
 
@@ -636,8 +664,218 @@ async function resumeFunnelWalkIfRunning() {
   } catch { /* ignore */ }
 }
 
+// ── Bulk import (AdSpends lists, pasted URLs) ────────────────────────────────
+let bulkPollTimer = null;
+
+function parseBulkUrlsText(text) {
+  const out = [];
+  const seen = new Set();
+  for (const line of String(text || '').split(/\s+/)) {
+    const raw = line.trim();
+    if (!raw) continue;
+    let href = raw;
+    try {
+      const u = new URL(href);
+      if (!/^https?:$/i.test(u.protocol)) continue;
+      href = u.href;
+    } catch {
+      continue;
+    }
+    const key = href.replace(/\/+$/, '').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(href);
+    if (out.length >= 80) break;
+  }
+  return out;
+}
+
+function updateBulkCount() {
+  if (!els.bulkCount) return;
+  const n = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value).length;
+  els.bulkCount.textContent = n ? `${n} page${n === 1 ? '' : 's'} ready` : '';
+  if (els.bulkMode && els.bulkMode.checked && els.save && !funnelPollTimer && !bulkPollTimer) {
+    els.save.textContent = n ? `Save ${n} pages` : 'Save to Wasabi';
+  }
+}
+
+function syncBulkUi() {
+  const on = !!(els.bulkMode && els.bulkMode.checked);
+  if (els.bulkBox) els.bulkBox.classList.toggle('hidden', !on);
+  if (on && els.funnelMode) els.funnelMode.checked = false;
+  if (els.name) {
+    const row = els.name.closest && els.name.closest('.field');
+    if (row) row.classList.toggle('hidden', on);
+  }
+  if (!on && els.save && !funnelPollTimer) {
+    const toProject = els.destination && els.destination.value === 'project';
+    els.save.textContent = toProject ? 'Save to Competitor Landings' : 'Save to Wasabi';
+  }
+  updateBulkCount();
+}
+
+// Runs inside the listing page (AdSpends cards, iframes, outbound links).
+function collectListingUrlsInPage() {
+  const SKIP = /adspends|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|twitter\.com|x\.com|linkedin\.com|pinterest\.com|google\.|doubleclick|googletagmanager|gstatic\.com|cloudflare|jsdelivr|unpkg\.com|stripe\.com|paypal\.com|whatsapp|telegram|gravatar|chrome-extension/i;
+  const unwrap = (href) => {
+    try {
+      const u = new URL(href, location.href);
+      for (const k of ['url', 'u', 'target', 'redirect', 'dest', 'landing', 'href', 'src']) {
+        const v = u.searchParams.get(k);
+        if (v && /^https?:\/\//i.test(v)) return v;
+      }
+      return u.href;
+    } catch {
+      return '';
+    }
+  };
+  const here = (location.hostname || '').replace(/^www\./, '').toLowerCase();
+  const found = [];
+  const seen = new Set();
+  const add = (raw) => {
+    const href = unwrap(String(raw || '').trim());
+    if (!/^https?:\/\//i.test(href)) return;
+    let host = '';
+    try { host = new URL(href).hostname.replace(/^www\./, '').toLowerCase(); } catch { return; }
+    if (!host || host === here || SKIP.test(host) || SKIP.test(href)) return;
+    if (/\.(png|jpe?g|gif|webp|svg|mp4|webm|pdf)(\?|$)/i.test(href)) return;
+    const key = href.replace(/\/+$/, '').toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(href);
+  };
+  document.querySelectorAll('a[href], iframe[src], [data-url], [data-href], [data-landing], [data-landing-url]').forEach((el) => {
+    add(el.getAttribute('href') || el.getAttribute('src') || el.getAttribute('data-url') || el.getAttribute('data-href') || el.getAttribute('data-landing') || el.getAttribute('data-landing-url'));
+  });
+  return found;
+}
+
+async function scanListingUrls() {
+  if (!activeTab || !activeTab.id) {
+    setStatus('Open the AdSpends list (or any page with landing links) first.', 'err');
+    return;
+  }
+  setStatus('<span class="spinner"></span>Scanning this page…');
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      func: collectListingUrlsInPage,
+    });
+    const urls = (results && results[0] && results[0].result) || [];
+    if (!urls.length) {
+      setStatus('No landing URLs found on this page. Paste them below, one per line.', 'err');
+      return;
+    }
+    const existing = parseBulkUrlsText(els.bulkUrls.value);
+    const merged = parseBulkUrlsText([...existing, ...urls].join('\n'));
+    els.bulkUrls.value = merged.join('\n');
+    updateBulkCount();
+    setStatus(`Found ${merged.length} landing URL${merged.length === 1 ? '' : 's'}. Review the list, pick Type (Advertorial / Landing…), then Save.`, 'ok');
+  } catch (e) {
+    setStatus(String((e && e.message) || e), 'err');
+  }
+}
+
+function stopBulkPoll() {
+  if (bulkPollTimer) { clearInterval(bulkPollTimer); bulkPollTimer = null; }
+}
+
+async function refreshBulkStatusOnce() {
+  const r = await sendMessage({ type: 'BULK_STATUS' });
+  const st = r && r.state;
+  if (!st) { stopBulkPoll(); if (els.save) els.save.disabled = false; syncBulkUi(); return; }
+  if (!st.done && !(r && r.running) && st.updatedAt && Date.now() - st.updatedAt > 60000) {
+    stopBulkPoll();
+    if (els.save) els.save.disabled = false;
+    setStatus(`Import interrupted at ${st.savedCount || 0}/${st.total || '?'}. Reopen Save to retry remaining URLs.`, 'err');
+    return;
+  }
+  if (st.done) {
+    stopBulkPoll();
+    if (els.save) els.save.disabled = false;
+    const cls = st.error && !st.savedCount ? 'err' : 'ok';
+    const link = st.projectId
+      ? ` &nbsp;<a href="${TOOL}/projects/${st.projectId}" target="_blank">open project</a>`
+      : ` &nbsp;<a href="${TOOL}" target="_blank">open archive</a>`;
+    setStatus(`${st.status || 'Done'}${st.savedCount ? link : ''}`, cls);
+    await sendMessage({ type: 'BULK_RESET' });
+    syncBulkUi();
+  } else {
+    if (els.save) {
+      els.save.disabled = true;
+      els.save.textContent = 'Importing…';
+    }
+    setStatus(`<span class="spinner"></span>${st.status || 'Importing…'}`);
+  }
+}
+
+function startBulkPoll() {
+  stopBulkPoll();
+  if (els.save) els.save.disabled = true;
+  refreshBulkStatusOnce();
+  bulkPollTimer = setInterval(refreshBulkStatusOnce, 1200);
+}
+
+async function startBackgroundBulk(projectId) {
+  const urls = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value);
+  if (!urls.length) {
+    setStatus('Scan the list or paste URLs first.', 'err');
+    return;
+  }
+  const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
+  const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
+  const { pageType, pageTypeLabel } = resolveSavePageType();
+  const r = await sendMessage({
+    type: 'BULK_START',
+    urls,
+    pageType,
+    pageTypeLabel,
+    category,
+    tags,
+    projectId: projectId || null,
+    wantDesktop: els.shotDesktop.checked,
+    wantMobile: els.shotMobile.checked,
+  });
+  if (!r || !r.ok) {
+    setStatus((r && r.error) || 'Could not start bulk import.', 'err');
+    if (els.save) els.save.disabled = false;
+    return;
+  }
+  startBulkPoll();
+}
+
+async function resumeBulkIfRunning() {
+  try {
+    const r = await sendMessage({ type: 'BULK_STATUS' });
+    const st = r && r.state;
+    if (st && st.running && !st.done) {
+      if (els.bulkMode) els.bulkMode.checked = true;
+      syncBulkUi();
+      startBulkPoll();
+    } else if (st && st.done) {
+      await sendMessage({ type: 'BULK_RESET' });
+    }
+  } catch { /* ignore */ }
+}
+
 els.save.addEventListener('click', onSave);
 els.openTool.addEventListener('click', () => chrome.tabs.create({ url: TOOL }));
+if (els.bulkMode) {
+  els.bulkMode.addEventListener('change', () => {
+    if (els.bulkMode.checked && els.funnelMode) els.funnelMode.checked = false;
+    syncBulkUi();
+  });
+}
+if (els.funnelMode) {
+  els.funnelMode.addEventListener('change', () => {
+    if (els.funnelMode.checked && els.bulkMode) {
+      els.bulkMode.checked = false;
+      syncBulkUi();
+    }
+  });
+}
+if (els.bulkScan) els.bulkScan.addEventListener('click', (e) => { e.preventDefault(); scanListingUrls(); });
+if (els.bulkUrls) els.bulkUrls.addEventListener('input', updateBulkCount);
 if (els.addTypeBtn) {
   els.addTypeBtn.addEventListener('click', (e) => {
     e.preventDefault();

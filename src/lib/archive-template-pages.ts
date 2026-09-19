@@ -1,6 +1,7 @@
 import { isStandaloneTemplatePage } from '@/lib/archive-placement';
 import { humanizePageTypeSlug, normalizeArchiveType } from '@/types';
 import type { ArchivedFunnel } from '@/types/database';
+import { resolvePageGeo } from '@/lib/page-geo';
 
 type ClonedShots = {
   html?: string;
@@ -8,6 +9,9 @@ type ClonedShots = {
   screenshotDesktopUrl?: string | null;
   screenshotMobileUrl?: string | null;
   category?: string;
+  tags?: string[];
+  geo?: string;
+  lang?: string;
 };
 
 export type ArchiveTemplatePage = {
@@ -19,6 +23,8 @@ export type ArchiveTemplatePage = {
   page_type: string;
   screenshotUrl: string | null;
   htmlUrl: string | null;
+  tags?: string[];
+  geo?: string;
 };
 
 export type ArchiveTemplateGroup = {
@@ -64,6 +70,13 @@ export function listArchivePagesByType(
         prompt: s.prompt || '',
         page_type: t,
         screenshotUrl: cardShotUrl(s.cloned_data),
+        tags: Array.isArray(s.cloned_data?.tags) ? s.cloned_data.tags.map(String).filter(Boolean) : [],
+        geo: resolvePageGeo({
+          geo: s.cloned_data?.geo,
+          url: s.url_to_swipe,
+          html: s.cloned_data?.html,
+          title: s.name || f.name,
+        }),
         htmlUrl:
           s.cloned_data?.htmlUrl ||
           s.swiped_data?.htmlUrl ||

@@ -35,6 +35,20 @@ Done. Pin the "Wasabi Saver" icon to the toolbar if you like.
 
 After saving, two links appear: **open in editor** and **view HTML**.
 
+## How to use — bulk import (AdSpends lists)
+
+Don't save one advertorial at a time. On an AdSpends (or similar) list:
+
+1. Open the Advertorials / Landing / Sales Pages grid.
+2. Click the **Wasabi Saver** icon — Bulk turns on and **Scan** collects the
+   landing URLs from the cards (or click Scan yourself / paste URLs).
+3. Pick **Type** (Advertorial, Landing, …) and Category.
+4. Click **Save N pages**. A hidden tab opens each URL, saves HTML + screenshots
+   into the archive, then moves on. The list tab stays open. You can close the
+   popup; reopen it to see progress.
+
+Cap is 80 URLs per run. Duplicates already in the archive are skipped.
+
 ## How to use — creatives (Competitor Library)
 
 1. Hover any image or video on a page — a **Save** button appears.

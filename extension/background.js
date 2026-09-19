@@ -1341,6 +1341,167 @@ async function runFunnelWalk(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk import — open each URL in a hidden worker tab, capture, save, next.
+// The listing tab (AdSpends, etc.) stays put. Survives popup close.
+// ---------------------------------------------------------------------------
+const BULK_KEY = 'wasabi_bulk_import';
+const BULK_MAX = 80;
+let bulkRunning = false;
+let bulkStopRequested = false;
+
+async function setBulkState(patch) {
+  const cur = (await chrome.storage.local.get(BULK_KEY))[BULK_KEY] || {};
+  const next = { ...cur, ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ [BULK_KEY]: next });
+  return next;
+}
+async function getBulkState() {
+  return (await chrome.storage.local.get(BULK_KEY))[BULK_KEY] || null;
+}
+async function clearBulkState() {
+  await chrome.storage.local.remove(BULK_KEY);
+}
+
+function normalizeBulkUrls(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of list || []) {
+    let u = String(raw || '').trim();
+    if (!u) continue;
+    try {
+      const parsed = new URL(u);
+      if (!/^https?:$/i.test(parsed.protocol)) continue;
+      u = parsed.href;
+    } catch {
+      continue;
+    }
+    const key = canonUrl(u);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(u);
+    if (out.length >= BULK_MAX) break;
+  }
+  return out;
+}
+
+async function runBulkImport(opts) {
+  const urls = normalizeBulkUrls(opts.urls);
+  const pageType = String(opts.pageType || 'advertorial').slice(0, 60) || 'advertorial';
+  const pageTypeLabel = opts.pageTypeLabel || undefined;
+  const category = String(opts.category || '').slice(0, 60);
+  const tags = Array.isArray(opts.tags) ? opts.tags : [];
+  const projectId = opts.projectId || null;
+  const wantDesktop = !!opts.wantDesktop;
+  const wantMobile = !!opts.wantMobile;
+
+  bulkRunning = true;
+  bulkStopRequested = false;
+
+  if (!urls.length) {
+    await setBulkState({ running: false, done: true, error: 'empty', status: 'No URLs to import.', total: 0, savedCount: 0, failedCount: 0, skippedCount: 0 });
+    bulkRunning = false;
+    return;
+  }
+
+  const token = await getValidToken();
+  if (!token) {
+    await setBulkState({ running: false, done: true, error: 'auth', status: 'Session expired — open the tool and log in.', total: urls.length, savedCount: 0, failedCount: 0, skippedCount: 0, projectId });
+    bulkRunning = false;
+    return;
+  }
+
+  let workerTabId = null;
+  let savedCount = 0;
+  let failedCount = 0;
+  let skippedCount = 0;
+
+  await setBulkState({
+    running: true, done: false, error: null, status: `Starting ${urls.length} pages…`,
+    total: urls.length, index: 0, savedCount: 0, failedCount: 0, skippedCount: 0, projectId,
+  });
+
+  try {
+    const tab = await chrome.tabs.create({ url: 'about:blank', active: false });
+    workerTabId = tab && tab.id;
+    if (!workerTabId) throw new Error('Could not open a worker tab');
+
+    for (let i = 0; i < urls.length; i++) {
+      if (bulkStopRequested) {
+        await setBulkState({ status: `Stopped at ${i}/${urls.length}.` });
+        break;
+      }
+      const url = urls[i];
+      const n = i + 1;
+      await setBulkState({ index: i, status: `${n}/${urls.length}: opening…` });
+      try {
+        const g = await funnelGoto(workerTabId, url);
+        if (!g || !g.ok) {
+          // First nav from about:blank sometimes reports timeout even if loaded.
+          await sleep(2500);
+        } else {
+          await sleep(1800);
+        }
+        await setBulkState({ status: `${n}/${urls.length}: reading page…` });
+        const page = await bgCaptureHtml(workerTabId);
+        await setBulkState({ status: `${n}/${urls.length}: screenshots…` });
+        const screenshotPaths = await bgCaptureShots(token, workerTabId, wantDesktop, wantMobile);
+        await setBulkState({ status: `${n}/${urls.length}: saving…` });
+        const name = String(page.title || domainOf(page.url) || `Page ${n}`).slice(0, 180);
+        const data = await bgSavePage(token, {
+          url: page.url || url,
+          title: page.title,
+          name,
+          html: page.html,
+          screenshotDesktopPath: screenshotPaths.desktop || null,
+          screenshotMobilePath: screenshotPaths.mobile || null,
+          pageType,
+          pageTypeLabel,
+          category,
+          tags,
+          projectId,
+        });
+        if (data.duplicate) skippedCount += 1;
+        else savedCount += 1;
+        await setBulkState({
+          savedCount, failedCount, skippedCount,
+          status: `${n}/${urls.length}: ${data.duplicate ? 'already saved' : 'saved'} ✓`,
+        });
+      } catch (e) {
+        failedCount += 1;
+        console.warn('[bulk] page failed', url, e);
+        await setBulkState({
+          savedCount, failedCount, skippedCount,
+          status: `${n}/${urls.length}: skipped (${String((e && e.message) || e).slice(0, 80)})`,
+        });
+      }
+    }
+  } catch (e) {
+    await setBulkState({ error: String((e && e.message) || e) });
+  } finally {
+    if (workerTabId) {
+      try { await chrome.tabs.remove(workerTabId); } catch { /* already closed */ }
+    }
+  }
+
+  const stopped = bulkStopRequested;
+  const parts = [];
+  if (savedCount) parts.push(`${savedCount} saved`);
+  if (skippedCount) parts.push(`${skippedCount} already in archive`);
+  if (failedCount) parts.push(`${failedCount} failed`);
+  const summary = parts.length ? parts.join(', ') : 'Nothing saved';
+  await setBulkState({
+    running: false,
+    done: true,
+    savedCount,
+    failedCount,
+    skippedCount,
+    status: stopped ? `Stopped. ${summary}.` : `Done. ${summary}.`,
+  });
+  bulkRunning = false;
+  bulkStopRequested = false;
+}
+
+// ---------------------------------------------------------------------------
 // Message router
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1369,6 +1530,29 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // Clear a finished walk so the popup goes back to its idle (0) state.
   if (msg.type === 'FUNNEL_WALK_RESET') {
     clearWalkState().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'BULK_START') {
+    if (bulkRunning || walkRunning) {
+      sendResponse({ ok: false, error: 'Another import is already running.' });
+      return true;
+    }
+    runBulkImport(msg);
+    sendResponse({ ok: true, started: true });
+    return true;
+  }
+  if (msg.type === 'BULK_STATUS') {
+    getBulkState().then((state) => sendResponse({ ok: true, state, running: bulkRunning }));
+    return true;
+  }
+  if (msg.type === 'BULK_STOP') {
+    bulkStopRequested = true;
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg.type === 'BULK_RESET') {
+    clearBulkState().then(() => sendResponse({ ok: true }));
     return true;
   }
 
