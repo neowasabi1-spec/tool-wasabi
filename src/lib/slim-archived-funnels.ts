@@ -155,7 +155,8 @@ function asRows(data: unknown): SlimArchiveRow[] {
 
 const META_COLS = 'id, name, created_at, total_steps, project_id, section';
 /** Netlify edge wraps this route and kills it ~36s. Stay well under that. */
-const TEMPLATE_BUDGET_MS = 12_000;
+const TEMPLATE_BUDGET_MS = 28_000;
+const TEMPLATE_RPC_MAX = 500;
 const PATH_BATCH = 12;
 
 /**
@@ -206,36 +207,25 @@ AS $$
     ) AS total_steps,
     f.project_id,
     f.section::text,
-    COALESCE((
-      SELECT jsonb_agg(s.step ORDER BY s.ord)
-      FROM (
-        SELECT
-          e.ord,
-          jsonb_build_object(
-            'name', e.elem->>'name',
-            'page_type', COALESCE(e.elem->>'page_type', e.elem->>'step_type', 'landing'),
-            'step_type', e.elem->>'step_type',
-            'page_id', e.elem->>'page_id',
-            'step_index', e.elem->'step_index',
-            'url_to_swipe', e.elem->>'url_to_swipe',
-            'prompt', e.elem->>'prompt',
-            'cloned_data', jsonb_build_object(
-              'source_url', COALESCE(e.elem#>>'{cloned_data,source_url}', e.elem->>'url_to_swipe'),
-              'screenshotDesktopUrl', e.elem#>>'{cloned_data,screenshotDesktopUrl}',
-              'screenshotMobileUrl', e.elem#>>'{cloned_data,screenshotMobileUrl}',
-              'htmlUrl', e.elem#>>'{cloned_data,htmlUrl}',
-              'category', COALESCE(e.elem#>>'{cloned_data,category}', f.name),
-              'tags', COALESCE(e.elem#>'{cloned_data,tags}', '[]'::jsonb)
-            )
-          ) AS step
-        FROM jsonb_array_elements(
-          CASE
-            WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array' THEN COALESCE(f.steps::jsonb, '[]'::jsonb)
-            ELSE '[]'::jsonb
-          END
-        ) WITH ORDINALITY AS e(elem, ord)
-      ) s
-    ), '[]'::jsonb) AS steps
+    jsonb_build_array(
+      jsonb_build_object(
+        'name', COALESCE(f.steps->0->>'name', f.name),
+        'page_type', COALESCE(f.steps->0->>'page_type', f.steps->0->>'step_type', 'landing'),
+        'step_type', f.steps->0->>'step_type',
+        'page_id', f.steps->0->>'page_id',
+        'step_index', COALESCE(f.steps->0->'step_index', '1'::jsonb),
+        'url_to_swipe', f.steps->0->>'url_to_swipe',
+        'prompt', f.steps->0->>'prompt',
+        'cloned_data', jsonb_build_object(
+          'source_url', COALESCE(f.steps->0#>>'{cloned_data,source_url}', f.steps->0->>'url_to_swipe'),
+          'screenshotDesktopUrl', f.steps->0#>>'{cloned_data,screenshotDesktopUrl}',
+          'screenshotMobileUrl', f.steps->0#>>'{cloned_data,screenshotMobileUrl}',
+          'htmlUrl', f.steps->0#>>'{cloned_data,htmlUrl}',
+          'category', COALESCE(f.steps->0#>>'{cloned_data,category}', f.name),
+          'tags', COALESCE(f.steps->0#>'{cloned_data,tags}', '[]'::jsonb)
+        )
+      )
+    ) AS steps
   FROM archived_funnels f
   WHERE f.project_id IS NULL
     AND (
@@ -250,7 +240,7 @@ AS $$
       ) <= 1
     )
   ORDER BY f.created_at DESC
-  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 40), 80))
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 500))
   OFFSET GREATEST(0, COALESCE(p_offset, 0));
 $$;
 GRANT EXECUTE ON FUNCTION public.slim_template_pages(int, int) TO service_role;
@@ -339,7 +329,7 @@ AS $$
       END
     ) >= 2
   ORDER BY f.created_at DESC
-  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 40), 80))
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 500))
   OFFSET GREATEST(0, COALESCE(p_offset, 0));
 $$;
 GRANT EXECUTE ON FUNCTION public.slim_template_funnels(int, int) TO service_role;
@@ -444,15 +434,20 @@ async function hydrateViaJsonPaths(
   return out;
 }
 
-async function loadTemplateRpc(fn: string, deadline: number): Promise<SlimArchiveRow[] | null> {
+async function loadTemplateRpc(
+  fn: string,
+  deadline: number,
+  cap = 2000,
+): Promise<SlimArchiveRow[] | null> {
   const rows: SlimArchiveRow[] = [];
-  const pageSize = 30;
-  for (let offset = 0; Date.now() < deadline; offset += pageSize) {
-    const ms = Math.max(800, Math.min(7_000, deadline - Date.now()));
+  const pageSize = 80;
+  for (let offset = 0; offset < cap && Date.now() < deadline; offset += pageSize) {
+    const take = Math.min(pageSize, cap - offset, TEMPLATE_RPC_MAX);
+    const ms = Math.max(800, Math.min(8_000, deadline - Date.now()));
     try {
       const { data, error } = await supabaseAdmin.rpc(
         fn,
-        { p_limit: pageSize, p_offset: offset },
+        { p_limit: take, p_offset: offset },
         { abortSignal: AbortSignal.timeout(ms) },
       );
       if (error) {
@@ -463,7 +458,7 @@ async function loadTemplateRpc(fn: string, deadline: number): Promise<SlimArchiv
       const batch = asRows(data);
       if (!batch.length) break;
       rows.push(...batch);
-      if (batch.length < pageSize) break;
+      if (batch.length < take) break;
     } catch (e) {
       console.warn(
         `[slim-archived-funnels] ${fn} aborted:`,
@@ -475,8 +470,10 @@ async function loadTemplateRpc(fn: string, deadline: number): Promise<SlimArchiv
   return rows;
 }
 
-const loadTemplatePagesRpc = (deadline: number) => loadTemplateRpc('slim_template_pages', deadline);
-const loadTemplateFunnelsRpc = (deadline: number) => loadTemplateRpc('slim_template_funnels', deadline);
+const loadTemplatePagesRpc = (deadline: number, cap: number) =>
+  loadTemplateRpc('slim_template_pages', deadline, cap);
+const loadTemplateFunnelsRpc = (deadline: number, cap: number) =>
+  loadTemplateRpc('slim_template_funnels', deadline, cap);
 
 /** Fallback when the slim_template_funnels RPC is missing (e.g. exec_sql not
  *  available on this Supabase): rebuild each funnel's step list from SCALAR
@@ -679,26 +676,22 @@ let ensurePromise: Promise<void> | null = null;
 async function ensureSlimFn(): Promise<void> {
   if (!ensurePromise) {
     ensurePromise = (async () => {
-      const a = await supabaseAdmin.rpc('exec_sql', { sql: CREATE_SLIM_FN }, { abortSignal: AbortSignal.timeout(4_000) });
-      if (a.error) console.warn('[slim-archived-funnels] could not create slim RPC:', a.error.message);
-      const b = await supabaseAdmin.rpc(
-        'exec_sql',
-        { sql: CREATE_TEMPLATE_PAGES_FN },
-        { abortSignal: AbortSignal.timeout(4_000) },
+      const jobs: Array<[string, string]> = [
+        ['slim RPC', CREATE_SLIM_FN],
+        ['template RPC', CREATE_TEMPLATE_PAGES_FN],
+        ['funnel RPC', CREATE_TEMPLATE_FUNNELS_FN],
+        ['step-shell RPC', CREATE_STEP_SHELLS_FN],
+      ];
+      await Promise.all(
+        jobs.map(async ([label, sql]) => {
+          const res = await supabaseAdmin.rpc(
+            'exec_sql',
+            { sql },
+            { abortSignal: AbortSignal.timeout(4_000) },
+          );
+          if (res.error) console.warn(`[slim-archived-funnels] could not create ${label}:`, res.error.message);
+        }),
       );
-      if (b.error) console.warn('[slim-archived-funnels] could not create template RPC:', b.error.message);
-      const c = await supabaseAdmin.rpc(
-        'exec_sql',
-        { sql: CREATE_TEMPLATE_FUNNELS_FN },
-        { abortSignal: AbortSignal.timeout(4_000) },
-      );
-      if (c.error) console.warn('[slim-archived-funnels] could not create funnel RPC:', c.error.message);
-      const d = await supabaseAdmin.rpc(
-        'exec_sql',
-        { sql: CREATE_STEP_SHELLS_FN },
-        { abortSignal: AbortSignal.timeout(4_000) },
-      );
-      if (d.error) console.warn('[slim-archived-funnels] could not create step-shell RPC:', d.error.message);
     })().catch((e) => {
       console.warn('[slim-archived-funnels] ensure failed:', e);
     });
@@ -743,21 +736,59 @@ async function loadViaProjectRpc(
   }
 }
 
+function createdAtMs(row: SlimArchiveRow): number {
+  const t = Date.parse(row.created_at);
+  return Number.isFinite(t) ? t : 0;
+}
+
 async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
   const deadline = Date.now() + TEMPLATE_BUDGET_MS;
-  void ensureSlimFn();
+  await ensureSlimFn();
 
   try {
-    const viaRpc = await loadTemplatePagesRpc(deadline);
-    if (viaRpc && viaRpc.length) {
+    const viaRpc = await loadTemplatePagesRpc(deadline, cap);
+    let pages: SlimArchiveRow[] = viaRpc || [];
+
+    // RPC used to hard-cap at 80. Even after raising it, a timeout can
+    // stop pagination early — pull the full meta list so extra saved
+    // pages still show in Templates instead of vanishing.
+    try {
+      const meta = await loadMeta(null, cap);
+      const pageMeta = meta.filter((r) => isPageRow(r));
+      if (pageMeta.length) {
+        const have = new Set(pages.map((r) => r.id));
+        for (const m of pageMeta) {
+          if (!have.has(m.id)) pages.push(m);
+        }
+        pages.sort((a, b) => createdAtMs(b) - createdAtMs(a));
+      }
+      const shells = pages.filter((r) => !r.steps.length);
+      if (shells.length && Date.now() < deadline) {
+        const stepsById = await hydrateViaJsonPaths(
+          shells.map((r) => r.id),
+          deadline,
+        );
+        for (const r of pages) {
+          const steps = stepsById.get(r.id);
+          if (steps?.length) {
+            r.steps = steps;
+            if (!r.total_steps) r.total_steps = steps.length;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[slim-archived-funnels] template meta merge:', e);
+    }
+
+    if (pages.length) {
       // Merge with the multi-step FUNNEL rows. Prefer the dedicated RPC:
       // it ships slim steps, so the Funnel tab and the Chimera picker get
       // real step lists. Fall back to bare meta shells if the RPC is
       // missing (steps empty, but the funnels at least stay visible).
       let funnels: SlimArchiveRow[] = [];
-      const have = new Set(viaRpc.map((r) => r.id));
+      const have = new Set(pages.map((r) => r.id));
       try {
-        const viaFunnels = await loadTemplateFunnelsRpc(deadline);
+        const viaFunnels = await loadTemplateFunnelsRpc(deadline, cap);
         if (viaFunnels && viaFunnels.length) {
           funnels = viaFunnels.filter((r) => !have.has(r.id));
         } else {
@@ -772,7 +803,7 @@ async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow
       } catch (e) {
         console.warn('[slim-archived-funnels] funnel meta:', e);
       }
-      return { rows: [...viaRpc, ...funnels], error: null };
+      return { rows: [...pages, ...funnels], error: null };
     }
 
     const rows = await loadMeta(null, cap);

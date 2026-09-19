@@ -47,7 +47,7 @@ Don't save one advertorial at a time. On an AdSpends (or similar) list:
    into the archive, then moves on. The list tab stays open. You can close the
    popup; reopen it to see progress.
 
-Cap is 80 URLs per run. Duplicates already in the archive are skipped.
+Cap is 400 URLs per run. Scan scrolls the open list; it cannot see AdSpends pages that were never loaded. Duplicates already in the archive are skipped.
 
 ## How to use — creatives (Competitor Library)
 

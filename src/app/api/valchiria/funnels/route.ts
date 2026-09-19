@@ -92,7 +92,7 @@ export async function GET(req: NextRequest) {
   try {
     const ctx = await getUserAccessContext(req);
 
-    const slim = await loadSlimArchivedFunnels(null, 400);
+    const slim = await loadSlimArchivedFunnels(null, 2000);
     if (slim.error && !slim.rows.length) throw new Error(slim.error);
 
     const metaById = new Map<string, {

@@ -687,6 +687,8 @@ async function resumeFunnelWalkIfRunning() {
 // ── Bulk import (AdSpends lists, pasted URLs) ────────────────────────────────
 let bulkPollTimer = null;
 
+const BULK_MAX = 400;
+
 function parseBulkUrlsText(text) {
   const out = [];
   const seen = new Set();
@@ -705,7 +707,7 @@ function parseBulkUrlsText(text) {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(href);
-    if (out.length >= 80) break;
+    if (out.length >= BULK_MAX) break;
   }
   return out;
 }
@@ -734,9 +736,12 @@ function syncBulkUi() {
   updateBulkCount();
 }
 
-// Runs inside the listing page (AdSpends cards, iframes, outbound links).
-function collectListingUrlsInPage() {
-  const SKIP = /adspends|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|twitter\.com|x\.com|linkedin\.com|pinterest\.com|google\.|doubleclick|googletagmanager|gstatic\.com|cloudflare|jsdelivr|unpkg\.com|stripe\.com|paypal\.com|whatsapp|telegram|gravatar|chrome-extension/i;
+// Harvest landing URLs from the open listing. AdSpends (and similar) only
+// put a slice of cards in the DOM — we scroll the grid so more load, and we
+// also read the domain/path text under each card (often not a real <a href>).
+async function collectListingUrlsInPage() {
+  const MAX = 400;
+  const SKIP = /adspends|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|twitter\.com|x\.com|linkedin\.com|pinterest\.com|google\.|doubleclick|googletagmanager|gstatic\.com|cloudflare|jsdelivr|unpkg\.com|stripe\.com|paypal\.com|whatsapp|telegram|gravatar|chrome-extension|sentry\.io|segment\.com|hotjar|intercom/i;
   const unwrap = (href) => {
     try {
       const u = new URL(href, location.href);
@@ -753,21 +758,65 @@ function collectListingUrlsInPage() {
   const found = [];
   const seen = new Set();
   const add = (raw) => {
-    const href = unwrap(String(raw || '').trim());
+    let href = String(raw || '').trim();
+    if (!href) return;
+    if (!/^https?:\/\//i.test(href) && /^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}\//i.test(href)) {
+      href = 'https://' + href;
+    }
+    href = unwrap(href);
     if (!/^https?:\/\//i.test(href)) return;
     let host = '';
-    try { host = new URL(href).hostname.replace(/^www\./, '').toLowerCase(); } catch { return; }
+    let path = '';
+    try {
+      const u = new URL(href);
+      host = u.hostname.replace(/^www\./, '').toLowerCase();
+      path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    } catch { return; }
     if (!host || host === here || SKIP.test(host) || SKIP.test(href)) return;
-    if (/\.(png|jpe?g|gif|webp|svg|mp4|webm|pdf)(\?|$)/i.test(href)) return;
-    const key = href.replace(/\/+$/, '').toLowerCase();
+    if (path === '/') return;
+    if (/\.(png|jpe?g|gif|webp|svg|mp4|webm|pdf|css|js)(\?|$)/i.test(href)) return;
+    const key = (host + path).toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
     found.push(href);
   };
-  document.querySelectorAll('a[href], iframe[src], [data-url], [data-href], [data-landing], [data-landing-url]').forEach((el) => {
-    add(el.getAttribute('href') || el.getAttribute('src') || el.getAttribute('data-url') || el.getAttribute('data-href') || el.getAttribute('data-landing') || el.getAttribute('data-landing-url'));
-  });
-  return found;
+
+  const harvest = () => {
+    document.querySelectorAll('a[href], iframe[src], [data-url], [data-href], [data-landing], [data-landing-url]').forEach((el) => {
+      add(el.getAttribute('href') || el.getAttribute('src') || el.getAttribute('data-url') || el.getAttribute('data-href') || el.getAttribute('data-landing') || el.getAttribute('data-landing-url'));
+    });
+    const text = (document.body && document.body.innerText) || '';
+    const re = /\b(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s"'<>]*)/gi;
+    let m;
+    while ((m = re.exec(text))) add(m[0].replace(/[).,;:]+$/, ''));
+  };
+
+  const scrollables = Array.from(document.querySelectorAll('div, main, section'))
+    .filter((el) => {
+      const s = getComputedStyle(el);
+      const oy = s.overflowY;
+      return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 180;
+    })
+    .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+  const scroller = scrollables[0] || document.scrollingElement || document.documentElement;
+
+  harvest();
+  let stagnant = 0;
+  for (let i = 0; i < 70 && found.length < MAX; i++) {
+    const before = found.length;
+    const top = scroller.scrollTop;
+    scroller.scrollTop = Math.min(scroller.scrollHeight, top + Math.max(scroller.clientHeight * 0.9, 700));
+    await new Promise((r) => setTimeout(r, 500));
+    harvest();
+    if (found.length === before && scroller.scrollTop <= top + 4) {
+      stagnant += 1;
+      if (stagnant >= 4) break;
+    } else {
+      stagnant = 0;
+    }
+  }
+  try { scroller.scrollTop = 0; } catch { /* ignore */ }
+  return found.slice(0, MAX);
 }
 
 async function scanListingUrls() {
@@ -775,7 +824,7 @@ async function scanListingUrls() {
     setStatus('Open the AdSpends list (or any page with landing links) first.', 'err');
     return;
   }
-  setStatus('<span class="spinner"></span>Scanning this page…');
+  setStatus('<span class="spinner"></span>Scanning list — scrolling to load more cards…');
   try {
     const results = await chrome.scripting.executeScript({
       target: { tabId: activeTab.id },
@@ -795,8 +844,8 @@ async function scanListingUrls() {
     const fresh = merged.length - already;
     setStatus(
       already
-        ? `Found ${merged.length} URLs · ${already} already in archive · ${fresh} new. Save imports only the new ones.`
-        : `Found ${merged.length} landing URL${merged.length === 1 ? '' : 's'}. Review the list, pick Type, then Save.`,
+        ? `Loaded ${merged.length} from this list (max ${BULK_MAX}/run) · ${already} already saved · ${fresh} new. Not the whole AdSpends DB — only cards Scan can scroll to.`
+        : `Loaded ${merged.length} landing URL${merged.length === 1 ? '' : 's'} from the cards on this list (max ${BULK_MAX} per run). Not the whole AdSpends catalog.`,
       'ok',
     );
   } catch (e) {

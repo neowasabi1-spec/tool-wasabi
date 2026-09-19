@@ -1393,7 +1393,7 @@ async function runFunnelWalk(opts) {
 // The listing tab (AdSpends, etc.) stays put. Survives popup close.
 // ---------------------------------------------------------------------------
 const BULK_KEY = 'wasabi_bulk_import';
-const BULK_MAX = 80;
+const BULK_MAX = 400;
 let bulkRunning = false;
 let bulkStopRequested = false;
 

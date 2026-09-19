@@ -31,36 +31,25 @@ AS $$
     ) AS total_steps,
     f.project_id,
     f.section::text,
-    COALESCE((
-      SELECT jsonb_agg(s.step ORDER BY s.ord)
-      FROM (
-        SELECT
-          e.ord,
-          jsonb_build_object(
-            'name', e.elem->>'name',
-            'page_type', COALESCE(e.elem->>'page_type', e.elem->>'step_type', 'landing'),
-            'step_type', e.elem->>'step_type',
-            'page_id', e.elem->>'page_id',
-            'step_index', e.elem->'step_index',
-            'url_to_swipe', e.elem->>'url_to_swipe',
-            'prompt', e.elem->>'prompt',
-            'cloned_data', jsonb_build_object(
-              'source_url', COALESCE(e.elem#>>'{cloned_data,source_url}', e.elem->>'url_to_swipe'),
-              'screenshotDesktopUrl', e.elem#>>'{cloned_data,screenshotDesktopUrl}',
-              'screenshotMobileUrl', e.elem#>>'{cloned_data,screenshotMobileUrl}',
-              'htmlUrl', e.elem#>>'{cloned_data,htmlUrl}',
-              'category', COALESCE(e.elem#>>'{cloned_data,category}', f.name),
-              'tags', COALESCE(e.elem#>'{cloned_data,tags}', '[]'::jsonb)
-            )
-          ) AS step
-        FROM jsonb_array_elements(
-          CASE
-            WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array' THEN COALESCE(f.steps::jsonb, '[]'::jsonb)
-            ELSE '[]'::jsonb
-          END
-        ) WITH ORDINALITY AS e(elem, ord)
-      ) s
-    ), '[]'::jsonb) AS steps
+    jsonb_build_array(
+      jsonb_build_object(
+        'name', COALESCE(f.steps->0->>'name', f.name),
+        'page_type', COALESCE(f.steps->0->>'page_type', f.steps->0->>'step_type', 'landing'),
+        'step_type', f.steps->0->>'step_type',
+        'page_id', f.steps->0->>'page_id',
+        'step_index', COALESCE(f.steps->0->'step_index', '1'::jsonb),
+        'url_to_swipe', f.steps->0->>'url_to_swipe',
+        'prompt', f.steps->0->>'prompt',
+        'cloned_data', jsonb_build_object(
+          'source_url', COALESCE(f.steps->0#>>'{cloned_data,source_url}', f.steps->0->>'url_to_swipe'),
+          'screenshotDesktopUrl', f.steps->0#>>'{cloned_data,screenshotDesktopUrl}',
+          'screenshotMobileUrl', f.steps->0#>>'{cloned_data,screenshotMobileUrl}',
+          'htmlUrl', f.steps->0#>>'{cloned_data,htmlUrl}',
+          'category', COALESCE(f.steps->0#>>'{cloned_data,category}', f.name),
+          'tags', COALESCE(f.steps->0#>'{cloned_data,tags}', '[]'::jsonb)
+        )
+      )
+    ) AS steps
   FROM archived_funnels f
   WHERE f.project_id IS NULL
     AND (
@@ -75,7 +64,7 @@ AS $$
       ) <= 1
     )
   ORDER BY f.created_at DESC
-  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 40), 80))
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 100), 500))
   OFFSET GREATEST(0, COALESCE(p_offset, 0));
 $$;
 

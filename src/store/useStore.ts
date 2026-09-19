@@ -1482,7 +1482,7 @@ export const useStore = create<Store>()((set, get) => ({
       try {
         const res = await authFetch('/api/valchiria/funnels', {
           cache: 'no-store',
-          signal: AbortSignal.timeout(25_000),
+          signal: AbortSignal.timeout(50_000),
         });
         const raw = await res.text();
         let json: { success?: boolean; funnels?: unknown; error?: string } | null = null;
