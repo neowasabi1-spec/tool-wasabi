@@ -485,8 +485,8 @@ const loadTemplateFunnelsRpc = (deadline: number) => loadTemplateRpc('slim_templ
  *  tryrosabella/nooro stayed empty while 2-step funnels hydrated fine). */
 const MAX_FUNNEL_STEPS = 24;
 
-function funnelPathSelect(count: number): string {
-  const cols: string[] = ['id'];
+function funnelShellSelect(count: number): string {
+  const cols: string[] = ['id', 'name'];
   for (let i = 0; i < count; i++) {
     cols.push(
       `s${i}_name:steps->${i}->>name`,
@@ -494,12 +494,6 @@ function funnelPathSelect(count: number): string {
       `s${i}_stype:steps->${i}->>step_type`,
       `s${i}_pid:steps->${i}->>page_id`,
       `s${i}_url:steps->${i}->>url_to_swipe`,
-      `s${i}_prompt:steps->${i}->>prompt`,
-      `s${i}_src:steps->${i}->cloned_data->>source_url`,
-      `s${i}_shot:steps->${i}->cloned_data->>screenshotDesktopUrl`,
-      `s${i}_shotm:steps->${i}->cloned_data->>screenshotMobileUrl`,
-      `s${i}_html:steps->${i}->cloned_data->>htmlUrl`,
-      `s${i}_cat:steps->${i}->cloned_data->>category`,
     );
   }
   return cols.join(', ');
@@ -546,7 +540,7 @@ async function hydrateFunnelSteps(rows: SlimArchiveRow[], deadline: number): Pro
     try {
       const { data, error } = await supabaseAdmin
         .from('archived_funnels')
-        .select(funnelPathSelect(count))
+        .select(funnelShellSelect(count))
         .eq('id', row.id)
         .abortSignal(AbortSignal.timeout(ms))
         .maybeSingle();
@@ -573,6 +567,113 @@ async function hydrateFunnelSteps(rows: SlimArchiveRow[], deadline: number): Pro
   }
 }
 
+const CREATE_STEP_SHELLS_FN = `
+CREATE OR REPLACE FUNCTION public.slim_funnel_step_shells(p_id uuid)
+RETURNS jsonb
+LANGUAGE sql
+STABLE
+SET statement_timeout TO '12s'
+AS $$
+  SELECT COALESCE((
+    SELECT jsonb_agg(s.step ORDER BY s.ord)
+    FROM (
+      SELECT
+        e.ord,
+        jsonb_build_object(
+          'name', e.elem->>'name',
+          'page_type', COALESCE(e.elem->>'page_type', e.elem->>'step_type', 'landing'),
+          'step_type', e.elem->>'step_type',
+          'page_id', e.elem->>'page_id',
+          'step_index', e.elem->'step_index',
+          'url_to_swipe', COALESCE(e.elem->>'url_to_swipe', e.elem#>>'{cloned_data,source_url}')
+        ) AS step
+      FROM archived_funnels f
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'array'
+            THEN COALESCE(f.steps::jsonb, '[]'::jsonb)
+          WHEN jsonb_typeof(COALESCE(f.steps::jsonb, '[]'::jsonb)) = 'string'
+            THEN COALESCE((f.steps#>>'{}')::jsonb, '[]'::jsonb)
+          ELSE '[]'::jsonb
+        END
+      ) WITH ORDINALITY AS e(elem, ord)
+      WHERE f.id = p_id
+    ) s
+  ), '[]'::jsonb);
+$$;
+GRANT EXECUTE ON FUNCTION public.slim_funnel_step_shells(uuid) TO service_role;
+GRANT EXECUTE ON FUNCTION public.slim_funnel_step_shells(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.slim_funnel_step_shells(uuid) TO anon;
+`;
+
+function stepsFromShellRow(data: Record<string, unknown>, name: string, count: number): SlimArchiveStep[] {
+  const steps: SlimArchiveStep[] = [];
+  for (let i = 0; i < count; i++) {
+    const s = stepFromPathRow(data, i, name);
+    if (!s) break;
+    steps.push(s);
+  }
+  return steps;
+}
+
+/** Lightweight step list for the Chimera picker (name / type / url only). */
+export async function loadFunnelStepShells(id: string): Promise<SlimArchiveStep[]> {
+  if (!id) return [];
+  await ensureSlimFn();
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      'slim_funnel_step_shells',
+      { p_id: id },
+      { abortSignal: AbortSignal.timeout(12_000) },
+    );
+    if (!error && data != null) {
+      const steps = asSteps(data).map((s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep);
+      if (steps.length) return steps;
+    } else if (error && /does not exist|42883/i.test(error.message || '')) {
+      ensurePromise = null;
+      await ensureSlimFn();
+      const retry = await supabaseAdmin.rpc(
+        'slim_funnel_step_shells',
+        { p_id: id },
+        { abortSignal: AbortSignal.timeout(12_000) },
+      );
+      if (!retry.error && retry.data != null) {
+        const steps = asSteps(retry.data).map((s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep);
+        if (steps.length) return steps;
+      }
+    } else if (error) {
+      console.warn('[slim-archived-funnels] step shells rpc:', error.message);
+    }
+  } catch (e) {
+    console.warn('[slim-archived-funnels] step shells rpc aborted:', e instanceof Error ? e.message : e);
+  }
+
+  const meta = await supabaseAdmin
+    .from('archived_funnels')
+    .select('id, name, total_steps')
+    .eq('id', id)
+    .maybeSingle();
+  if (meta.error || !meta.data) return [];
+  const name = String(meta.data.name || '');
+  const count = Math.max(2, Math.min(MAX_FUNNEL_STEPS, asTotalSteps(meta.data.total_steps, 24)));
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('archived_funnels')
+      .select(funnelShellSelect(count))
+      .eq('id', id)
+      .abortSignal(AbortSignal.timeout(12_000))
+      .maybeSingle();
+    if (error || !data) {
+      console.warn('[slim-archived-funnels] step shells path:', error?.message);
+      return [];
+    }
+    return stepsFromShellRow(data as Record<string, unknown>, name, count);
+  } catch (e) {
+    console.warn('[slim-archived-funnels] step shells path aborted:', e instanceof Error ? e.message : e);
+    return [];
+  }
+}
+
 let ensurePromise: Promise<void> | null = null;
 
 async function ensureSlimFn(): Promise<void> {
@@ -592,6 +693,12 @@ async function ensureSlimFn(): Promise<void> {
         { abortSignal: AbortSignal.timeout(4_000) },
       );
       if (c.error) console.warn('[slim-archived-funnels] could not create funnel RPC:', c.error.message);
+      const d = await supabaseAdmin.rpc(
+        'exec_sql',
+        { sql: CREATE_STEP_SHELLS_FN },
+        { abortSignal: AbortSignal.timeout(4_000) },
+      );
+      if (d.error) console.warn('[slim-archived-funnels] could not create step-shell RPC:', d.error.message);
     })().catch((e) => {
       console.warn('[slim-archived-funnels] ensure failed:', e);
     });

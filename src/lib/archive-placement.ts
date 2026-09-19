@@ -236,6 +236,11 @@ export type PickerFunnel = {
   steps: PickerStep[];
 };
 
+export function pickerStepsFromArchive(raw: unknown): PickerStep[] {
+  const arr = Array.isArray(raw) ? (raw as Record<string, unknown>[]) : [];
+  return dedupeStepsByUrl(arr).map((s, i) => slimPickerStep(s, i));
+}
+
 function slimPickerStep(s: Record<string, unknown>, i: number): PickerStep {
   const pageType = String(s.page_type || s.step_type || '');
   const cloned =
