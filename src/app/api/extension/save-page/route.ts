@@ -458,18 +458,40 @@ export async function POST(req: NextRequest) {
   });
 
   // 1) Create the archive row (single step of the chosen type).
-  const { data: created, error: insertErr } = await supabaseAdmin
+  const insertRow = {
+    name,
+    total_steps: 1,
+    steps: [buildStep()],
+    section: 'page',
+    owner_user_id: userId,
+    list_page_type: effectiveType,
+    list_source_url: url,
+    list_tags: tags,
+    list_geo: geo || null,
+    list_category: category || name,
+    ...(projectId ? { project_id: projectId } : {}),
+  };
+  let { data: created, error: insertErr } = await supabaseAdmin
     .from('archived_funnels')
-    .insert({
-      name,
-      total_steps: 1,
-      steps: [buildStep()],
-      section: 'page',
-      owner_user_id: userId,
-      ...(projectId ? { project_id: projectId } : {}),
-    })
+    .insert(insertRow)
     .select('id')
     .single();
+  if (insertErr && /list_page_type|schema cache|column/i.test(insertErr.message || '')) {
+    const retry = await supabaseAdmin
+      .from('archived_funnels')
+      .insert({
+        name,
+        total_steps: 1,
+        steps: [buildStep()],
+        section: 'page',
+        owner_user_id: userId,
+        ...(projectId ? { project_id: projectId } : {}),
+      })
+      .select('id')
+      .single();
+    created = retry.data;
+    insertErr = retry.error;
+  }
 
   if (insertErr || !created) {
     return NextResponse.json(
@@ -531,10 +553,21 @@ export async function POST(req: NextRequest) {
   clonedData.screenshotDesktopUrl = desktopUrl;
   clonedData.screenshotMobileUrl = mobileUrl;
   clonedData.htmlUrl = htmlUrl;
-  await supabaseAdmin
-    .from('archived_funnels')
-    .update({ steps: [buildStep()] })
-    .eq('id', pageId);
+  const listPatch = {
+    steps: [buildStep()],
+    list_page_type: effectiveType,
+    list_source_url: url,
+    list_shot: desktopUrl,
+    list_shot_mobile: mobileUrl,
+    list_html_url: htmlUrl,
+    list_tags: tags,
+    list_geo: geo || null,
+    list_category: category || name,
+  };
+  const upd = await supabaseAdmin.from('archived_funnels').update(listPatch).eq('id', pageId);
+  if (upd.error && /list_page_type|schema cache|column/i.test(upd.error.message || '')) {
+    await supabaseAdmin.from('archived_funnels').update({ steps: [buildStep()] }).eq('id', pageId);
+  }
 
   const editorUrl = `/edit/${pageId}?src=${encodeURIComponent(url)}&title=${encodeURIComponent(name)}`;
 

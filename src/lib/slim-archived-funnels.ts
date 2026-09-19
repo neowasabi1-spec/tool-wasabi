@@ -20,6 +20,7 @@ export type SlimArchiveStep = {
     htmlUrl?: string;
     category?: string;
     tags?: string[];
+    geo?: string;
   };
 };
 
@@ -154,8 +155,96 @@ function asRows(data: unknown): SlimArchiveRow[] {
 }
 
 const META_COLS = 'id, name, created_at, total_steps, project_id, section';
-/** Netlify edge wraps this route and kills it ~36s. Stay well under that. */
-const TEMPLATE_BUDGET_MS = 28_000;
+const LIST_COLS = `${META_COLS}, list_page_type, list_source_url, list_shot, list_shot_mobile, list_html_url, list_tags, list_geo, list_category`;
+
+const CREATE_LIST_COLS_SQL = `
+ALTER TABLE public.archived_funnels
+  ADD COLUMN IF NOT EXISTS list_page_type text,
+  ADD COLUMN IF NOT EXISTS list_source_url text,
+  ADD COLUMN IF NOT EXISTS list_shot text,
+  ADD COLUMN IF NOT EXISTS list_shot_mobile text,
+  ADD COLUMN IF NOT EXISTS list_html_url text,
+  ADD COLUMN IF NOT EXISTS list_tags jsonb,
+  ADD COLUMN IF NOT EXISTS list_geo text,
+  ADD COLUMN IF NOT EXISTS list_category text;
+
+CREATE OR REPLACE FUNCTION public.template_list_cards(p_limit int DEFAULT 500)
+RETURNS TABLE (
+  id uuid,
+  name text,
+  created_at timestamptz,
+  total_steps int,
+  project_id uuid,
+  section text,
+  list_page_type text,
+  list_source_url text,
+  list_shot text,
+  list_shot_mobile text,
+  list_html_url text,
+  list_tags jsonb,
+  list_geo text,
+  list_category text
+)
+LANGUAGE sql
+STABLE
+SET statement_timeout TO '6s'
+AS $$
+  SELECT
+    f.id,
+    f.name,
+    f.created_at,
+    COALESCE(
+      CASE
+        WHEN btrim(COALESCE(f.total_steps::text, '')) ~ '^[0-9]+$'
+        THEN btrim(f.total_steps::text)::integer
+        ELSE NULL
+      END,
+      1
+    ) AS total_steps,
+    f.project_id,
+    f.section::text,
+    f.list_page_type,
+    f.list_source_url,
+    f.list_shot,
+    f.list_shot_mobile,
+    f.list_html_url,
+    f.list_tags,
+    f.list_geo,
+    f.list_category
+  FROM archived_funnels f
+  WHERE f.project_id IS NULL
+  ORDER BY f.created_at DESC
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limit, 500), 2000));
+$$;
+GRANT EXECUTE ON FUNCTION public.template_list_cards(int) TO service_role;
+GRANT EXECUTE ON FUNCTION public.template_list_cards(int) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.template_list_cards(int) TO anon;
+NOTIFY pgrst, 'reload schema';
+`;
+
+const BACKFILL_LIST_SQL = `
+UPDATE public.archived_funnels f
+SET
+  list_page_type = COALESCE(f.steps->0->>'page_type', f.steps->0->>'step_type', 'landing'),
+  list_source_url = COALESCE(f.steps->0#>>'{cloned_data,source_url}', f.steps->0->>'url_to_swipe'),
+  list_shot = NULLIF(f.steps->0#>>'{cloned_data,screenshotDesktopUrl}', ''),
+  list_shot_mobile = NULLIF(f.steps->0#>>'{cloned_data,screenshotMobileUrl}', ''),
+  list_html_url = NULLIF(f.steps->0#>>'{cloned_data,htmlUrl}', ''),
+  list_tags = COALESCE(f.steps->0#>'{cloned_data,tags}', '[]'::jsonb),
+  list_geo = NULLIF(f.steps->0#>>'{cloned_data,geo}', ''),
+  list_category = COALESCE(NULLIF(f.steps->0#>>'{cloned_data,category}', ''), NULLIF(f.steps->0->>'category', ''), f.name)
+WHERE f.id IN (
+  SELECT id FROM public.archived_funnels
+  WHERE project_id IS NULL
+    AND (list_page_type IS NULL OR btrim(list_page_type) = '')
+  ORDER BY created_at DESC
+  LIMIT 80
+);
+`;
+/** Netlify's edge wrapper kills this HTTP request around 10–26s even when
+ *  the function maxDuration is higher. Never touch `steps` jsonb here — those
+ *  rows still hold 1–5 MB of HTML and that is what timed Templates out. */
+const TEMPLATE_BUDGET_MS = 8_000;
 const TEMPLATE_RPC_MAX = 500;
 const PATH_BATCH = 12;
 
@@ -741,52 +830,164 @@ function createdAtMs(row: SlimArchiveRow): number {
   return Number.isFinite(t) ? t : 0;
 }
 
+let listColsPromise: Promise<void> | null = null;
+
+async function ensureListCols(): Promise<void> {
+  if (!listColsPromise) {
+    listColsPromise = (async () => {
+      const res = await supabaseAdmin.rpc(
+        'exec_sql',
+        { sql: CREATE_LIST_COLS_SQL },
+        { abortSignal: AbortSignal.timeout(8_000) },
+      );
+      if (res.error) console.warn('[slim-archived-funnels] list cols:', res.error.message);
+    })().catch((e) => {
+      console.warn('[slim-archived-funnels] list cols failed:', e);
+    });
+  }
+  await listColsPromise;
+}
+
+async function backfillListCols(): Promise<void> {
+  try {
+    const res = await supabaseAdmin.rpc(
+      'exec_sql',
+      { sql: BACKFILL_LIST_SQL },
+      { abortSignal: AbortSignal.timeout(6_000) },
+    );
+    if (res.error) console.warn('[slim-archived-funnels] list backfill:', res.error.message);
+  } catch (e) {
+    console.warn('[slim-archived-funnels] list backfill aborted:', e instanceof Error ? e.message : e);
+  }
+}
+
+function listTags(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((t) => String(t).trim()).filter(Boolean);
+  if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+    try {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) ? p.map((t) => String(t).trim()).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function listRowToSlim(raw: Record<string, unknown>): SlimArchiveRow {
+  const id = String(raw.id || '');
+  const name = String(raw.name || '');
+  const total = asTotalSteps(raw.total_steps, 1);
+  const section = typeof raw.section === 'string' ? raw.section : null;
+  const isPage = section === 'page' || total <= 1;
+  const url = String(raw.list_source_url || '').trim();
+  const pageType = String(raw.list_page_type || '').trim() || 'landing';
+  const htmlUrl =
+    String(raw.list_html_url || '').trim() ||
+    (id ? `/api/funnel-html?pageId=${encodeURIComponent(id)}&kind=cloned&variant=desktop` : undefined);
+  const steps: SlimArchiveStep[] = isPage
+    ? [
+        {
+          name,
+          page_type: pageType,
+          page_id: id,
+          step_index: 1,
+          url_to_swipe: url,
+          cloned_data: {
+            source_url: url || undefined,
+            screenshotDesktopUrl: (typeof raw.list_shot === 'string' && raw.list_shot) || null,
+            screenshotMobileUrl: (typeof raw.list_shot_mobile === 'string' && raw.list_shot_mobile) || null,
+            htmlUrl,
+            category: String(raw.list_category || name || '') || undefined,
+            tags: listTags(raw.list_tags),
+            geo: String(raw.list_geo || '').trim() || undefined,
+          },
+        },
+      ]
+    : [];
+  return {
+    id,
+    name,
+    created_at: String(raw.created_at || ''),
+    total_steps: total,
+    project_id: raw.project_id ? String(raw.project_id) : null,
+    section,
+    steps,
+  };
+}
+
+async function loadListCards(cap: number): Promise<{ rows: SlimArchiveRow[]; untyped: number } | null> {
+  const mapRows = (data: unknown) => {
+    let untyped = 0;
+    const rows = (Array.isArray(data) ? data : []).map((raw) => {
+      const r = raw as Record<string, unknown>;
+      if (!String(r.list_page_type || '').trim()) untyped += 1;
+      return listRowToSlim(r);
+    }).filter((r) => r.id);
+    return { rows, untyped };
+  };
+  try {
+    const rpc = await supabaseAdmin.rpc(
+      'template_list_cards',
+      { p_limit: cap },
+      { abortSignal: AbortSignal.timeout(5_000) },
+    );
+    if (!rpc.error && rpc.data) return mapRows(rpc.data);
+  } catch (e) {
+    console.warn('[slim-archived-funnels] list rpc:', e instanceof Error ? e.message : e);
+  }
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('archived_funnels')
+      .select(LIST_COLS)
+      .is('project_id', null)
+      .order('created_at', { ascending: false })
+      .limit(cap)
+      .abortSignal(AbortSignal.timeout(5_000));
+    if (error) {
+      console.warn('[slim-archived-funnels] list cards:', error.message);
+      return null;
+    }
+    return mapRows(data);
+  } catch (e) {
+    console.warn('[slim-archived-funnels] list cards aborted:', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
 async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
   const deadline = Date.now() + TEMPLATE_BUDGET_MS;
-  await ensureSlimFn();
+  void ensureSlimFn();
+  await ensureListCols();
 
   try {
-    const viaRpc = await loadTemplatePagesRpc(deadline, cap);
-    let pages: SlimArchiveRow[] = viaRpc || [];
-
-    // RPC used to hard-cap at 80. Even after raising it, a timeout can
-    // stop pagination early — pull the full meta list so extra saved
-    // pages still show in Templates instead of vanishing.
-    try {
-      const meta = await loadMeta(null, cap);
-      const pageMeta = meta.filter((r) => isPageRow(r));
-      if (pageMeta.length) {
-        const have = new Set(pages.map((r) => r.id));
-        for (const m of pageMeta) {
-          if (!have.has(m.id)) pages.push(m);
-        }
-        pages.sort((a, b) => createdAtMs(b) - createdAtMs(a));
-      }
-      const shells = pages.filter((r) => !r.steps.length);
-      if (shells.length && Date.now() < deadline) {
-        const stepsById = await hydrateViaJsonPaths(
-          shells.map((r) => r.id),
-          deadline,
-        );
-        for (const r of pages) {
-          const steps = stepsById.get(r.id);
-          if (steps?.length) {
-            r.steps = steps;
-            if (!r.total_steps) r.total_steps = steps.length;
+    let listed = await loadListCards(cap);
+    if (listed && listed.untyped > 0 && deadline - Date.now() > 5_500) {
+      await backfillListCols();
+      listed = (await loadListCards(cap)) || listed;
+    }
+    if (listed && listed.rows.length) {
+      const pages = listed.rows.filter((r) => isPageRow(r));
+      let funnels = listed.rows.filter((r) => !isPageRow(r));
+      if (funnels.some((r) => !r.steps.length) && Date.now() < deadline) {
+        try {
+          const viaFunnels = await loadTemplateFunnelsRpc(deadline, cap);
+          if (viaFunnels && viaFunnels.length) {
+            const have = new Set(viaFunnels.map((r) => r.id));
+            funnels = [...viaFunnels, ...funnels.filter((r) => !have.has(r.id))];
           }
+        } catch (e) {
+          console.warn('[slim-archived-funnels] funnel rpc:', e);
         }
       }
-    } catch (e) {
-      console.warn('[slim-archived-funnels] template meta merge:', e);
+      pages.sort((a, b) => createdAtMs(b) - createdAtMs(a));
+      return { rows: [...pages, ...funnels], error: null };
     }
 
-    if (pages.length) {
-      // Merge with the multi-step FUNNEL rows. Prefer the dedicated RPC:
-      // it ships slim steps, so the Funnel tab and the Chimera picker get
-      // real step lists. Fall back to bare meta shells if the RPC is
-      // missing (steps empty, but the funnels at least stay visible).
+    const viaRpc = await loadTemplatePagesRpc(deadline, cap);
+    if (viaRpc && viaRpc.length) {
       let funnels: SlimArchiveRow[] = [];
-      const have = new Set(pages.map((r) => r.id));
+      const have = new Set(viaRpc.map((r) => r.id));
       try {
         const viaFunnels = await loadTemplateFunnelsRpc(deadline, cap);
         if (viaFunnels && viaFunnels.length) {
@@ -795,37 +996,21 @@ async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow
           const all = await loadMeta(null, cap);
           funnels = all.filter((r) => !have.has(r.id) && !isPageRow(r));
         }
-        // The picker needs the actual step list (checkboxes): if any funnel
-        // came back as a bare shell, hydrate its steps directly.
-        if (funnels.some((r) => !r.steps.length)) {
-          await hydrateFunnelSteps(funnels, Date.now() + 10_000);
-        }
       } catch (e) {
         console.warn('[slim-archived-funnels] funnel meta:', e);
       }
-      return { rows: [...pages, ...funnels], error: null };
+      return { rows: [...viaRpc, ...funnels], error: null };
     }
 
     const rows = await loadMeta(null, cap);
-    const pageIds = rows.filter((r) => isPageRow(r)).map((r) => r.id);
-    const stepsById = await hydrateViaJsonPaths(pageIds, deadline);
-    for (const r of rows) {
-      const steps = stepsById.get(r.id);
-      if (steps?.length) {
-        r.steps = steps;
-        if (!r.total_steps) r.total_steps = steps.length;
-      }
-    }
-    // FUNNEL rows (multi-step) still have no steps here: the json-path
-    // hydrate above only grabs step 0 for pages. Pull the full slim step
-    // lists so Templates → Funnel and the Chimera picker stay usable.
-    const funnelRows = rows.filter((r) => !isPageRow(r) && !r.steps.length);
-    if (funnelRows.length) {
-      await hydrateFunnelSteps(funnelRows, Date.now() + 10_000);
-    }
     return { rows, error: null };
   } catch (e) {
-    return { rows: [], error: e instanceof Error ? e.message : String(e) };
+    try {
+      const rows = await loadMeta(null, cap);
+      return { rows, error: null };
+    } catch {
+      return { rows: [], error: e instanceof Error ? e.message : String(e) };
+    }
   }
 }
 
