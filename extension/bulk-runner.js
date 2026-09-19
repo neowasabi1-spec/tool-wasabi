@@ -8,6 +8,7 @@ const els = {
   failed: document.getElementById('failed'),
   left: document.getElementById('left'),
   typeLabel: document.getElementById('typeLabel'),
+  now: document.getElementById('now'),
   stop: document.getElementById('stop'),
   resume: document.getElementById('resume'),
 };
@@ -34,18 +35,16 @@ function render(st) {
   const skipped = Number(st.skippedCount) || 0;
   const failed = Number(st.failedCount) || 0;
   const left = Math.max(0, total - index);
-  els.saved.textContent = String(saved);
-  els.skipped.textContent = String(skipped);
-  els.failed.textContent = String(failed);
-  els.left.textContent = String(left);
-  els.fill.style.width = total ? `${Math.round((index / total) * 100)}%` : '0%';
-  els.now.textContent = st.status || '';
-  if (els.typeLabel) {
-    els.typeLabel.textContent = st.pageTypeLabel || st.pageType || 'page';
-  }
-  els.phase.textContent = st.done ? 'done' : running ? 'running' : 'paused';
-  els.stop.style.display = running ? '' : 'none';
-  els.resume.style.display = running || st.done ? 'none' : '';
+  if (els.saved) els.saved.textContent = String(saved);
+  if (els.skipped) els.skipped.textContent = String(skipped);
+  if (els.failed) els.failed.textContent = String(failed);
+  if (els.left) els.left.textContent = String(left);
+  if (els.fill) els.fill.style.width = total ? `${Math.round((index / total) * 100)}%` : '0%';
+  if (els.now) els.now.textContent = st.status || '';
+  if (els.typeLabel) els.typeLabel.textContent = st.pageTypeLabel || st.pageType || 'page';
+  if (els.phase) els.phase.textContent = st.done ? 'done' : running ? 'running' : 'paused';
+  if (els.stop) els.stop.style.display = running ? '' : 'none';
+  if (els.resume) els.resume.style.display = running || st.done ? 'none' : '';
 }
 
 async function send(msg) {
@@ -188,4 +187,8 @@ window.addEventListener('beforeunload', () => {
   });
 });
 
-run();
+run().catch((e) => {
+  const msg = String((e && e.message) || e);
+  if (els.now) els.now.textContent = `Importer crashed: ${msg}`;
+  if (els.phase) els.phase.textContent = 'error';
+});
