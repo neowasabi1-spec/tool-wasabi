@@ -209,25 +209,23 @@ async function loadFolders() {
     if (!res.ok) return;
     const data = await res.json();
     if ((data.folders || []).length) {
+      const keep = els.folder.value;
+      let remembered = '';
+      try {
+        remembered = String((await chrome.storage.local.get('wasabi_last_page_type')).wasabi_last_page_type || '');
+      } catch { /* ignore */ }
       els.folder.innerHTML = '';
-      const preferAdvertorial = /adspend/i.test((activeTab && activeTab.url) || '');
-      const prefer = preferAdvertorial ? 'advertorial' : 'landing';
-      let picked = false;
       for (const f of data.folders) {
         const opt = document.createElement('option');
         opt.value = f.id;
         opt.textContent = f.name;
-        if (!picked && f.id === prefer) {
-          opt.selected = true;
-          picked = true;
-        }
         els.folder.appendChild(opt);
       }
-      if (!picked) {
-        for (const opt of els.folder.options) {
-          if (opt.value === 'landing') { opt.selected = true; break; }
-        }
-      }
+      const has = (v) => v && [...els.folder.options].some((o) => o.value === v);
+      if (has(keep)) els.folder.value = keep;
+      else if (has(remembered)) els.folder.value = remembered;
+      else if (/adspend/i.test((activeTab && activeTab.url) || '') && has('advertorial')) els.folder.value = 'advertorial';
+      else if (has('landing')) els.folder.value = 'landing';
     }
     for (const t of data.tags || []) {
       const opt = document.createElement('option');
@@ -372,12 +370,30 @@ function commitNewType() {
   els.newType.classList.add('hidden');
 }
 
+function selectedTypeLabel() {
+  const typed = (els.newType && els.newType.value.trim()) || '';
+  if (typed) return typed;
+  const opt = els.folder && els.folder.options[els.folder.selectedIndex];
+  return (opt && opt.textContent) || els.folder.value || 'page';
+}
+
+function rememberPageType(value) {
+  const v = String(value || '').trim();
+  if (!v) return;
+  try { chrome.storage.local.set({ wasabi_last_page_type: v }); } catch { /* ignore */ }
+}
+
 function resolveSavePageType() {
   const typed = (els.newType && els.newType.value.trim()) || '';
   if (typed) {
-    return { pageType: slugifyType(typed) || 'landing', pageTypeLabel: typed };
+    const pageType = slugifyType(typed) || 'landing';
+    rememberPageType(pageType);
+    return { pageType, pageTypeLabel: typed };
   }
-  return { pageType: els.folder.value || 'landing', pageTypeLabel: undefined };
+  const pageType = els.folder.value || 'landing';
+  rememberPageType(pageType);
+  const opt = els.folder.options[els.folder.selectedIndex];
+  return { pageType, pageTypeLabel: (opt && opt.textContent) || undefined };
 }
 
 function domainOf(url) {
@@ -453,6 +469,7 @@ async function onSave() {
       screenshotMobilePath: screenshotPaths.mobile || null,
       pageType,
       pageTypeLabel,
+      pageTypeExplicit: true,
       category,
       tags,
       projectId: projectId || null,
@@ -716,9 +733,12 @@ function parseBulkUrlsText(text) {
 function updateBulkCount() {
   if (!els.bulkCount) return;
   const n = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value).length;
-  els.bulkCount.textContent = n ? `${n} page${n === 1 ? '' : 's'} ready` : '';
+  const typeLabel = selectedTypeLabel();
+  els.bulkCount.textContent = n
+    ? `${n} page${n === 1 ? '' : 's'} ready → ${typeLabel}`
+    : `Will save into ${typeLabel}`;
   if (els.bulkMode && els.bulkMode.checked && els.save && !funnelPollTimer && !bulkPollTimer) {
-    els.save.textContent = n ? `Save ${n} pages` : 'Save to Wasabi';
+    els.save.textContent = n ? `Save ${n} as ${typeLabel}` : 'Save to Wasabi';
   }
 }
 
@@ -997,6 +1017,12 @@ async function resumeBackgroundBulk() {
 
 els.save.addEventListener('click', onSave);
 els.openTool.addEventListener('click', () => chrome.tabs.create({ url: TOOL }));
+if (els.folder) {
+  els.folder.addEventListener('change', () => {
+    rememberPageType(els.folder.value);
+    updateBulkCount();
+  });
+}
 if (els.bulkMode) {
   els.bulkMode.addEventListener('change', () => {
     if (els.bulkMode.checked && els.funnelMode) els.funnelMode.checked = false;

@@ -7,7 +7,7 @@ const els = {
   skipped: document.getElementById('skipped'),
   failed: document.getElementById('failed'),
   left: document.getElementById('left'),
-  now: document.getElementById('now'),
+  typeLabel: document.getElementById('typeLabel'),
   stop: document.getElementById('stop'),
   resume: document.getElementById('resume'),
 };
@@ -40,6 +40,9 @@ function render(st) {
   els.left.textContent = String(left);
   els.fill.style.width = total ? `${Math.round((index / total) * 100)}%` : '0%';
   els.now.textContent = st.status || '';
+  if (els.typeLabel) {
+    els.typeLabel.textContent = st.pageTypeLabel || st.pageType || 'page';
+  }
   els.phase.textContent = st.done ? 'done' : running ? 'running' : 'paused';
   els.stop.style.display = running ? '' : 'none';
   els.resume.style.display = running || st.done ? 'none' : '';

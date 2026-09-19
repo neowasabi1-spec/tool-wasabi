@@ -66,6 +66,7 @@ interface SaveBody {
   category?: string;
   tags?: string[];
   projectId?: string | null; // when set, link the page to a project's Competitor Landings
+  pageTypeExplicit?: boolean;
   skipDuplicateScan?: boolean;
   // Funnel-walk mode: instead of one single-step row per page, all the steps of
   // a walked funnel go into ONE `archived_funnels` row (the "folder"). The first
@@ -174,7 +175,9 @@ export async function POST(req: NextRequest) {
   // thank-you pages all landed in the "Landing Page" folder. When the type
   // is missing/default we infer the real one from URL + title + HTML.
   // An explicit non-landing choice from the user is always respected.
-  const typeWasExplicit = Boolean(requestedType) && requestedType !== 'landing';
+  const typeWasExplicit =
+    body.pageTypeExplicit === true ||
+    (!body.funnelGroup && Boolean(requestedType) && requestedType !== 'landing');
 
   if (resolvedType.isCustom) {
     try {
