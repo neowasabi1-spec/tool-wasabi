@@ -486,6 +486,7 @@ export function injectInteractivityRescue(
   // that runtime and replay the messenger with injectChatQuizEngine.
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
+    return injectChatQuizEngine(html);
   } else if (opts.keepScripts) {
     html = neutralizeRocketLoader(html).html;
   } else {

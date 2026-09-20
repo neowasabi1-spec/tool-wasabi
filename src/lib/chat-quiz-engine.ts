@@ -42,15 +42,15 @@ export function chatQuizEditorRevealCss(): string {
     `<style data-editor-override id="${STYLE_ID}-editor">` +
     `.nodisplay.chatbox{display:flex!important;flex-direction:column!important}` +
     `.nodisplay.chatbox-message,.nodisplay.chat-btn-block{display:inline-flex!important}` +
-    `.nodisplay.quiz-panel{display:block!important}` +
+    `#quiz-results,.quiz-results,.quiz-panel,.nodisplay.quiz-panel{display:block!important;width:100%!important;max-width:100%!important}` +
     `.chatbox-message.reply{display:none!important}` +
     `</style>`
   );
 }
 
 const ENGINE_JS = `(function(){
-if(window.__wasabiChatQuiz)return;
-window.__wasabiChatQuiz=1;
+if(window.__wasabiChatQuiz==='v2')return;
+window.__wasabiChatQuiz='v2';
 function q(sel,root){return Array.prototype.slice.call((root||document).querySelectorAll(sel));}
 function show(el){
   if(!el)return;
@@ -61,6 +61,11 @@ function hide(el){
   if(!el)return;
   el.classList.add('nodisplay');
   el.style.removeProperty('display');
+}
+function clearForcedDisplay(){
+  q('#quiz-results,.quiz-results,.quiz-panel,#quiz-loading,.chatbox,.chatbox-message,.chat-btn-block').forEach(function(el){
+    el.style.removeProperty('display');
+  });
 }
 function scrollToEl(el){
   if(!el)return;
@@ -166,6 +171,7 @@ function onClick(ev){
   displayMessages(nextBox.getAttribute('data-total-steps'),next);
 }
 function start(){
+  clearForcedDisplay();
   reset();
   var first=document.querySelector('.chatbox.bot-reply[data-step="1"]');
   displayMessages(first&&first.getAttribute('data-total-steps')||5,1);
@@ -185,10 +191,18 @@ export function injectChatQuizEngine(html: string): string {
     .replace(/<script\b[^>]*>[\s\S]*?\b(?:LL_VARIANT_ID|LL_LANDER_ID|reportConversion|llQueryStrings|llMacros)\b[\s\S]*?<\/script>/gi, '');
 
   out = restoreQuizCtas(out);
+  out = out.replace(/\sstyle=(["'])([^"']*)\1/gi, (full, q: string, style: string) => {
+    if (!/display\s*:\s*inline-flex/i.test(style)) return full;
+    const next = style.replace(/display\s*:\s*inline-flex\s*!important;?/gi, '').trim();
+    return next ? ` style=${q}${next}${q}` : '';
+  });
 
   const style =
     `<style id="${STYLE_ID}">` +
     `.nodisplay{display:none!important}` +
+    `.chatbox:not(.nodisplay){display:flex;flex-direction:column}` +
+    `#quiz-results:not(.nodisplay),.quiz-results:not(.nodisplay),` +
+    `.quiz-panel:not(.nodisplay),#quiz-loading:not(.nodisplay){display:block!important;width:100%;max-width:100%}` +
     `</style>`;
   const script = `<script id="${SCRIPT_ID}">${ENGINE_JS}</script>`;
 
