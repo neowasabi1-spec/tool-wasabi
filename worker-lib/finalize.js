@@ -8,6 +8,7 @@
 // Output: stessa shape che ritornava la route Netlify.
 
 const { detectDynamicScripts } = require('./detect-dynamic-scripts');
+const { injectChatQuizEngine } = require('./chat-quiz-engine');
 
 function escRxLiteral(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1252,6 +1253,7 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     '</body>',
     swipeScript,
   );
+  resultHtml = injectChatQuizEngine(resultHtml);
 
   const newTitle = serverSideTitlePairs[0]?.to
     || (texts.length > 0 ? replacementPairs.find((p) => !p.attr)?.to || '' : '');

@@ -13,6 +13,7 @@
 // route handler or library code.
 
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
+import { injectChatQuizEngine } from './chat-quiz-engine';
 
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
@@ -865,6 +866,7 @@ function once(){
   setTimeout(initCarousels,600);setTimeout(initCarousels,1600);
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
+    if(t.closest&&(t.closest('.chat-button')||t.closest('[data-next-chat]')||t.closest('#chatbox-app')||t.closest('#chatbox-content')))return;
     // 0a) <details>: il browser fa gia' il toggle nativo. injectInteractivityRescue
     //     ha rimosso 'onclick="return false"' e 'open' dall'HTML, quindi il
     //     click su <summary> apre/chiude il details via meccanismo nativo
@@ -1024,9 +1026,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     out = `<head>${styleTag}</head>${out}`;
   }
   if (/<\/body>/i.test(out)) {
-    return out.replace(/<\/body>/i, `${script}</body>`);
+    out = out.replace(/<\/body>/i, `${script}</body>`);
+  } else {
+    out += script;
   }
-  return out + script;
+  return injectChatQuizEngine(out);
 }
 
 /**

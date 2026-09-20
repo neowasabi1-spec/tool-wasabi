@@ -66,6 +66,10 @@ const PLAYER_MARKERS: Array<{ re: RegExp; label: string }> = [
   { re: /player\.pandavideo|vidalytics\.com/i, label: 'hosted VSL player' },
 ];
 
+const CHAT_QUIZ_MARKERS: Array<{ re: RegExp; label: string }> = [
+  { re: /data-next-chat\s*=|#chatbox-app\b|function\s+displayMessages\s*\(|landerlab\.io/i, label: 'Landerlab chat quiz' },
+];
+
 /**
  * Detect script-driven commerce/checkout machinery across the whole HTML
  * (external bundles included). Returns the matched signal labels.
@@ -81,6 +85,13 @@ export function detectPlayerMarkers(html: string): string[] {
   if (!html || typeof html !== 'string') return [];
   const out: string[] = [];
   for (const m of PLAYER_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
+export function detectChatQuizMarkers(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const out: string[] = [];
+  for (const m of CHAT_QUIZ_MARKERS) if (m.re.test(html)) out.push(m.label);
   return out;
 }
 
@@ -172,8 +183,9 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   // checkout whose logic is entirely in cdn.shopify.com bundles).
   const commerceSignals = detectCommerceMarkers(html);
   const playerSignals = detectPlayerMarkers(html);
+  const chatQuizSignals = detectChatQuizMarkers(html);
 
-  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0) {
+  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0 && chatQuizSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
@@ -182,6 +194,7 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   }
   for (const s of commerceSignals) signals.push(s);
   for (const s of playerSignals) signals.push(s);
+  for (const s of chatQuizSignals) signals.push(s);
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But

@@ -3407,6 +3407,7 @@ export default function FrontEndFunnel() {
   const QUIZ_URL_PATTERNS = [
     'heyflow', 'typeform', 'involve.me', 'outgrow', 'interact',
     'quizzes', 'quiz', 'tryinteract', 'leadquizzes', 'bucket.io',
+    'landerlab',
   ];
 
   const isQuizUrl = (rawUrl: string | undefined | null): boolean => {

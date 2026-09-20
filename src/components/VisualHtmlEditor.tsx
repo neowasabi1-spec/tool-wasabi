@@ -30,6 +30,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts } from '@/lib/spa-rescue';
+import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
 const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
@@ -2009,7 +2010,8 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     ${REVEAL_VISIBILITY_CSS}
   </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
-  const inject = editorCss + script;
+  let inject = editorCss + script;
+  if (isChatQuizHtml(clean)) inject = chatQuizEditorRevealCss() + inject;
   if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
   if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
   return clean + inject;
