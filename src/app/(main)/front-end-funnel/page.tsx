@@ -21,6 +21,8 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
+import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+import { injectLiveCommentClock } from '@/lib/live-comment-clock';
 import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
 import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
 import { understandClonedLander } from '@/lib/lander-agent-client';
@@ -230,12 +232,20 @@ function fitEnqueueMessage(msg: Record<string, unknown>): string {
  *   5. Aggiunge un banner ".__preview-static-banner" in fondo che
  *      indica che e' uno snapshot.
  */
-function prepareClonedHtmlForPreview(rawHtml: string): string {
+function prepareClonedHtmlForPreview(
+  rawHtml: string,
+  opts: { keepScripts?: boolean } = {},
+): string {
   let html = rawHtml;
 
   html = html.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '');
-  html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-  html = html.replace(/<script\b[^>]*\/>/gi, '');
+  // Live-chat / VSL pages build the comment feed in inline JS. Stripping
+  // every script here emptied #clist and killed timed entry. Keep those
+  // engines; still drop noscript fallbacks and (below) blocked embeds.
+  if (!opts.keepScripts) {
+    html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+    html = html.replace(/<script\b[^>]*\/>/gi, '');
+  }
   html = html.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
 
   // Sostituisce iframe verso host che bloccano framing con placeholder.
@@ -262,6 +272,25 @@ function prepareClonedHtmlForPreview(rawHtml: string): string {
     }
   );
 
+  return html;
+}
+
+function clonedPreviewKeepScripts(html: string): boolean {
+  try {
+    return detectDynamicScripts(html).functional;
+  } catch {
+    return false;
+  }
+}
+
+function runClonedPreviewPipeline(rawHtml: string): string {
+  const keepLive = clonedPreviewKeepScripts(rawHtml);
+  let html = prepareClonedHtmlForPreview(rawHtml, { keepScripts: keepLive });
+  try {
+    html = injectInteractivityRescue(html, { keepScripts: keepLive });
+  } catch {
+    /* keep html as prepared */
+  }
   return html;
 }
 
@@ -1078,6 +1107,10 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
       clean = clean.replace(/<!--__WASABI_SCRIPT_(\d+)__-->/g, (_m, i: string) => scriptSlots[Number(i)] ?? '');
     }
 
+    if (options?.keepScripts) {
+      clean = injectLiveCommentClock(clean);
+    }
+
     return clean;
   } catch {
     return html;
@@ -1755,9 +1788,11 @@ export default function FrontEndFunnel() {
       // Lo neutralizziamo così gli script girano nativamente sull'origine.
       const { neutralizeRocketLoader } = await import('@/lib/neutralize-rocket-loader');
       const finalize = (pristineHtml: string, editedHtml: string) =>
-        neutralizeRocketLoader(
-          unbakeDynamicComments(reattachDynamicScripts(pristineHtml, editedHtml)).html,
-        ).html;
+        injectLiveCommentClock(
+          neutralizeRocketLoader(
+            unbakeDynamicComments(reattachDynamicScripts(pristineHtml, editedHtml)).html,
+          ).html,
+        );
       html = finalize(pristine || htmlIn, htmlIn);
       if (mobileHtmlIn) mobileHtml = finalize(pristineMobile || pristine || mobileHtmlIn, mobileHtmlIn);
     } catch { /* fallback: HTML editato così com'è */ }
@@ -7567,16 +7602,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       // param e il bundle vede affiliate=null -> redirect.
                       const rawHtml = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
-                      let htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
-                        ? prepareClonedHtmlForPreview(rawHtml)
+                      const htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
+                        ? runClonedPreviewPipeline(rawHtml)
                         : rawHtml;
-                      // Rende FAQ/accordion cliccabili anche nella tab nuova:
-                      // lo snapshot statico ha gli script originali spesso
-                      // rotti, quindi iniettiamo il toggler universale.
-                      try {
-                        const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
-                        htmlToOpen = injectInteractivityRescue(htmlToOpen);
-                      } catch { /* fallback: html senza rescue */ }
                       const blob = new Blob([htmlToOpen], { type: 'text/html;charset=utf-8' });
                       const url = URL.createObjectURL(blob);
                       window.open(url, '_blank', 'noopener,noreferrer');
@@ -7925,20 +7953,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // originali e dobbiamo reinizializzare la UI a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
                             if (isClonedPreview) {
-                              safeHtml = prepareClonedHtmlForPreview(safeHtml);
-                              // ── INIETTA RESCUE INTERATTIVITA' ─────────────────
-                              // prepareClonedHtmlForPreview strippa TUTTI gli script
-                              // della pagina originale (anti-redirect, anti-bouncer):
-                              // senza di noi a iniettare il click delegate, FAQ e
-                              // accordion nel preview non rispondono ai click —
-                              // l'utente vede una pagina morta. injectInteractivityRescue
-                              // aggiunge lo stesso handler usato dall'editor (vedi
-                              // src/lib/spa-rescue.ts), idempotente e safe da
-                              // riapplicare. Import statico in cima al file: il
-                              // dynamic require('@/...') NON viene risolto dal
-                              // bundler client e falliva silenziosamente.
+                              // Live-chat / VSL pages must keep the comment engine
+                              // (and a wall-clock fallback if Vidalytics never
+                              // mounts). Plain landings still strip bouncers.
                               try {
-                                safeHtml = injectInteractivityRescue(safeHtml);
+                                safeHtml = runClonedPreviewPipeline(safeHtml);
                               } catch (e) {
                                 console.warn('[preview] rescue inject fallita:', e);
                               }

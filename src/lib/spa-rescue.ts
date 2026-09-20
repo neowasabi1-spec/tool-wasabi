@@ -15,6 +15,8 @@
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
 import { isChatQuizHtml } from './chat-quiz-engine';
 import { healClonedLander } from './lander-heal';
+import { detectDynamicScripts } from './detect-dynamic-scripts';
+import { injectLiveCommentClock } from './live-comment-clock';
 
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
@@ -508,8 +510,8 @@ export function stripNonCarouselScripts(html: string): string {
   // Tutto il resto (analytics, tracking pixel, popup exit-intent,
   // GA/FB pixel, A/B testing, geolocation tracker, FunnelKit loader)
   // viene strippato.
-  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia)\b/i;
-  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\()/;
+  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia|vidalytics)\b/i;
+  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\(|fireCommentsForVideoTime|handleVideoTick|vidalytics_embed|getVidalyticsPlayer)/;
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
     (full, attrs: string, body: string) => {
@@ -547,6 +549,10 @@ export function injectInteractivityRescue(
   // Chat-quiz landers ship Landerlab/jQuery that blanks a srcdoc iframe
   // (host checks, conversion pixels, document rewrites). We always strip
   // that runtime and replay the messenger with injectChatQuizEngine.
+  const liveChat =
+    opts.keepScripts === true ||
+    (opts.keepScripts !== false && detectDynamicScripts(html).functional);
+
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
     return healClonedLander(html).html;
@@ -554,10 +560,12 @@ export function injectInteractivityRescue(
     // Playwright/Jina already froze the DOM. Leaving Next/Vite/React in
     // the snapshot makes them re-hydrate in our iframe and blank the page.
     html = stripNonCarouselScripts(html);
-  } else if (opts.keepScripts) {
+  } else if (liveChat) {
     html = neutralizeRocketLoader(html).html;
+    html = injectLiveCommentClock(html);
   } else {
     html = stripNonCarouselScripts(html);
+    html = injectLiveCommentClock(html);
   }
 
   // 2) NEUTRALIZZA <details onclick="return false" open>. Pattern usato
