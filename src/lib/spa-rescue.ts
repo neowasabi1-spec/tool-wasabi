@@ -13,7 +13,7 @@
 // route handler or library code.
 
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
-import { injectChatQuizEngine, isChatQuizHtml } from './chat-quiz-engine';
+import { isChatQuizHtml } from './chat-quiz-engine';
 import { healClonedLander } from './lander-heal';
 
 /**
@@ -488,7 +488,7 @@ export function injectInteractivityRescue(
   // that runtime and replay the messenger with injectChatQuizEngine.
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
-    return injectChatQuizEngine(html);
+    return healClonedLander(html).html;
   } else if (opts.keepScripts) {
     html = neutralizeRocketLoader(html).html;
   } else {
@@ -1038,7 +1038,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
   } else {
     out += script;
   }
-  return injectChatQuizEngine(out);
+  return healClonedLander(out).html;
 }
 
 /**
