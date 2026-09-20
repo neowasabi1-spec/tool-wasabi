@@ -61,6 +61,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
   const [recreated, setRecreated] = useState<RecreatePreview | null>(null);
   const [tagFilter, setTagFilter] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
+  const uploadModeRef = useRef<'folder' | 'auto'>('folder');
 
   const items = useMemo(() => rows.filter((r) => r.media_type !== 'folder'), [rows]);
   const folderRows = useMemo(() => rows.filter((r) => r.media_type === 'folder'), [rows]);
@@ -244,11 +245,12 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
 
   const uploadFiles = async (files: FileList | File[] | null) => {
     if (!files || (files as FileList).length === 0) return;
-    if (!openType || !openCategory) {
+    const auto = uploadModeRef.current === 'auto';
+    if (!auto && (!openType || !openCategory)) {
       toast.error('Open a category folder before uploading.');
       return;
     }
-    const category = openCategory === UNFILED ? '' : openCategory;
+    const category = auto ? '' : (openCategory === UNFILED ? '' : openCategory);
     setUploading(true);
     let ok = 0;
     let ko = 0;
@@ -257,7 +259,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
       try {
         const fd = new FormData();
         fd.append('file', file);
-        fd.append('ad_type', openType);
+        fd.append('ad_type', auto ? 'auto' : openType || 'auto');
         fd.append('category', category);
         fd.append('name', file.name.replace(/\.[^.]+$/, ''));
         const rr = await authFetch('/api/templates/ads/upload', { method: 'POST', body: fd });
@@ -272,8 +274,9 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
       }
     }
     setUploading(false);
+    uploadModeRef.current = 'folder';
     if (fileRef.current) fileRef.current.value = '';
-    if (ok > 0) toast.success(`${ok} ad${ok === 1 ? '' : 's'} uploaded`);
+    if (ok > 0) toast.success(auto ? `${ok} ad${ok === 1 ? '' : 's'} auto-sorted into type folders` : `${ok} ad${ok === 1 ? '' : 's'} uploaded`);
     if (ko > 0) toast.error(lastError || `${ko} file${ko === 1 ? '' : 's'} failed`);
   };
 
@@ -527,6 +530,21 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               <span className="text-[11px] text-gray-400">Add a type (e.g. Hook)</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => {
+              uploadModeRef.current = 'auto';
+              fileRef.current?.click();
+            }}
+            disabled={uploading}
+            className="group bg-white rounded-2xl border border-dashed border-violet-300 shadow-sm p-5 flex flex-col items-start gap-3 hover:border-violet-400 hover:shadow-lg hover:-translate-y-0.5 transition-all text-left"
+          >
+            <span className="inline-flex items-center justify-center w-11 h-11 rounded-xl bg-violet-50 text-violet-600">
+              {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
+            </span>
+            <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-violet-100 text-violet-800">Upload & auto-sort</span>
+            <span className="text-[11px] text-gray-400">Drop files — sorted into Image / Video / Story / UGC</span>
+          </button>
         </div>
       ) : openCategory === null ? (
         (() => {
@@ -641,6 +659,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
             onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
             onDrop={(e) => {
               e.preventDefault();
+              uploadModeRef.current = 'folder';
               void uploadFiles(e.dataTransfer.files);
             }}
           >
@@ -657,7 +676,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
               <div className="ml-auto">
                 <button
                   type="button"
-                  onClick={() => fileRef.current?.click()}
+                  onClick={() => { uploadModeRef.current = 'folder'; fileRef.current?.click(); }}
                   disabled={uploading}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 transition-colors disabled:opacity-50"
                 >
@@ -674,7 +693,7 @@ export default function AdsArchiveView({ search, onFolderCount }: Props) {
                 <p className="text-xs text-gray-400 mt-1">Drop images or videos here, or upload.</p>
                 <button
                   type="button"
-                  onClick={() => fileRef.current?.click()}
+                  onClick={() => { uploadModeRef.current = 'folder'; fileRef.current?.click(); }}
                   disabled={uploading}
                   className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
                 >

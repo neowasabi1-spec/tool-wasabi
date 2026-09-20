@@ -54,8 +54,11 @@ async function send(msg) {
 async function run() {
   if (running) return;
   const start = await getState();
-  if (!start || !Array.isArray(start.urls) || !start.urls.length) {
-    els.now.textContent = 'No URLs queued. Close this window and Scan again.';
+  const isCreatives = start && start.kind === 'creatives';
+  const items = isCreatives ? (start.items || []) : null;
+  const urls = isCreatives ? items.map((it) => it && it.mediaUrl).filter(Boolean) : (start && start.urls);
+  if (!start || !Array.isArray(urls) || !urls.length) {
+    els.now.textContent = 'Nothing queued. Close this window and Scan again.';
     return;
   }
   if (start.done) {
@@ -74,7 +77,6 @@ async function run() {
   let savedCount = Number(start.savedCount) || 0;
   let failedCount = Number(start.failedCount) || 0;
   let skippedCount = Number(start.skippedCount) || 0;
-  const urls = start.urls;
   const total = urls.length;
 
   for (; index < urls.length; index++) {
@@ -86,7 +88,7 @@ async function run() {
       done: false,
       index,
       tabId,
-      status: `${n}/${total}: opening…`,
+      status: `${n}/${total}: ${isCreatives ? 'saving creative…' : 'opening…'}`,
       savedCount,
       failedCount,
       skippedCount,
@@ -94,18 +96,27 @@ async function run() {
     render(st);
 
     try {
-      const r = await send({
-        type: 'BULK_ONE',
-        tabId,
-        url,
-        pageType: start.pageType,
-        pageTypeLabel: start.pageTypeLabel,
-        category: start.category,
-        tags: start.tags,
-        projectId: start.projectId,
-        wantDesktop: !!start.wantDesktop,
-        wantMobile: !!start.wantMobile,
-      });
+      const r = isCreatives
+        ? await send({
+            type: 'BULK_CREATIVE_ONE',
+            item: items[index],
+            category: start.category,
+            tags: start.tags,
+            pageUrl: start.pageUrl,
+            pageTitle: start.pageTitle,
+          })
+        : await send({
+            type: 'BULK_ONE',
+            tabId,
+            url,
+            pageType: start.pageType,
+            pageTypeLabel: start.pageTypeLabel,
+            category: start.category,
+            tags: start.tags,
+            projectId: start.projectId,
+            wantDesktop: !!start.wantDesktop,
+            wantMobile: !!start.wantMobile,
+          });
       if (r && r.tabId) tabId = r.tabId;
       if (stopRequested || (r && r.error === 'Stopped')) break;
       if (!r || !r.ok) throw new Error((r && r.error) || 'Save failed');
@@ -117,7 +128,7 @@ async function run() {
         savedCount,
         failedCount,
         skippedCount,
-        status: `${n}/${total}: ${r.duplicate || r.skipped ? 'already in archive' : 'saved'} ✓`,
+        status: `${n}/${total}: ${r.duplicate || r.skipped ? 'already in archive' : (r.ad_type ? `saved as ${r.ad_type}` : 'saved')} ✓`,
       });
       render(st);
     } catch (e) {

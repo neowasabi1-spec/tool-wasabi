@@ -81,9 +81,13 @@
       </div>
 
       <div class="field">
-        <label class="chk"><input id="bulkMode" type="checkbox" /> <strong>Bulk</strong>: importa tante pagine dalla lista</label>
+        <label class="chk"><input id="bulkMode" type="checkbox" /> <strong>Bulk</strong>: importa in blocco da AdSpends</label>
         <div id="bulkBox" class="hidden">
-          <p class="muted" style="font-size:11px;margin:0 0 6px">
+          <div class="row-inline" style="margin-bottom:8px">
+            <label class="chk"><input type="radio" name="bulkKind" id="bulkKindPages" value="pages" checked /> Pages</label>
+            <label class="chk"><input type="radio" name="bulkKind" id="bulkKindCreatives" value="creatives" /> Ads (creatives)</label>
+          </div>
+          <p class="muted" id="bulkHint" style="font-size:11px;margin:0 0 6px">
             Dalla lista AdSpends clicca Scan: scorre le card visibili e raccoglie le landing (non è il database intero da 1000+). Poi Save: si apre una finestra importer — <strong>lasciala aperta</strong> fino alla fine. Già in archivio = skip. Max 400 per run.
           </p>
           <button type="button" id="bulkScan" class="ghost">Scan this page for URLs</button>

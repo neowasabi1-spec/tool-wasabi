@@ -28,6 +28,9 @@ const els = {
   pageUrl: $('pageUrl'),
   bulkMode: $('bulkMode'),
   bulkBox: $('bulkBox'),
+  bulkHint: $('bulkHint'),
+  bulkKindPages: $('bulkKindPages'),
+  bulkKindCreatives: $('bulkKindCreatives'),
   bulkScan: $('bulkScan'),
   bulkUrls: $('bulkUrls'),
   bulkCount: $('bulkCount'),
@@ -38,6 +41,8 @@ const els = {
 
 let activeTab = null;
 let knownSavedUrls = [];
+let knownCreativeFingerprints = [];
+let scannedCreatives = [];
 
 function sendMessage(msg) {
   return new Promise((resolve) => {
@@ -129,8 +134,13 @@ async function init() {
 
   if (els.bulkMode && /adspend/i.test((activeTab && activeTab.url) || '')) {
     els.bulkMode.checked = true;
+    if (isAdSpendsAdsSection((activeTab && activeTab.url) || '', (activeTab && activeTab.title) || '')) {
+      if (els.bulkKindCreatives) els.bulkKindCreatives.checked = true;
+      if (els.bulkKindPages) els.bulkKindPages.checked = false;
+    }
     syncBulkUi();
-    scanListingUrls();
+    if (isCreativesBulk()) scanListingCreatives();
+    else scanListingUrls();
   }
 
   // A funnel walk / bulk import runs in the background; if one is in progress, show it.
@@ -242,6 +252,9 @@ async function loadFolders() {
       }
     }
     knownSavedUrls = Array.isArray(data.savedUrls) ? data.savedUrls : [];
+    knownCreativeFingerprints = Array.isArray(data.savedCreativeFingerprints)
+      ? data.savedCreativeFingerprints
+      : [];
   } catch (e) {
     console.warn('loadFolders failed', e);
   }
@@ -730,15 +743,74 @@ function parseBulkUrlsText(text) {
   return out;
 }
 
+function isCreativesBulk() {
+  return !!(els.bulkKindCreatives && els.bulkKindCreatives.checked);
+}
+
+function isAdSpendsAdsSection(url, title) {
+  const u = String(url || '').toLowerCase();
+  const t = String(title || '').toLowerCase();
+  if (!/adspend/.test(u)) return false;
+  if (/advertorial|landing|sales.?page|funnel|offer.?page/.test(u)) return false;
+  if (/\/adspy|\/ads\b|\/creative|\/spy|tab=ads|view=ads|section=ads|media=/.test(u)) return true;
+  if (/\bads\b/.test(t) && !/landing|advertorial|pages?/.test(t)) return true;
+  return false;
+}
+
+/** Portable djb2 — must match src/lib/classify-archive-ad.ts */
+function creativeFingerprint(url) {
+  let s = String(url || '');
+  try {
+    const u = new URL(s.trim());
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    s = `${u.protocol}//${host}${path}`.toLowerCase();
+  } catch {
+    s = s.split('?')[0].replace(/\/+$/, '').toLowerCase();
+  }
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) + h + s.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function itemsFromBulkTextarea() {
+  const urls = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value);
+  const byUrl = new Map();
+  for (const item of scannedCreatives) {
+    if (item && item.mediaUrl) byUrl.set(String(item.mediaUrl).replace(/\/+$/, '').toLowerCase(), item);
+  }
+  return urls.map((url) => {
+    const hit = byUrl.get(url.replace(/\/+$/, '').toLowerCase());
+    return hit || {
+      mediaUrl: url,
+      mediaType: /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url) ? 'video' : 'image',
+      name: 'AdSpends ad',
+      text: '',
+      headline: '',
+      width: 0,
+      height: 0,
+      pageUrl: (activeTab && activeTab.url) || '',
+      pageTitle: (activeTab && activeTab.title) || '',
+    };
+  });
+}
+
 function updateBulkCount() {
   if (!els.bulkCount) return;
-  const n = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value).length;
-  const typeLabel = selectedTypeLabel();
+  const creatives = isCreativesBulk();
+  const n = creatives
+    ? itemsFromBulkTextarea().length
+    : parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value).length;
+  const typeLabel = creatives ? 'Template → Ads (auto type)' : selectedTypeLabel();
   els.bulkCount.textContent = n
-    ? `${n} page${n === 1 ? '' : 's'} ready → ${typeLabel}`
+    ? `${n} ${creatives ? (n === 1 ? 'creative' : 'creatives') : (n === 1 ? 'page' : 'pages')} ready → ${typeLabel}`
     : `Will save into ${typeLabel}`;
   if (els.bulkMode && els.bulkMode.checked && els.save && !funnelPollTimer && !bulkPollTimer) {
-    els.save.textContent = n ? `Save ${n} as ${typeLabel}` : 'Save to Wasabi';
+    if (creatives) els.save.textContent = n ? `Save ${n} creatives` : 'Save to Wasabi';
+    else els.save.textContent = n ? `Save ${n} as ${typeLabel}` : 'Save to Wasabi';
   }
 }
 
@@ -746,6 +818,31 @@ function syncBulkUi() {
   const on = !!(els.bulkMode && els.bulkMode.checked);
   if (els.bulkBox) els.bulkBox.classList.toggle('hidden', !on);
   if (on && els.funnelMode) els.funnelMode.checked = false;
+  const creatives = isCreativesBulk();
+  if (els.bulkHint) {
+    els.bulkHint.innerHTML = creatives
+      ? 'Sulla sezione <strong>Ads</strong> di AdSpends clicca Scan: scorre la griglia e prende le creative (img/video). Save le mette in <strong>Template → Ads</strong> e le classifica da sola (Image / Video / Story / UGC / Carousel). Già in archivio = skip. Max 400 per run. Lascia aperta la finestra importer.'
+      : 'Dalla lista AdSpends clicca Scan: scorre le card visibili e raccoglie le landing (non è il database intero da 1000+). Poi Save: si apre una finestra importer — <strong>lasciala aperta</strong> fino alla fine. Già in archivio = skip. Max 400 per run.';
+  }
+  if (els.bulkScan) els.bulkScan.textContent = creatives ? 'Scan this page for ads' : 'Scan this page for URLs';
+  if (els.bulkUrls) {
+    els.bulkUrls.placeholder = creatives
+      ? 'https://cdn…/creative.jpg\none media URL per line'
+      : 'https://…\none URL per line';
+  }
+  if (els.bulkResume) {
+    els.bulkResume.textContent = creatives ? 'Resume remaining ads' : 'Resume remaining pages';
+  }
+  const hidePageBits = on && creatives;
+  if (els.shotDesktop) {
+    const shotRow = els.shotDesktop.closest && els.shotDesktop.closest('.field');
+    if (shotRow) shotRow.classList.toggle('hidden', hidePageBits);
+  }
+  if (els.funnelMode) {
+    const funnelRow = els.funnelMode.closest && els.funnelMode.closest('.field');
+    if (funnelRow) funnelRow.classList.toggle('hidden', hidePageBits);
+  }
+  if (els.typeField) els.typeField.classList.toggle('hidden', hidePageBits);
   if (els.name) {
     const row = els.name.closest && els.name.closest('.field');
     if (row) row.classList.toggle('hidden', on);
@@ -840,6 +937,156 @@ async function collectListingUrlsInPage() {
   return found.slice(0, MAX);
 }
 
+async function collectListingCreativesInPage() {
+  const MAX = 400;
+  const MIN = 72;
+  const SKIP = /googleusercontent|gstatic\.com|gravatar|hotjar|intercom|doubleclick|googletagmanager|adspends\.com\/(?:_next|static|assets|logo)|chrome-extension/i;
+  const found = [];
+  const seen = new Set();
+
+  const abs = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s || s.startsWith('data:') || s.startsWith('blob:')) return '';
+    try {
+      return new URL(s, location.href).href;
+    } catch {
+      return '';
+    }
+  };
+  const keyOf = (href) => {
+    try {
+      const u = new URL(href);
+      return (u.hostname.replace(/^www\./i, '') + u.pathname.replace(/\/+$/, '')).toLowerCase();
+    } catch {
+      return href.split('?')[0].toLowerCase();
+    }
+  };
+  const fromBg = (el) => {
+    try {
+      const bg = getComputedStyle(el).backgroundImage || '';
+      const m = bg.match(/url\(["']?(https?:[^"')]+)["']?\)/i);
+      return m ? m[1] : '';
+    } catch {
+      return '';
+    }
+  };
+  const pickMedia = (el) => {
+    if (!el || el.closest && el.closest('#wasabi-creative-host')) return null;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag === 'VIDEO') {
+      const src = abs(el.currentSrc || el.src || (el.querySelector && (el.querySelector('source[src]') || {}).src) || '');
+      const w = el.videoWidth || el.clientWidth || 0;
+      const h = el.videoHeight || el.clientHeight || 0;
+      if (src && /^https?:/i.test(src) && !SKIP.test(src)) {
+        return { url: src, mediaType: 'video', w, h };
+      }
+      const poster = abs(el.poster || '');
+      if (poster && /^https?:/i.test(poster) && !SKIP.test(poster)) {
+        return { url: poster, mediaType: 'image', w, h };
+      }
+      return null;
+    }
+    if (tag === 'IMG' || tag === 'SOURCE') {
+      const src = abs(el.currentSrc || el.src || el.getAttribute('data-src') || (el.getAttribute('srcset') || '').split(/\s/)[0] || '');
+      if (!src || !/^https?:/i.test(src) || SKIP.test(src)) return null;
+      const w = el.naturalWidth || el.clientWidth || 0;
+      const h = el.naturalHeight || el.clientHeight || 0;
+      if (w && h && w < MIN && h < MIN) return null;
+      const videoish = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(src);
+      return { url: src, mediaType: videoish ? 'video' : 'image', w, h };
+    }
+    const bg = fromBg(el);
+    if (bg && !SKIP.test(bg)) {
+      const r = el.getBoundingClientRect();
+      if (r.width >= MIN && r.height >= MIN) {
+        return { url: bg, mediaType: 'image', w: Math.round(r.width), h: Math.round(r.height) };
+      }
+    }
+    return null;
+  };
+  const cardOf = (el) => {
+    return (
+      el.closest('[class*="card"], [class*="Card"], [class*="ad-item"], [class*="AdCard"], [class*="creative"], article, [role="listitem"], li') ||
+      el.parentElement
+    );
+  };
+
+  const harvest = () => {
+    const cards = new Set();
+    document.querySelectorAll('video, img, source, [style*="background-image"]').forEach((el) => {
+      const card = cardOf(el);
+      if (card) cards.add(card);
+    });
+    const list = cards.size ? Array.from(cards) : Array.from(document.querySelectorAll('video, img'));
+    for (const card of list) {
+      const videos = card.querySelectorAll ? Array.from(card.querySelectorAll('video')) : (card.tagName === 'VIDEO' ? [card] : []);
+      const imgs = card.querySelectorAll ? Array.from(card.querySelectorAll('img, source')) : (card.tagName === 'IMG' ? [card] : []);
+      const candidates = [];
+      videos.forEach((v) => {
+        const m = pickMedia(v);
+        if (m) candidates.push(m);
+      });
+      imgs.forEach((im) => {
+        const m = pickMedia(im);
+        if (m) candidates.push(m);
+      });
+      if (!candidates.length && card !== document.body) {
+        const m = pickMedia(card);
+        if (m) candidates.push(m);
+      }
+      if (!candidates.length) continue;
+      candidates.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+      const video = candidates.find((c) => c.mediaType === 'video');
+      const best = video || candidates[0];
+      const key = keyOf(best.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      const text = String((card.innerText || '').replace(/\s+/g, ' ').trim()).slice(0, 800);
+      const largeImgs = candidates.filter((c) => c.mediaType === 'image' && (c.w * c.h) >= MIN * MIN * 4);
+      found.push({
+        mediaUrl: best.url,
+        mediaType: best.mediaType,
+        width: best.w || 0,
+        height: best.h || 0,
+        name: (text.split(/[.!?\n]/)[0] || text || 'AdSpends ad').slice(0, 80),
+        text,
+        headline: '',
+        carousel: largeImgs.length >= 3,
+        pageUrl: location.href,
+        pageTitle: document.title || '',
+      });
+      if (found.length >= MAX) break;
+    }
+  };
+
+  const scrollables = Array.from(document.querySelectorAll('div, main, section'))
+    .filter((el) => {
+      const s = getComputedStyle(el);
+      const oy = s.overflowY;
+      return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 180;
+    })
+    .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+  const scroller = scrollables[0] || document.scrollingElement || document.documentElement;
+
+  harvest();
+  let stagnant = 0;
+  for (let i = 0; i < 70 && found.length < MAX; i++) {
+    const before = found.length;
+    const top = scroller.scrollTop;
+    scroller.scrollTop = Math.min(scroller.scrollHeight, top + Math.max(scroller.clientHeight * 0.9, 700));
+    await new Promise((r) => setTimeout(r, 500));
+    harvest();
+    if (found.length === before && scroller.scrollTop <= top + 4) {
+      stagnant += 1;
+      if (stagnant >= 4) break;
+    } else {
+      stagnant = 0;
+    }
+  }
+  try { scroller.scrollTop = 0; } catch { /* ignore */ }
+  return found.slice(0, MAX);
+}
+
 async function scanListingUrls() {
   if (!activeTab || !activeTab.id) {
     setStatus('Open the AdSpends list (or any page with landing links) first.', 'err');
@@ -867,6 +1114,44 @@ async function scanListingUrls() {
       already
         ? `Loaded ${merged.length} from this list (max ${BULK_MAX}/run) · ${already} already saved · ${fresh} new. Not the whole AdSpends DB — only cards Scan can scroll to.`
         : `Loaded ${merged.length} landing URL${merged.length === 1 ? '' : 's'} from the cards on this list (max ${BULK_MAX} per run). Not the whole AdSpends catalog.`,
+      'ok',
+    );
+  } catch (e) {
+    setStatus(String((e && e.message) || e), 'err');
+  }
+}
+
+async function scanListingCreatives() {
+  if (!activeTab || !activeTab.id) {
+    setStatus('Open the AdSpends Ads grid first.', 'err');
+    return;
+  }
+  setStatus('<span class="spinner"></span>Scanning ads — scrolling to load more creatives…');
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      func: collectListingCreativesInPage,
+    });
+    const items = (results && results[0] && results[0].result) || [];
+    if (!items.length) {
+      setStatus('No creatives found on this grid. Open the Ads tab (not Pages) and try Scan again, or paste media URLs.', 'err');
+      return;
+    }
+    const byKey = new Map();
+    for (const it of [...scannedCreatives, ...items]) {
+      if (!it || !it.mediaUrl) continue;
+      byKey.set(String(it.mediaUrl).replace(/\/+$/, '').toLowerCase(), it);
+    }
+    scannedCreatives = Array.from(byKey.values()).slice(0, BULK_MAX);
+    els.bulkUrls.value = scannedCreatives.map((it) => it.mediaUrl).join('\n');
+    updateBulkCount();
+    const known = new Set((knownCreativeFingerprints || []).map((x) => String(x).toLowerCase()));
+    const already = scannedCreatives.filter((it) => known.has(creativeFingerprint(it.mediaUrl))).length;
+    const fresh = scannedCreatives.length - already;
+    setStatus(
+      already
+        ? `Loaded ${scannedCreatives.length} creatives (max ${BULK_MAX}/run) · ${already} already in Template → Ads · ${fresh} new. Only cards Scan can scroll to — not the whole AdSpends catalog.`
+        : `Loaded ${scannedCreatives.length} creative${scannedCreatives.length === 1 ? '' : 's'} from this Ads grid (max ${BULK_MAX} per run). Save files them into Template → Ads and auto-sorts Image / Video / Story / UGC.`,
       'ok',
     );
   } catch (e) {
@@ -906,7 +1191,7 @@ async function refreshBulkStatusOnce() {
     setStatus(`<span class="spinner"></span>${st.status || 'Importing…'}<br>${bulkProgressLine(st)}`);
     return;
   }
-  if (!st.done && st.urls && st.urls.length && (Number(st.index) || 0) < st.urls.length) {
+  if (!st.done && ((st.urls && st.urls.length) || (st.items && st.items.length)) && (Number(st.index) || 0) < (Number(st.total) || (st.urls || st.items || []).length)) {
     stopBulkPoll();
     if (els.save) els.save.disabled = false;
     if (els.bulkResume) els.bulkResume.classList.remove('hidden');
@@ -941,6 +1226,38 @@ function startBulkPoll() {
 }
 
 async function startBackgroundBulk(projectId) {
+  const creatives = isCreativesBulk();
+  if (creatives) {
+    const items = itemsFromBulkTextarea();
+    if (!items.length) {
+      setStatus('Scan the Ads grid or paste media URLs first.', 'err');
+      return;
+    }
+    const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
+    const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
+    setStatus(`<span class="spinner"></span>Starting ${items.length} creatives… keep the importer window open until it says Done.`);
+    if (els.save) {
+      els.save.disabled = true;
+      els.save.textContent = 'Importing…';
+    }
+    const r = await sendMessage({
+      type: 'BULK_START',
+      kind: 'creatives',
+      items,
+      category,
+      tags,
+      pageUrl: (activeTab && activeTab.url) || '',
+      pageTitle: (activeTab && activeTab.title) || '',
+    });
+    if (!r || !r.ok) {
+      setStatus((r && r.error) || 'Could not start bulk import.', 'err');
+      if (els.save) els.save.disabled = false;
+      syncBulkUi();
+      return;
+    }
+    startBulkPoll();
+    return;
+  }
   const urls = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value);
   if (!urls.length) {
     setStatus('Scan the list or paste URLs first.', 'err');
@@ -986,12 +1303,20 @@ async function resumeBulkIfRunning() {
     }
     if (st.running || r.running) {
       if (els.bulkMode) els.bulkMode.checked = true;
+      if (st.kind === 'creatives' && els.bulkKindCreatives) {
+        els.bulkKindCreatives.checked = true;
+        if (els.bulkKindPages) els.bulkKindPages.checked = false;
+      }
       syncBulkUi();
       startBulkPoll();
       return;
     }
     if (st.urls && st.urls.length && (Number(st.index) || 0) < st.urls.length) {
       if (els.bulkMode) els.bulkMode.checked = true;
+      if (st.kind === 'creatives' && els.bulkKindCreatives) {
+        els.bulkKindCreatives.checked = true;
+        if (els.bulkKindPages) els.bulkKindPages.checked = false;
+      }
       syncBulkUi();
       if (els.bulkResume) els.bulkResume.classList.remove('hidden');
       setStatus(`${st.status || 'Import paused.'} ${bulkProgressLine(st)}`, 'err');
@@ -1037,7 +1362,13 @@ if (els.funnelMode) {
     }
   });
 }
-if (els.bulkScan) els.bulkScan.addEventListener('click', (e) => { e.preventDefault(); scanListingUrls(); });
+if (els.bulkScan) els.bulkScan.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (isCreativesBulk()) scanListingCreatives();
+  else scanListingUrls();
+});
+if (els.bulkKindPages) els.bulkKindPages.addEventListener('change', () => { scannedCreatives = []; syncBulkUi(); });
+if (els.bulkKindCreatives) els.bulkKindCreatives.addEventListener('change', () => { syncBulkUi(); });
 if (els.bulkResume) els.bulkResume.addEventListener('click', (e) => { e.preventDefault(); resumeBackgroundBulk(); });
 if (els.bulkUrls) els.bulkUrls.addEventListener('input', updateBulkCount);
 if (els.addTypeBtn) {

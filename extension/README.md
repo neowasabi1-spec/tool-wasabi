@@ -50,6 +50,19 @@ Don't save one advertorial at a time. On an AdSpends (or similar) list:
 
 Cap is 400 URLs per run. Scan scrolls the open list; it cannot see AdSpends pages that were never loaded. Duplicates already in the archive are skipped.
 
+## How to use — bulk import (AdSpends Ads / creatives)
+
+The Ads grid on AdSpends is a different list (thousands of images/videos, not landing URLs).
+
+1. Open AdSpends → **Ads** (the creatives grid, not Pages).
+2. Click **Wasabi Saver** — Bulk turns on and switches to **Ads (creatives)**. **Scan** scrolls the grid and collects media.
+3. Optional: pick a **Category** (niche) and extra tags. Type is automatic.
+4. Click **Save N creatives**. Leave the importer window open until Done.
+
+Each creative lands in **Template → Ads**, filed as **Image / Video / Carousel / UGC / Story** from format (9:16 → Story), media (video/image), and copy cues (UGC, carousel, …). Already imported creatives are skipped. Max 400 per run — Scan only sees cards it can scroll to, not the whole AdSpends catalog. Repeat Scan on the next slice of the grid.
+
+You can also drag files onto **Upload & auto-sort** on Template → Ads.
+
 ## How to use — creatives (Competitor Library)
 
 1. Hover any image or video on a page — a **Save** button appears.

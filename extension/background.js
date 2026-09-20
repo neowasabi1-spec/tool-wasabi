@@ -1602,7 +1602,164 @@ async function processBulkOnePage(opts) {
   };
 }
 
+function normalizeCreativeItems(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of list || []) {
+    const mediaUrl = String((raw && raw.mediaUrl) || '').trim();
+    if (!/^https?:\/\//i.test(mediaUrl)) continue;
+    let key = mediaUrl;
+    try {
+      const u = new URL(mediaUrl);
+      key = (u.hostname.replace(/^www\./i, '') + (u.pathname || '/').replace(/\/+$/, '')).toLowerCase();
+    } catch {
+      key = mediaUrl.split('?')[0].toLowerCase();
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      mediaUrl,
+      mediaType: raw.mediaType === 'video' ? 'video' : 'image',
+      name: String(raw.name || '').slice(0, 180),
+      text: String(raw.text || '').slice(0, 800),
+      headline: String(raw.headline || '').slice(0, 300),
+      width: Number(raw.width) || 0,
+      height: Number(raw.height) || 0,
+      carousel: !!raw.carousel,
+      pageUrl: String(raw.pageUrl || '').slice(0, 500),
+      pageTitle: String(raw.pageTitle || '').slice(0, 200),
+    });
+    if (out.length >= BULK_MAX) break;
+  }
+  return out;
+}
+
+const MAX_SIGNED_BYTES = 40 * 1024 * 1024;
+
+async function fetchMediaAsBlob(url) {
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob.size || blob.size > MAX_SIGNED_BYTES) return null;
+    return blob;
+  } catch {
+    return null;
+  }
+}
+
+async function processBulkOneCreative(opts) {
+  throwIfBulkStopped();
+  const item = opts.item || {};
+  const mediaUrl = String(item.mediaUrl || '').trim();
+  if (!/^https?:\/\//i.test(mediaUrl)) throw new Error('Missing media URL');
+
+  let mediaBase64 = '';
+  let contentType = '';
+  let storagePath = '';
+  const inline = await fetchMediaAsDataUrl(mediaUrl);
+  if (inline) {
+    mediaBase64 = inline.dataUrl;
+    contentType = inline.type;
+  } else {
+    const blob = await fetchMediaAsBlob(mediaUrl);
+    if (blob) {
+      contentType = blob.type || (item.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
+      const signed = await toolFetch('/api/extension/sign-archive-ad', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contentType, mediaType: item.mediaType }),
+      });
+      if (signed.ok && signed.data && signed.data.uploadUrl) {
+        const put = await fetch(signed.data.uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': contentType, 'x-upsert': 'false' },
+          body: blob,
+        });
+        if (put.ok) storagePath = signed.data.path;
+      }
+    }
+  }
+
+  const r = await toolFetch('/api/extension/save-archive-ad', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mediaUrl,
+      mediaBase64: mediaBase64 || undefined,
+      storagePath: storagePath || undefined,
+      contentType: contentType || undefined,
+      mediaType: item.mediaType,
+      name: item.name,
+      headline: item.headline,
+      primaryText: item.text,
+      width: item.width,
+      height: item.height,
+      pageUrl: item.pageUrl || opts.pageUrl,
+      pageTitle: item.pageTitle || opts.pageTitle,
+      category: opts.category || '',
+      extraTags: Array.isArray(opts.tags) ? opts.tags : [],
+      carousel: !!item.carousel,
+    }),
+  });
+  if (!r.ok) {
+    throw new Error((r.data && (r.data.error || r.data.message)) || `Save failed (${r.status})`);
+  }
+  return {
+    ok: true,
+    skipped: !!(r.data && r.data.skipped),
+    duplicate: !!(r.data && r.data.duplicate),
+    ad_type: r.data && r.data.ad_type,
+  };
+}
+
+async function startCreativeBulk(opts) {
+  const items = normalizeCreativeItems(opts.items);
+  bulkStopRequested = false;
+  if (!items.length) {
+    await setBulkState({
+      running: false, done: true, error: 'empty', kind: 'creatives',
+      status: 'No creatives to import.', total: 0, savedCount: 0, failedCount: 0, skippedCount: 0,
+      urls: [], items: [],
+    });
+    return { ok: false, error: 'No creatives to import.' };
+  }
+  const token = await getValidToken();
+  if (!token) {
+    await setBulkState({
+      running: false, done: true, error: 'auth', kind: 'creatives',
+      status: 'Session expired — open the tool and log in.',
+      total: items.length, savedCount: 0, failedCount: 0, skippedCount: 0,
+      urls: items.map((i) => i.mediaUrl), items,
+    });
+    return { ok: false, error: 'Session expired — open the tool and log in.' };
+  }
+  await setBulkState({
+    running: true,
+    done: false,
+    error: null,
+    kind: 'creatives',
+    status: `Starting ${items.length} creatives…`,
+    total: items.length,
+    index: 0,
+    savedCount: 0,
+    failedCount: 0,
+    skippedCount: 0,
+    category: opts.category || '',
+    tags: Array.isArray(opts.tags) ? opts.tags : [],
+    pageUrl: opts.pageUrl || '',
+    pageTitle: opts.pageTitle || '',
+    pageTypeLabel: 'auto Image/Video/Story/UGC',
+    urls: items.map((i) => i.mediaUrl),
+    items,
+    runnerOpen: false,
+  });
+  await openBulkRunner();
+  return { ok: true, started: true };
+}
+
 async function startBulkImport(opts) {
+  if (opts && opts.kind === 'creatives') return startCreativeBulk(opts);
   const urls = normalizeBulkUrls(opts.urls);
   bulkKnown = null;
   bulkStopRequested = false;
@@ -1736,6 +1893,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       try {
         const r = await processBulkOnePage(msg);
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.type === 'BULK_CREATIVE_ONE') {
+    (async () => {
+      if (bulkStopRequested) {
+        sendResponse({ ok: false, error: 'Stopped' });
+        return;
+      }
+      try {
+        const r = await processBulkOneCreative(msg);
         sendResponse(r);
       } catch (e) {
         sendResponse({ ok: false, error: String((e && e.message) || e) });
