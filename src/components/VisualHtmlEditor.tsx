@@ -4721,7 +4721,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         // No-op sulle pagine senza quel motore.
         const withEngine = reattachDynamicScripts(initialHtml, activeHtml);
         const unbaked = unbakeDynamicComments(withEngine).html;
-        const keepScripts = detectDynamicScripts(unbaked).functional;
+        const chatQuiz = isChatQuizHtml(unbaked);
+        const keepScripts = !chatQuiz && detectDynamicScripts(unbaked).functional;
         if (!cancelled) {
           const rescued = injectInteractivityRescue(unbaked, { keepScripts });
           // Fix scroll in preview: quando teniamo gli script, il player video

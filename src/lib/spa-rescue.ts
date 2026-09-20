@@ -13,7 +13,7 @@
 // route handler or library code.
 
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
-import { injectChatQuizEngine } from './chat-quiz-engine';
+import { injectChatQuizEngine, isChatQuizHtml } from './chat-quiz-engine';
 
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
@@ -481,7 +481,12 @@ export function injectInteractivityRescue(
   //    `type` in `<token>-text/javascript` e carica un rocket-loader.min.js
   //    a URL relativo che fa 404 sulla clone) cosi' quegli script
   //    girano nativamente sull'origine clonata.
-  if (opts.keepScripts) {
+  // Chat-quiz landers ship Landerlab/jQuery that blanks a srcdoc iframe
+  // (host checks, conversion pixels, document rewrites). We always strip
+  // that runtime and replay the messenger with injectChatQuizEngine.
+  if (isChatQuizHtml(html)) {
+    html = stripAllScripts(html);
+  } else if (opts.keepScripts) {
     html = neutralizeRocketLoader(html).html;
   } else {
     html = stripNonCarouselScripts(html);

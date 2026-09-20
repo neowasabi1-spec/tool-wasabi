@@ -194,7 +194,10 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   }
   for (const s of commerceSignals) signals.push(s);
   for (const s of playerSignals) signals.push(s);
-  for (const s of chatQuizSignals) signals.push(s);
+
+  // Chat quizzes (Landerlab messenger) are replayed by injectChatQuizEngine.
+  // Do NOT mark them functional: that made Preview keep Landerlab's tracker
+  // JS, which blanks the srcdoc iframe (editor looked fine because it strips).
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But
@@ -209,8 +212,11 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   // decision on its own.
   const combo = CONTENT_KEYWORDS.test(inlineJs) && DOM_MUTATION.test(inlineJs) && TIMING.test(inlineJs);
   const functional = signals.length > 0;
-  const reported = functional && combo
-    ? [...signals, 'inline JS builds content over time (content keyword + DOM mutation + timer)']
-    : signals;
+  const reported = [
+    ...(functional && combo
+      ? [...signals, 'inline JS builds content over time (content keyword + DOM mutation + timer)']
+      : signals),
+    ...chatQuizSignals,
+  ];
   return { functional, signals: Array.from(new Set(reported)), inlineScriptCount };
 }

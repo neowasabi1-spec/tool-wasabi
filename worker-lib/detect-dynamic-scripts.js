@@ -184,7 +184,8 @@ function detectDynamicScripts(html) {
   }
   for (const s of commerceSignals) signals.push(s);
   for (const s of playerSignals) signals.push(s);
-  for (const s of chatQuizSignals) signals.push(s);
+
+  // Chat quizzes are replayed by injectChatQuizEngine — do not keep Landerlab JS.
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But
@@ -199,9 +200,10 @@ function detectDynamicScripts(html) {
   // decision on its own.
   const combo = CONTENT_KEYWORDS.test(inlineJs) && DOM_MUTATION.test(inlineJs) && TIMING.test(inlineJs);
   const functional = signals.length > 0;
-  const reported = functional && combo
+  const reported = (functional && combo
     ? signals.concat('inline JS builds content over time (content keyword + DOM mutation + timer)')
-    : signals;
+    : signals
+  ).concat(chatQuizSignals);
   // De-dupe signals for a cleaner report.
   return { functional, signals: Array.from(new Set(reported)), inlineScriptCount };
 }

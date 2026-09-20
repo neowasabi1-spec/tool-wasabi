@@ -182,7 +182,9 @@ export function injectChatQuizEngine(html: string): string {
 
   let out = html
     .replace(/<(script|style)\b[^>]*\bid=["']wasabi-chat-quiz[^"']*["'][^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<script\b[^>]*>[\s\S]*?\bfunction\s+displayMessages\s*\([\s\S]*?<\/script>/gi, '');
+    .replace(/<script\b[^>]*\bsrc=["'][^"']*landerlab[^"']*["'][^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<script\b[^>]*>[\s\S]*?\bfunction\s+displayMessages\s*\([\s\S]*?<\/script>/gi, '')
+    .replace(/<script\b[^>]*>[\s\S]*?\b(?:LL_VARIANT_ID|LL_LANDER_ID|reportConversion|llQueryStrings|llMacros)\b[\s\S]*?<\/script>/gi, '');
 
   out = restoreQuizCtas(out);
 
