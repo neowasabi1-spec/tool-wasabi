@@ -21,6 +21,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
+import { injectChatQuizEngine, isChatQuizHtml } from '@/lib/chat-quiz-engine';
 import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
@@ -92,28 +93,44 @@ import {
   type ExtractedText,
 } from '@/lib/translate-html-client';
 
-// Returns 'swipedData' or 'clonedData' — whichever blob was produced/edited
-// MOST RECENTLY. Swipe All / Rewrite can write the new HTML into clonedData
-// while a STALE swipedData from an earlier run still lingers; selecting
-// swiped purely by existence then surfaced the OLD (often original-brand)
-// version in preview / edit / download / deploy. Compare timestamps so every
-// consumer always operates on the latest version the user produced.
+// List boot stubs every row with `{ htmlUrl, htmlSkipped: true }` for BOTH
+// cloned and swiped so preview can fetch `/api/funnel-html` later. That stub
+// is not a real swipe. Identical clone also sets swipeStatus=completed, so
+// treating "completed + swipedData exists" as a swipe made the eye look up
+// kind=swiped (404 / empty IDB) and toast the 50KB/IndexedDB error while the
+// actual clone HTML sat in clonedData.
+function isRealHtmlBlob(blob: unknown): boolean {
+  if (!blob || typeof blob !== 'object') return false;
+  const o = blob as Record<string, unknown>;
+  if (typeof o.html === 'string' && o.html.length > 40) return true;
+  if (typeof o.mobileHtml === 'string' && o.mobileHtml.length > 40) return true;
+  if (typeof o.htmlLength === 'number' && o.htmlLength > 0) return true;
+  if (typeof o.jobId === 'string' && o.jobId) return true;
+  if (typeof o.method_used === 'string' && o.method_used) return true;
+  if (typeof o.methodUsed === 'string' && o.methodUsed) return true;
+  if (o.swipedAt || o.cloned_at || o.clonedAt || o.editedAt) return true;
+  if (typeof o.newTitle === 'string' && o.newTitle) return true;
+  if (typeof o.newLength === 'number' && o.newLength > 0) return true;
+  return false;
+}
+
 function freshestHtmlTarget(
   page: { swipedData?: unknown; clonedData?: unknown; swipeStatus?: string } | null | undefined,
 ): 'swipedData' | 'clonedData' {
   if (!page) return 'clonedData';
-  if ((page.swipeStatus === 'completed' || page.swipeStatus === 'in_progress') && page.swipedData) {
-    return 'swipedData';
-  }
+  const hasSwipe = isRealHtmlBlob(page.swipedData);
+  const hasClone = isRealHtmlBlob(page.clonedData);
+  if (!hasSwipe) return 'clonedData';
+  if (!hasClone) return 'swipedData';
   const toMs = (v: unknown) => (v ? (new Date(v as string).getTime() || 0) : 0);
   const ts = (b: unknown) => {
     const o = (b || {}) as { editedAt?: unknown; swipedAt?: unknown; cloned_at?: unknown; clonedAt?: unknown };
     return Math.max(toMs(o.editedAt), toMs(o.swipedAt), toMs(o.cloned_at), toMs(o.clonedAt));
   };
-  if (page.swipedData && !page.clonedData) return 'swipedData';
-  if (page.clonedData && !page.swipedData) return 'clonedData';
-  if (!page.swipedData && !page.clonedData) return 'clonedData';
-  return ts(page.swipedData) >= ts(page.clonedData) ? 'swipedData' : 'clonedData';
+  const swipeMs = ts(page.swipedData);
+  const cloneMs = ts(page.clonedData);
+  if (swipeMs !== cloneMs) return swipeMs > cloneMs ? 'swipedData' : 'clonedData';
+  return 'clonedData';
 }
 
 /** Checkout flavour actually in force for a row.
@@ -749,6 +766,15 @@ async function fetchWithRetry(
   }
   // Defensive: shouldn't reach here given the loop guard above.
   throw lastErr instanceof Error ? lastErr : new Error(`${label}: retry loop exhausted`);
+}
+
+function finalizeClonedHtml(html: string): string {
+  if (!html) return html;
+  try {
+    return isChatQuizHtml(html) ? injectChatQuizEngine(html) : html;
+  } catch {
+    return html;
+  }
 }
 
 function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepScripts?: boolean }): string {
@@ -4014,9 +4040,11 @@ export default function FrontEndFunnel() {
         }>(res, '[clone-all]');
         if (!res.ok || data.error) throw new Error(data.error || 'Clone failed');
 
-        const clonedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: true });
+        const clonedHtml = finalizeClonedHtml(
+          sanitizeClonedHtml(data.content || '', url, { keepScripts: true }),
+        );
         const clonedMobileHtml = data.mobileContent
-          ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: true })
+          ? finalizeClonedHtml(sanitizeClonedHtml(data.mobileContent, url, { keepScripts: true }))
           : '';
 
         updateFunnelPage(page.id, {
@@ -4205,12 +4233,16 @@ export default function FrontEndFunnel() {
         // asset relativo (css/img) diventerebbe https://uploaded.local/...
         // → 404 → pagina senza stili/immagini (sembra "vuota"). Il file
         // dell'utente e' gia' self-contained o ha URL assoluti suoi.
-        const clonedHtml = uploadedHtml
-          ? (data.content || '')
-          : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
-        const clonedMobileHtml = uploadedHtml
-          ? (data.mobileContent || '')
-          : (data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : '');
+        const clonedHtml = finalizeClonedHtml(
+          uploadedHtml
+            ? (data.content || '')
+            : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts }),
+        );
+        const clonedMobileHtml = finalizeClonedHtml(
+          uploadedHtml
+            ? (data.mobileContent || '')
+            : (data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : ''),
+        );
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
           ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
@@ -6744,10 +6776,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 ): Promise<{ html: string; mobileHtml?: string } | null> => {
                                   if (!blob) return null;
                                   const kind = target === 'swipedData' ? 'swiped' : 'cloned';
-                                  // 1) SERVER (tabella page_html) — SORGENTE DI VERITÀ. È quello
-                                  //    che l'editor sovrascrive ad ogni Save, quindi "Edit"/anteprima
-                                  //    riaprono SEMPRE l'ULTIMA versione salvata, anche da un altro
-                                  //    dispositivo. URL deterministica per (pageId, kind).
+                                  // Memory first: identical clone writes HTML into Zustand immediately,
+                                  // while page_html may still be uploading and swipe stubs 404.
+                                  if (blob.html && blob.html.length > 40) {
+                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
+                                  }
                                   try {
                                     const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
                                     const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
@@ -6757,13 +6790,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       return { html, mobileHtml: mobileHtml || undefined };
                                     }
                                   } catch { /* fall through */ }
-                                  // 2) blob in memoria (Zustand) — già sincronizzato col server al
-                                  //    boot e ad ogni Save. Fallback se il server non ha la riga.
-                                  if (blob.html && blob.html.length > 0) {
-                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
-                                  }
-                                  // 2.5) htmlUrl legacy (vecchio Supabase Storage) per pagine
-                                  //      create prima di page_html.
                                   if (blob.htmlUrl) {
                                     try {
                                       const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
@@ -6774,7 +6800,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       }
                                     } catch { /* fall through */ }
                                   }
-                                  // 2.9) IndexedDB — solo offline / ultima spiaggia su questa macchina.
                                   try {
                                     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const idb = await loadHtmlBlob(page.id, target);
@@ -6782,7 +6807,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       return { html: idb.html, mobileHtml: idb.mobileHtml };
                                     }
                                   } catch { /* fall through */ }
-                                  // 3) openclaw_messages.response (richiede jobId)
                                   if (blob.jobId) {
                                     try {
                                       const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(blob.jobId)}`);
@@ -6792,32 +6816,31 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       const parsed = JSON.parse(data.response) as { html?: string; mobileHtml?: string };
                                       if (!parsed.html) throw new Error('html missing in response');
                                       return { html: parsed.html, mobileHtml: parsed.mobileHtml };
-                                    } catch (err) {
-                                      toast.error(
-                                        `Unable to retrieve HTML from job ${blob.jobId.slice(0, 8)}...`,
-                                        { description: `${err instanceof Error ? err.message : String(err)}. The job may have been deleted or the response has expired. Re-run the Rewrite.` }
-                                      );
-                                      return null;
-                                    }
+                                    } catch { /* try the other blob */ }
                                   }
-                                  // Nessuna fonte ha l'HTML.
-                                  const wasSkipped = !!blob.htmlSkipped;
-                                  toast.error('HTML not available for this page.', {
-                                    description: wasSkipped
-                                      ? 'The HTML was > 50KB and Supabase stripped it to avoid timeouts. The browser does not have a copy in IndexedDB (probably another device, anonymous session, or cleared cache). Re-run Clone or Rewrite to regenerate it.'
-                                      : 'This row does not yet have a cloned/rewritten HTML, or it was generated on another machine. Run Clone (Identical / Rewrite) to generate the HTML.',
-                                  });
                                   return null;
                                 };
 
-                                // Preview the FRESHEST blob (swiped vs cloned), not
-                                // just "swiped if it exists" — otherwise a stale
-                                // swipedData shadows a newer clonedData rewrite and
-                                // the preview shows the OLD/original version.
-                                const useSwiped = freshestHtmlTarget(page) === 'swipedData' && !!page.swipedData;
+                                const primary = freshestHtmlTarget(page);
+                                const secondary: 'swipedData' | 'clonedData' =
+                                  primary === 'swipedData' ? 'clonedData' : 'swipedData';
+                                const blobOf = (t: 'swipedData' | 'clonedData') =>
+                                  t === 'swipedData' ? page.swipedData : page.clonedData;
+                                let used = primary;
+                                let got = await fetchHtmlIfNeeded(blobOf(primary), primary);
+                                if (!got) {
+                                  used = secondary;
+                                  got = await fetchHtmlIfNeeded(blobOf(secondary), secondary);
+                                }
+                                if (!got) {
+                                  toast.error('HTML not available for this page.', {
+                                    description:
+                                      'Could not load the cloned HTML from this session, the server, or this browser. Re-run Clone or Rewrite.',
+                                  });
+                                  return;
+                                }
+                                const useSwiped = used === 'swipedData' && !!page.swipedData;
                                 if (useSwiped && page.swipedData) {
-                                  const got = await fetchHtmlIfNeeded(page.swipedData, 'swipedData');
-                                  if (!got) return;
                                   setPreviewTab('preview');
                                   setShowVisualEditor(false);
                                   setHtmlPreviewModal({
@@ -6836,8 +6859,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     sourceUrl: page.urlToSwipe || page.url || '',
                                   });
                                 } else if (page.clonedData) {
-                                  const got = await fetchHtmlIfNeeded(page.clonedData, 'clonedData');
-                                  if (!got) return;
                                   // Default = snapshot (HTML clonato), come
                                   // richiesto: l'utente vede subito il
                                   // contenuto editato/salvato, non l'URL
@@ -6933,28 +6954,34 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           {(page.swipedData || page.clonedData) && (
                             <button
                               onClick={async () => {
-                                const target = freshestHtmlTarget(page);
-                                const kind = target === 'swipedData' ? 'swiped' : 'cloned';
-                                const blob = (target === 'swipedData' ? page.swipedData : page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
-                                let html = '';
-                                try {
-                                  const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-                                  const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
-                                  html = (await fetchHtmlFromStorage(`${base}&variant=desktop`)) || '';
-                                } catch { /* fall through */ }
-                                if (!html && blob?.html) html = blob.html;
-                                if (!html && blob?.htmlUrl) {
+                                const tryKind = async (target: 'swipedData' | 'clonedData') => {
+                                  const kind = target === 'swipedData' ? 'swiped' : 'cloned';
+                                  const blob = (target === 'swipedData' ? page.swipedData : page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
+                                  if (blob?.html) return blob.html;
                                   try {
                                     const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-                                    html = (await fetchHtmlFromStorage(blob.htmlUrl)) || '';
+                                    const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
+                                    const fromServer = await fetchHtmlFromStorage(`${base}&variant=desktop`);
+                                    if (fromServer) return fromServer;
                                   } catch { /* fall through */ }
-                                }
-                                if (!html) {
+                                  if (blob?.htmlUrl) {
+                                    try {
+                                      const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                      const fromUrl = await fetchHtmlFromStorage(blob.htmlUrl);
+                                      if (fromUrl) return fromUrl;
+                                    } catch { /* fall through */ }
+                                  }
                                   try {
                                     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const idb = await loadHtmlBlob(page.id, target);
-                                    html = idb?.html || '';
+                                    if (idb?.html) return idb.html;
                                   } catch { /* fall through */ }
+                                  return '';
+                                };
+                                const primary = freshestHtmlTarget(page);
+                                let html = await tryKind(primary);
+                                if (!html) {
+                                  html = await tryKind(primary === 'swipedData' ? 'clonedData' : 'swipedData');
                                 }
                                 if (!html) {
                                   toast.error('HTML not available for this page.', { description: 'Run Clone or Rewrite to generate it.' });

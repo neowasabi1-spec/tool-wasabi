@@ -509,7 +509,7 @@ function mergeJsonbWithLocalHtml<T extends Record<string, unknown> | null | unde
   for (const key of ['html', 'mobileHtml', 'htmlMobile', 'rawHtml', 'renderedHtml', 'content']) {
     const dbVal = (fromDb as Record<string, unknown>)[key];
     const localVal = (fromLocal as Record<string, unknown>)[key];
-    if (typeof localVal === 'string' && localVal && typeof dbVal !== 'string') {
+    if (typeof localVal === 'string' && localVal && (typeof dbVal !== 'string' || dbVal.length < localVal.length)) {
       out[key] = localVal;
     }
   }

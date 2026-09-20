@@ -17,9 +17,13 @@ function stubHtmlPointers(row: Record<string, unknown>): Record<string, unknown>
   const id = String(row.id || '');
   const pointer = (kind: string) =>
     id ? `/api/funnel-html?pageId=${encodeURIComponent(id)}&kind=${kind}&variant=desktop` : undefined;
-  row.cloned_data = { htmlUrl: pointer('cloned'), htmlSkipped: true };
-  row.swiped_data = { htmlUrl: pointer('swiped'), htmlSkipped: true };
-  row.extracted_data = { htmlUrl: pointer('extracted'), htmlSkipped: true };
+  // Pointer only — do NOT set htmlSkipped. That flag means "JSONB was
+  // stripped after a real persist". Using it on every list stub made the
+  // Clone/Swipe eye toast "HTML was > 50KB…" for pages that only had a
+  // clone (the stub swiped_data looked like a skipped swipe).
+  row.cloned_data = { htmlUrl: pointer('cloned') };
+  row.swiped_data = { htmlUrl: pointer('swiped') };
+  row.extracted_data = { htmlUrl: pointer('extracted') };
   return row;
 }
 

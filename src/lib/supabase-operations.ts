@@ -289,8 +289,8 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
       `/api/funnel-html?pageId=${encodeURIComponent(row.id)}&kind=${kind}&variant=desktop`;
     return {
       ...row,
-      cloned_data: row.cloned_data ?? { htmlUrl: pointer('cloned'), htmlSkipped: true },
-      swiped_data: row.swiped_data ?? { htmlUrl: pointer('swiped'), htmlSkipped: true },
+      cloned_data: row.cloned_data ?? { htmlUrl: pointer('cloned') },
+      swiped_data: row.swiped_data ?? { htmlUrl: pointer('swiped') },
     } as FunnelPage;
   });
 }

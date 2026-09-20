@@ -35,15 +35,13 @@ window.__wasabiChatQuiz=1;
 function q(sel,root){return Array.prototype.slice.call((root||document).querySelectorAll(sel));}
 function show(el){
   if(!el)return;
-  var cls=el.className||'';
-  var d=/\\bbtns-row\\b/.test(cls)?'inline-flex':/\\bchat-image-message\\b/.test(cls)?'block':'inline-flex';
   el.classList.remove('nodisplay');
-  el.style.setProperty('display',d,'important');
+  el.style.removeProperty('display');
 }
 function hide(el){
   if(!el)return;
   el.classList.add('nodisplay');
-  el.style.setProperty('display','none','important');
+  el.style.removeProperty('display');
 }
 function scrollToEl(el){
   if(!el)return;
@@ -56,7 +54,7 @@ function displayMessages(total,step,cb){
   if(!box){if(cb)cb();return;}
   show(box);
   var reply=box.querySelector('.chatbox-message.reply');
-  if(reply){reply.classList.remove('nodisplay');reply.style.setProperty('display','inline-flex','important');}
+  if(reply){reply.classList.remove('nodisplay');reply.style.removeProperty('display');}
   var n=Math.max(1,parseInt(String(total||box.getAttribute('data-total-steps')||'1'),10)||1);
   var i=1;
   function tick(){
