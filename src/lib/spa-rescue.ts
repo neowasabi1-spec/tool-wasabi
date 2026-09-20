@@ -14,6 +14,7 @@
 
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
 import { injectChatQuizEngine, isChatQuizHtml } from './chat-quiz-engine';
+import { healClonedLander } from './lander-heal';
 
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
@@ -235,6 +236,7 @@ export function stabilizeClonedHtml(
   out = unlockPageScroll(out);
   out = resetAccordionState(out);
   out = injectInteractivityRescue(out, opts);
+  out = healClonedLander(out).html;
   // Aggiunge `referrerpolicy="no-referrer"` a <img>/<video>/<source> e
   // `<meta name="referrer" content="no-referrer">` in <head>. Senza
   // questo, alcuni CDN (Cloudflare hotlink protection, Bunny, Replit

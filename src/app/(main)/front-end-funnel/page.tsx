@@ -21,7 +21,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
-import { injectChatQuizEngine, isChatQuizHtml } from '@/lib/chat-quiz-engine';
+import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
 import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
@@ -771,9 +771,21 @@ async function fetchWithRetry(
 function finalizeClonedHtml(html: string): string {
   if (!html) return html;
   try {
-    return isChatQuizHtml(html) ? injectChatQuizEngine(html) : html;
+    return healClonedLander(html).html;
   } catch {
     return html;
+  }
+}
+
+function cloneHealNote(html: string): string {
+  try {
+    const { applied, remaining } = readHealStamp(html);
+    const bits: string[] = [];
+    if (applied.length) bits.push(`auto-fixed ${applied.join(', ')}`);
+    if (remaining.length) bits.push(`needs adapter: ${remaining.map((i) => i.id).join(', ')}`);
+    return bits.length ? `; ${bits.join('; ')}` : '';
+  } catch {
+    return '';
   }
 }
 
@@ -4049,7 +4061,7 @@ export default function FrontEndFunnel() {
 
         updateFunnelPage(page.id, {
           swipeStatus: 'completed',
-          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars)`,
+          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars${cloneHealNote(clonedHtml)})`,
           clonedData: {
             html: clonedHtml,
             mobileHtml: clonedMobileHtml || undefined,
@@ -4246,7 +4258,7 @@ export default function FrontEndFunnel() {
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
           ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
-          : `Clone OK (${(data.finalSize || data.content?.length || 0).toLocaleString()} chars${data.cssInlined ? ', CSS inlined' : ''}${mobileInfo})`;
+          : `Clone OK (${(data.finalSize || data.content?.length || 0).toLocaleString()} chars${data.cssInlined ? ', CSS inlined' : ''}${mobileInfo}${cloneHealNote(clonedHtml)})`;
 
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',

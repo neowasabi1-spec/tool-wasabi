@@ -5,13 +5,15 @@
 
 function isChatQuizHtml(html) {
   if (!html) return false;
-  return (
-    /data-next-chat\s*=/i.test(html) ||
-    /\bid\s*=\s*["']chatbox-app["']/i.test(html) ||
-    /function\s+displayMessages\s*\(/i.test(html) ||
-    /landerlab\.io/i.test(html) ||
-    /class\s*=\s*["'][^"']*\bchatbox\b[^"']*["'][^>]*data-step\s*=/i.test(html)
-  );
+  if (/data-next-chat\s*=/i.test(html)) return true;
+  if (/\bid\s*=\s*["']chatbox-app["']/i.test(html)) return true;
+  if (/function\s+displayMessages\s*\(/i.test(html)) return true;
+  if (/landerlab\.io/i.test(html)) return true;
+  if (/class\s*=\s*["'][^"']*\bchatbox\b[^"']*["'][^>]*data-step\s*=/i.test(html)) return true;
+  if (/\bdata-form-step-reply\s*=/i.test(html) && /\bnodisplay\b/i.test(html)) return true;
+  if (/\bchat-button\b/i.test(html) && /\bnodisplay\b/i.test(html) && /\bdata-step\s*=/i.test(html)) return true;
+  if (/\bquiz-panel\b/i.test(html) && /\bdata-next-step\s*=/i.test(html)) return true;
+  return false;
 }
 
 function restoreQuizCtas(html) {
