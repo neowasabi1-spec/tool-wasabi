@@ -495,6 +495,22 @@ function isMissingColumnError(err: unknown, column: string): boolean {
   );
 }
 
+// Archive template picker stores `arc:<funnel_id>::<url>` on the page. Until
+// supabase-migration-funnel-pages-template-id-text.sql runs, `template_id`
+// is still UUID REFERENCES swipe_templates — Postgres rejects the key
+// (22P02 / 23503) and the whole UPDATE fails, snapping the cell back to
+// "Pick template". Drop the column and retry so the rest of the row saves.
+function isTemplateIdUuidError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = String((err as { code?: unknown }).code || '');
+  const msg = String((err as { message?: unknown }).message || '').toLowerCase();
+  if (code === '22P02' && msg.includes('uuid')) return true;
+  if (msg.includes('invalid input syntax for type uuid')) return true;
+  if (code === '23503' && msg.includes('template_id')) return true;
+  if (msg.includes('funnel_pages_template_id_fkey')) return true;
+  return false;
+}
+
 export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPage> {
   const requested = sanitizePageTypeForDb(page.page_type);
   const safePage: FunnelPageInsert = {
@@ -544,6 +560,20 @@ export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPa
     if (!error && data) {
       return withRequestedPageType(data, requested);
     }
+  }
+
+  if (error && 'template_id' in insertPayload && isTemplateIdUuidError(error)) {
+    console.warn(
+      '[funnel_pages] `template_id` is still UUID — run supabase-migration-funnel-pages-template-id-text.sql to persist archive templates',
+    );
+    insertPayload = withoutColumn(insertPayload, 'template_id');
+    const retry = await supabase
+      .from('funnel_pages')
+      .insert(insertPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
   }
 
   if (error) {
@@ -603,6 +633,21 @@ export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): P
     if (!error && data) {
       return withRequestedPageType(data, requested);
     }
+  }
+
+  if (error && 'template_id' in updatePayload && isTemplateIdUuidError(error)) {
+    console.warn(
+      '[funnel_pages] `template_id` is still UUID — run supabase-migration-funnel-pages-template-id-text.sql to persist archive templates',
+    );
+    updatePayload = withoutColumn(updatePayload, 'template_id');
+    const retry = await supabase
+      .from('funnel_pages')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
   }
 
   if (error) {

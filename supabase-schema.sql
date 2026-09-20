@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS funnel_pages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
   page_type page_type NOT NULL DEFAULT 'landing',
-  template_id UUID REFERENCES swipe_templates(id) ON DELETE SET NULL,
+  template_id TEXT, -- archive key `arc:<funnel_id>::<url>` or legacy swipe_templates UUID
   product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
   url_to_swipe TEXT NOT NULL DEFAULT '',
   prompt TEXT,

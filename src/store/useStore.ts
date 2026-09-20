@@ -91,6 +91,40 @@ function mirrorCheckoutModeToServer(
   }
 }
 
+// Archive template picker writes `arc:<funnel_id>::<url>` into templateId.
+// Until template_id is TEXT (not UUID FK to swipe_templates), the DB write
+// is rejected and merge-from-DB / revert would snap the cell back to
+// "Pick template". Mirror to localStorage the same way as checkout_mode.
+const TEMPLATE_ID_LS_KEY = 'funnel-page-template-ids';
+
+function readLocalTemplateIds(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(TEMPLATE_ID_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [id, v] of Object.entries(parsed)) {
+      if (typeof v === 'string' && v) out[id] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalTemplateId(pageId: string, templateId: string | null | undefined): void {
+  if (typeof window === 'undefined' || !pageId) return;
+  try {
+    const all = readLocalTemplateIds();
+    if (templateId) all[pageId] = templateId;
+    else delete all[pageId];
+    window.localStorage.setItem(TEMPLATE_ID_LS_KEY, JSON.stringify(all));
+  } catch {
+    /* quota / private mode */
+  }
+}
+
 // Helper to convert database types to app types
 interface AppProduct {
   id: string;
@@ -721,9 +755,13 @@ export const useStore = create<Store>()((set, get) => ({
         const funnelPages = await supabaseOps.fetchFunnelPages();
         appFunnelPages = funnelPages.map(dbFunnelPageToApp);
         const localModes = readLocalCheckoutModes();
+        const localTemplates = readLocalTemplateIds();
         for (const p of appFunnelPages) {
           if (p.checkoutMode === undefined && localModes[p.id]) {
             p.checkoutMode = localModes[p.id];
+          }
+          if (!p.templateId && localTemplates[p.id]) {
+            p.templateId = localTemplates[p.id];
           }
         }
         set({ funnelPages: appFunnelPages });
@@ -1029,7 +1067,7 @@ export const useStore = create<Store>()((set, get) => ({
       const created = await supabaseOps.createFunnelPage({
         name: page.name,
         page_type: page.pageType,
-        template_id: page.templateId,
+        ...(page.templateId !== undefined ? { template_id: page.templateId || null } : {}),
         project_id: page.productId || null,
         product_id: null,
         url_to_swipe: page.urlToSwipe,
@@ -1052,12 +1090,18 @@ export const useStore = create<Store>()((set, get) => ({
       if (createdApp.checkoutMode === undefined && page.checkoutMode !== undefined) {
         createdApp.checkoutMode = normalizeCheckoutMode(page.checkoutMode);
       }
+      if (!createdApp.templateId && page.templateId) {
+        createdApp.templateId = page.templateId;
+      }
       if (createdApp.checkoutMode !== undefined) {
         writeLocalCheckoutMode(createdApp.id, createdApp.checkoutMode);
         mirrorCheckoutModeToServer(createdApp.id, createdApp.checkoutMode, [
           ...get().funnelPages.map((p) => p.id),
           createdApp.id,
         ]);
+      }
+      if (createdApp.templateId) {
+        writeLocalTemplateId(createdApp.id, createdApp.templateId);
       }
       set((state) => ({
         funnelPages: [...state.funnelPages, createdApp],
@@ -1093,6 +1137,9 @@ export const useStore = create<Store>()((set, get) => ({
         mode,
         get().funnelPages.map((p) => p.id),
       );
+    }
+    if (page.templateId !== undefined) {
+      writeLocalTemplateId(id, page.templateId || null);
     }
 
     try {
@@ -1143,7 +1190,7 @@ export const useStore = create<Store>()((set, get) => ({
       const updated = await supabaseOps.updateFunnelPage(id, {
         name: page.name,
         page_type: page.pageType,
-        template_id: page.templateId,
+        ...(page.templateId !== undefined ? { template_id: page.templateId || null } : {}),
         ...(page.productId !== undefined
           ? { project_id: page.productId || null }
           : {}),
@@ -1204,6 +1251,10 @@ export const useStore = create<Store>()((set, get) => ({
             // selector back to "Standard". Keep what we have unless the DB
             // actually told us something.
             checkoutMode: fromDb.checkoutMode ?? p.checkoutMode,
+            // Archive keys (`arc:…`) are not UUID FKs, so the DB write is
+            // omitted/retried and fromDb.templateId comes back null. Keep
+            // the picker value the user just chose.
+            templateId: fromDb.templateId || p.templateId,
           };
         }),
       }));
@@ -1213,10 +1264,13 @@ export const useStore = create<Store>()((set, get) => ({
       // here would put the dropdown out of sync with what actually survives a
       // reload. Every other field goes back to its previous value as before.
       if (prev) {
-        const restored =
-          page.checkoutMode !== undefined
-            ? { ...prev, checkoutMode: normalizeCheckoutMode(page.checkoutMode) }
-            : prev;
+        let restored = prev;
+        if (page.checkoutMode !== undefined) {
+          restored = { ...restored, checkoutMode: normalizeCheckoutMode(page.checkoutMode) };
+        }
+        if (page.templateId !== undefined) {
+          restored = { ...restored, templateId: page.templateId || undefined };
+        }
         set((state) => ({
           funnelPages: state.funnelPages.map((p) =>
             p.id === id ? restored : p

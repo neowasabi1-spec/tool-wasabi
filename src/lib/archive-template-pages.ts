@@ -141,3 +141,27 @@ export function listTemplatesForStepType(
 export function pickerValueForTemplate(p: ArchiveTemplatePage): string {
   return `arc:${p.funnel_id}::${encodeURIComponent(p.url_to_swipe || p.name)}`;
 }
+
+export function isArchiveTemplateKey(value?: string | null): boolean {
+  return typeof value === 'string' && value.startsWith('arc:');
+}
+
+/** Fallback label when the archive catalog has not loaded yet. */
+export function labelFromArchiveTemplateKey(value?: string | null): string {
+  if (!value) return '';
+  if (!isArchiveTemplateKey(value)) return value;
+  const encoded = value.split('::').pop() || '';
+  try {
+    const decoded = decodeURIComponent(encoded);
+    try {
+      const u = new URL(decoded);
+      const path = u.pathname.replace(/\/$/, '');
+      const last = path.split('/').filter(Boolean).pop();
+      return last || u.hostname || decoded;
+    } catch {
+      return decoded;
+    }
+  } catch {
+    return encoded;
+  }
+}

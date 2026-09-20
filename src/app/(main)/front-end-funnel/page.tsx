@@ -6684,12 +6684,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         <TemplatePickerCell
                           pageType={page.pageType}
                           templateId={page.templateId}
+                          templateLabel={
+                            page.clonedData?.method_used === 'template'
+                              ? page.clonedData.title
+                              : undefined
+                          }
                           typeLabel={getPageTypeLabel(page.pageType)}
                           onPick={(selected) => {
-                            updateFunnelPage(page.id, {
+                            void updateFunnelPage(page.id, {
                               templateId: selected
                                 ? pickerValueForTemplate(selected)
-                                : undefined,
+                                : '',
                               urlToSwipe: selected?.url_to_swipe || page.urlToSwipe,
                               clonedData: selected
                                 ? {
@@ -6702,7 +6707,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     htmlUrl: selected.htmlUrl || undefined,
                                   }
                                 : page.clonedData,
-                            });
+                            }).catch(() => {});
                           }}
                         />
                       </td>
