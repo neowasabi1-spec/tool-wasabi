@@ -73,6 +73,18 @@ function parseTimed(arrayLiteral: string): TimedComment[] | null {
   }
 }
 
+export type { TimedComment };
+
+/** TIMED live-chat entries from the clone, or [] when the engine is absent. */
+export function extractTimedComments(html: string): TimedComment[] {
+  if (!html || typeof html !== 'string') return [];
+  const match = html.match(TIMED_RE);
+  if (!match) return [];
+  const entries = parseTimed(match[1]);
+  if (!entries) return [];
+  return entries.filter((c) => c && (c.t || c.n));
+}
+
 function buildCommentRow(c: TimedComment, ts: number): string {
   const name = c.n || '';
   const text = c.t || '';

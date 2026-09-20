@@ -17,6 +17,7 @@ import { isChatQuizHtml } from './chat-quiz-engine';
 import { healClonedLander } from './lander-heal';
 import { detectDynamicScripts } from './detect-dynamic-scripts';
 import { injectLiveCommentClock } from './live-comment-clock';
+import { extractTimedComments } from './bake-dynamic-comments';
 
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
@@ -549,8 +550,10 @@ export function injectInteractivityRescue(
   // Chat-quiz landers ship Landerlab/jQuery that blanks a srcdoc iframe
   // (host checks, conversion pixels, document rewrites). We always strip
   // that runtime and replay the messenger with injectChatQuizEngine.
+  const timed = extractTimedComments(html);
   const liveChat =
     opts.keepScripts === true ||
+    timed.length > 0 ||
     (opts.keepScripts !== false && detectDynamicScripts(html).functional);
 
   if (isChatQuizHtml(html)) {
@@ -562,11 +565,10 @@ export function injectInteractivityRescue(
     html = stripNonCarouselScripts(html);
   } else if (liveChat) {
     html = neutralizeRocketLoader(html).html;
-    html = injectLiveCommentClock(html);
   } else {
     html = stripNonCarouselScripts(html);
-    html = injectLiveCommentClock(html);
   }
+  html = injectLiveCommentClock(html, timed);
 
   // 2) NEUTRALIZZA <details onclick="return false" open>. Pattern usato
   //    da FunnelKit (Rosabella, AICashClone, ecc.) per inibire il toggle

@@ -23,6 +23,7 @@ import {
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 import { injectLiveCommentClock } from '@/lib/live-comment-clock';
+import { extractTimedComments } from '@/lib/bake-dynamic-comments';
 import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
 import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
 import { understandClonedLander } from '@/lib/lander-agent-client';
@@ -284,14 +285,15 @@ function clonedPreviewKeepScripts(html: string): boolean {
 }
 
 function runClonedPreviewPipeline(rawHtml: string): string {
-  const keepLive = clonedPreviewKeepScripts(rawHtml);
+  const timed = extractTimedComments(rawHtml);
+  const keepLive = clonedPreviewKeepScripts(rawHtml) || timed.length > 0;
   let html = prepareClonedHtmlForPreview(rawHtml, { keepScripts: keepLive });
   try {
     html = injectInteractivityRescue(html, { keepScripts: keepLive });
   } catch {
     /* keep html as prepared */
   }
-  return html;
+  return injectLiveCommentClock(html, timed);
 }
 
 async function parseJsonResponseOrThrow<T = unknown>(
