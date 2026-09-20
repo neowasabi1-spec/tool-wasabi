@@ -1634,6 +1634,36 @@ function normalizeCreativeItems(list) {
   return out;
 }
 
+function creativeFingerprint(url) {
+  let s = String(url || '');
+  try {
+    const u = new URL(s.trim());
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    s = `${u.protocol}//${host}${path}`.toLowerCase();
+  } catch {
+    s = s.split('?')[0].replace(/\/+$/, '').toLowerCase();
+  }
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) + h + s.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+async function rememberCreativeFp(url) {
+  const fp = creativeFingerprint(url);
+  if (!fp) return;
+  try {
+    const cur = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+    if (cur.includes(fp)) return;
+    cur.push(fp);
+    if (cur.length > 20000) cur.splice(0, cur.length - 20000);
+    await chrome.storage.local.set({ wasabi_creative_fps: cur });
+  } catch { /* ignore */ }
+}
+
 const MAX_SIGNED_BYTES = 40 * 1024 * 1024;
 
 async function fetchMediaAsBlob(url) {
@@ -1705,6 +1735,7 @@ async function processBulkOneCreative(opts) {
   if (!r.ok) {
     throw new Error((r.data && (r.data.error || r.data.message)) || `Save failed (${r.status})`);
   }
+  await rememberCreativeFp(mediaUrl);
   return {
     ok: true,
     skipped: !!(r.data && r.data.skipped),
@@ -1714,15 +1745,30 @@ async function processBulkOneCreative(opts) {
 }
 
 async function startCreativeBulk(opts) {
-  const items = normalizeCreativeItems(opts.items);
+  const all = normalizeCreativeItems(opts.items);
   bulkStopRequested = false;
+  let localFps = [];
+  try {
+    localFps = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+  } catch { /* ignore */ }
+  const skip = new Set((localFps || []).map((x) => String(x).toLowerCase()));
+  const items = all.filter((it) => !skip.has(creativeFingerprint(it.mediaUrl)));
+  const skippedUpFront = all.length - items.length;
   if (!items.length) {
     await setBulkState({
       running: false, done: true, error: 'empty', kind: 'creatives',
-      status: 'No creatives to import.', total: 0, savedCount: 0, failedCount: 0, skippedCount: 0,
+      status: skippedUpFront
+        ? `All ${skippedUpFront} already in the archive. Scan again for the next batch.`
+        : 'No creatives to import.',
+      total: skippedUpFront, savedCount: 0, failedCount: 0, skippedCount: skippedUpFront,
       urls: [], items: [],
     });
-    return { ok: false, error: 'No creatives to import.' };
+    return {
+      ok: false,
+      error: skippedUpFront
+        ? `All ${skippedUpFront} already in the archive. Scan again for the next batch.`
+        : 'No creatives to import.',
+    };
   }
   const token = await getValidToken();
   if (!token) {
@@ -1739,12 +1785,14 @@ async function startCreativeBulk(opts) {
     done: false,
     error: null,
     kind: 'creatives',
-    status: `Starting ${items.length} creatives…`,
+    status: skippedUpFront
+      ? `Starting ${items.length} new creatives (${skippedUpFront} already in archive)…`
+      : `Starting ${items.length} creatives…`,
     total: items.length,
     index: 0,
     savedCount: 0,
     failedCount: 0,
-    skippedCount: 0,
+    skippedCount: skippedUpFront,
     category: opts.category || '',
     tags: Array.isArray(opts.tags) ? opts.tags : [],
     pageUrl: opts.pageUrl || '',

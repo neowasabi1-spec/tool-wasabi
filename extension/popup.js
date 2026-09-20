@@ -252,12 +252,35 @@ async function loadFolders() {
       }
     }
     knownSavedUrls = Array.isArray(data.savedUrls) ? data.savedUrls : [];
-    knownCreativeFingerprints = Array.isArray(data.savedCreativeFingerprints)
+    const fromApi = Array.isArray(data.savedCreativeFingerprints)
       ? data.savedCreativeFingerprints
       : [];
+    let fromLocal = [];
+    try {
+      fromLocal = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+    } catch { /* ignore */ }
+    knownCreativeFingerprints = Array.from(
+      new Set([...fromApi, ...fromLocal].map((x) => String(x).toLowerCase())),
+    );
   } catch (e) {
     console.warn('loadFolders failed', e);
   }
+}
+
+async function rememberCreativeFingerprints(urls) {
+  const extra = [];
+  for (const url of urls || []) {
+    if (!url) continue;
+    extra.push(creativeFingerprint(url));
+  }
+  if (!extra.length) return;
+  knownCreativeFingerprints = Array.from(new Set([...knownCreativeFingerprints, ...extra]));
+  try {
+    const cur = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+    const next = Array.from(new Set([...cur, ...extra]));
+    if (next.length > 20000) next.splice(0, next.length - 20000);
+    await chrome.storage.local.set({ wasabi_creative_fps: next });
+  } catch { /* ignore */ }
 }
 
 async function captureHtml(tabId) {
@@ -821,7 +844,7 @@ function syncBulkUi() {
   const creatives = isCreativesBulk();
   if (els.bulkHint) {
     els.bulkHint.innerHTML = creatives
-      ? 'Sulla sezione <strong>Ads</strong> di AdSpends clicca Scan: scorre la griglia e prende le creative (img/video). Save le mette in <strong>Template → Ads</strong> e le classifica da sola (Image / Video / Story / UGC / Carousel). Già in archivio = skip. Max 400 per run. Lascia aperta la finestra importer.'
+      ? 'Sulla sezione <strong>Ads</strong> di AdSpends clicca Scan: scorre la griglia e prende le creative <em>nuove</em> (già scaricate = skip, passa alle successive). Save → <strong>Template → Ads</strong> con tipo automatico. Max 400 nuove per run. Lascia aperta la finestra importer.'
       : 'Dalla lista AdSpends clicca Scan: scorre le card visibili e raccoglie le landing (non è il database intero da 1000+). Poi Save: si apre una finestra importer — <strong>lasciala aperta</strong> fino alla fine. Già in archivio = skip. Max 400 per run.';
   }
   if (els.bulkScan) els.bulkScan.textContent = creatives ? 'Scan this page for ads' : 'Scan this page for URLs';
@@ -937,12 +960,31 @@ async function collectListingUrlsInPage() {
   return found.slice(0, MAX);
 }
 
-async function collectListingCreativesInPage() {
+async function collectListingCreativesInPage(skipFingerprints) {
   const MAX = 400;
   const MIN = 72;
   const SKIP = /googleusercontent|gstatic\.com|gravatar|hotjar|intercom|doubleclick|googletagmanager|adspends\.com\/(?:_next|static|assets|logo)|chrome-extension/i;
   const found = [];
   const seen = new Set();
+  const skip = new Set((skipFingerprints || []).map((x) => String(x).toLowerCase()));
+  let skippedKnown = 0;
+  const fingerprint = (url) => {
+    let s = String(url || '');
+    try {
+      const u = new URL(s.trim());
+      const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+      const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+      s = `${u.protocol}//${host}${path}`.toLowerCase();
+    } catch {
+      s = s.split('?')[0].replace(/\/+$/, '').toLowerCase();
+    }
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) {
+      h = (h << 5) + h + s.charCodeAt(i);
+      h = h >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+  };
 
   const abs = (raw) => {
     const s = String(raw || '').trim();
@@ -1041,6 +1083,10 @@ async function collectListingCreativesInPage() {
       const key = keyOf(best.url);
       if (!key || seen.has(key)) continue;
       seen.add(key);
+      if (skip.has(fingerprint(best.url))) {
+        skippedKnown += 1;
+        continue;
+      }
       const text = String((card.innerText || '').replace(/\s+/g, ' ').trim()).slice(0, 800);
       const largeImgs = candidates.filter((c) => c.mediaType === 'image' && (c.w * c.h) >= MIN * MIN * 4);
       found.push({
@@ -1070,21 +1116,21 @@ async function collectListingCreativesInPage() {
 
   harvest();
   let stagnant = 0;
-  for (let i = 0; i < 70 && found.length < MAX; i++) {
+  for (let i = 0; i < 180 && found.length < MAX; i++) {
     const before = found.length;
     const top = scroller.scrollTop;
     scroller.scrollTop = Math.min(scroller.scrollHeight, top + Math.max(scroller.clientHeight * 0.9, 700));
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 400));
     harvest();
     if (found.length === before && scroller.scrollTop <= top + 4) {
       stagnant += 1;
-      if (stagnant >= 4) break;
+      if (stagnant >= 8) break;
     } else {
       stagnant = 0;
     }
   }
   try { scroller.scrollTop = 0; } catch { /* ignore */ }
-  return found.slice(0, MAX);
+  return { items: found.slice(0, MAX), skippedKnown };
 }
 
 async function scanListingUrls() {
@@ -1126,32 +1172,55 @@ async function scanListingCreatives() {
     setStatus('Open the AdSpends Ads grid first.', 'err');
     return;
   }
-  setStatus('<span class="spinner"></span>Scanning ads — scrolling to load more creatives…');
+  setStatus('<span class="spinner"></span>Scanning ads — skipping ones already in the archive…');
   try {
+    await loadFolders();
+    const known = new Set((knownCreativeFingerprints || []).map((x) => String(x).toLowerCase()));
+    const queuedFresh = scannedCreatives.filter(
+      (it) => it && it.mediaUrl && !known.has(creativeFingerprint(it.mediaUrl)),
+    );
+    if (queuedFresh.length >= BULK_MAX) {
+      scannedCreatives = queuedFresh.slice(0, BULK_MAX);
+      els.bulkUrls.value = scannedCreatives.map((it) => it.mediaUrl).join('\n');
+      updateBulkCount();
+      setStatus(
+        `${BULK_MAX} new creatives already queued. Save them first, then Scan again — the next run skips these and takes the following ones.`,
+        'ok',
+      );
+      return;
+    }
+    const skip = Array.from(known);
+    for (const it of queuedFresh) skip.push(creativeFingerprint(it.mediaUrl));
     const results = await chrome.scripting.executeScript({
       target: { tabId: activeTab.id },
       func: collectListingCreativesInPage,
+      args: [skip],
     });
-    const items = (results && results[0] && results[0].result) || [];
-    if (!items.length) {
-      setStatus('No creatives found on this grid. Open the Ads tab (not Pages) and try Scan again, or paste media URLs.', 'err');
-      return;
-    }
+    const raw = (results && results[0] && results[0].result) || {};
+    const items = Array.isArray(raw) ? raw : (raw.items || []);
+    const skippedKnown = Number(raw.skippedKnown) || 0;
     const byKey = new Map();
-    for (const it of [...scannedCreatives, ...items]) {
+    for (const it of [...queuedFresh, ...items]) {
       if (!it || !it.mediaUrl) continue;
+      if (known.has(creativeFingerprint(it.mediaUrl))) continue;
       byKey.set(String(it.mediaUrl).replace(/\/+$/, '').toLowerCase(), it);
     }
     scannedCreatives = Array.from(byKey.values()).slice(0, BULK_MAX);
     els.bulkUrls.value = scannedCreatives.map((it) => it.mediaUrl).join('\n');
     updateBulkCount();
-    const known = new Set((knownCreativeFingerprints || []).map((x) => String(x).toLowerCase()));
-    const already = scannedCreatives.filter((it) => known.has(creativeFingerprint(it.mediaUrl))).length;
-    const fresh = scannedCreatives.length - already;
+    if (!scannedCreatives.length) {
+      setStatus(
+        skippedKnown
+          ? `All ${skippedKnown} ads Scan could reach are already in Template → Ads. Scroll further on AdSpends and Scan again, or change filters.`
+          : 'No creatives found on this grid. Open the Ads tab (not Pages) and try Scan again.',
+        skippedKnown ? 'ok' : 'err',
+      );
+      return;
+    }
     setStatus(
-      already
-        ? `Loaded ${scannedCreatives.length} creatives (max ${BULK_MAX}/run) · ${already} already in Template → Ads · ${fresh} new. Only cards Scan can scroll to — not the whole AdSpends catalog.`
-        : `Loaded ${scannedCreatives.length} creative${scannedCreatives.length === 1 ? '' : 's'} from this Ads grid (max ${BULK_MAX} per run). Save files them into Template → Ads and auto-sorts Image / Video / Story / UGC.`,
+      skippedKnown
+        ? `Queued ${scannedCreatives.length} new creatives · skipped ${skippedKnown} already in the archive. Save, then Scan again for the next batch (max ${BULK_MAX}/run).`
+        : `Queued ${scannedCreatives.length} new creative${scannedCreatives.length === 1 ? '' : 's'} (max ${BULK_MAX} per run). Save files them into Template → Ads.`,
       'ok',
     );
   } catch (e) {
@@ -1207,7 +1276,13 @@ async function refreshBulkStatusOnce() {
       ? ` &nbsp;<a href="${TOOL}/projects/${st.projectId}" target="_blank">open project</a>`
       : ` &nbsp;<a href="${TOOL}" target="_blank">open archive</a>`;
     setStatus(`${st.status || 'Done'} · ${bulkProgressLine(st)}${st.savedCount ? link : ''}`, cls);
+    if (st.kind === 'creatives') {
+      await rememberCreativeFingerprints(st.urls || (st.items || []).map((it) => it && it.mediaUrl));
+      scannedCreatives = [];
+      if (els.bulkUrls) els.bulkUrls.value = '';
+    }
     await sendMessage({ type: 'BULK_RESET' });
+    if (st.kind === 'creatives') await loadFolders();
     syncBulkUi();
   } else {
     if (els.save) {

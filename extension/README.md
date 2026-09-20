@@ -59,7 +59,7 @@ The Ads grid on AdSpends is a different list (thousands of images/videos, not la
 3. Optional: pick a **Category** (niche) and extra tags. Type is automatic.
 4. Click **Save N creatives**. Leave the importer window open until Done.
 
-Each creative lands in **Template → Ads**, filed as **Image / Video / Carousel / UGC / Story** from format (9:16 → Story), media (video/image), and copy cues (UGC, carousel, …). Already imported creatives are skipped. Max 400 per run — Scan only sees cards it can scroll to, not the whole AdSpends catalog. Repeat Scan on the next slice of the grid.
+Each creative lands in **Template → Ads**, filed as **Image / Video / Carousel / UGC / Story** from format (9:16 → Story), media (video/image), and copy cues (UGC, carousel, …). Already imported creatives are skipped on the next Scan — it scrolls past them and queues up to 400 **new** ones. Repeat Save → Scan for the next slice. Scan only sees cards it can scroll to, not the whole AdSpends catalog.
 
 You can also drag files onto **Upload & auto-sort** on Template → Ads.
 

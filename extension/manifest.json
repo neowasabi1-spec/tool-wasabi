@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Wasabi Saver",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "Save landing pages and bulk-import AdSpends ads into Template → Ads (auto Image/Video/Story/UGC), plus hover-save creatives into a project's Competitor Library.",
   "permissions": ["activeTab", "scripting", "tabs", "storage", "debugger", "downloads", "declarativeNetRequest", "alarms"],
   "host_permissions": ["<all_urls>"],
