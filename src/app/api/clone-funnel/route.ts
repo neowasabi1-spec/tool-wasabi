@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
-import { rescueViaJina, stabilizeClonedHtml, needsVslHydration, pageNeedsJsRender, isFrameworkRuntime } from '@/lib/spa-rescue';
+import { rescueViaJina, stabilizeClonedHtml, needsVslHydration, pageNeedsJsRender, isFrameworkRuntime, htmlHasRealLayout, looksLikeTextDump } from '@/lib/spa-rescue';
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
@@ -205,7 +205,7 @@ async function fetchPageWithFallbacks(url: string): Promise<
 
   // Last-resort: legacy Jina path (kept as defence in depth in case
   // fetchHtmlSmart's own Jina call gets rate-limited).
-  const rescued = await rescueViaJina(url);
+  const rescued = await rescueViaJina(url, { allowMarkdown: false });
   if (rescued) {
     const inlined = await inlineExternalAssets(rescued, url);
     console.log(`[clone-funnel] legacy jina-proxy rescued SPA: ${inlined.length} html (after asset inline)`);
@@ -849,8 +849,17 @@ export async function POST(request: NextRequest) {
       // siti tipo shop.try-spartan.com.
       const FETCH_BUDGET_MS = 12000;
 
-      const identicalFetchIsComplete = (html: string) =>
-        !!html && html.length >= 50 && !pageNeedsJsRender(html);
+      const identicalFetchIsComplete = (html: string) => htmlHasRealLayout(html);
+
+      const preferCloneHtml = (primary: string, fallback: string): string => {
+        const a = primary || '';
+        const b = fallback || '';
+        if (htmlHasRealLayout(b) && looksLikeTextDump(a)) return b;
+        if (htmlHasRealLayout(a) && looksLikeTextDump(b)) return a;
+        if (htmlHasRealLayout(a) && !htmlHasRealLayout(b)) return a;
+        if (htmlHasRealLayout(b) && !htmlHasRealLayout(a)) return b;
+        return a.length >= b.length ? a : b;
+      };
 
       type DirectAttempt = { ok: boolean; html: string; status: number; ms: number; name: string; error?: string };
 
@@ -1007,14 +1016,16 @@ export async function POST(request: NextRequest) {
         mode: 'full',
         fetchTimeoutMs: 20000,
         playwrightTimeoutMs: 45000,
+        skipJinaMarkdown: true,
       });
       const smartMs = Date.now() - smartT0;
       const smartHtml = smart.ok ? smart.html : '';
-      const smartFrozen = smartHtml.length > 200 && !pageNeedsJsRender(smartHtml);
+      const chosenHtml = preferCloneHtml(smartHtml, bestRaw.html);
+      const chosenIsDump = looksLikeTextDump(chosenHtml);
 
-      if (smartFrozen || (smartHtml.length > 200 && smart.source && smart.source !== 'fetch-spa-failed')) {
-        const keepDecision = shouldKeepScripts(smartHtml, keepScriptsFlag);
-        const stabilizedHtml = stabilizeClonedHtml(smartHtml, cleanUrl, { keepScripts: keepDecision.keep });
+      if (chosenHtml.length > 200 && !chosenIsDump) {
+        const keepDecision = shouldKeepScripts(chosenHtml, keepScriptsFlag);
+        const stabilizedHtml = stabilizeClonedHtml(chosenHtml, cleanUrl, { keepScripts: keepDecision.keep });
         let finalHtml = stabilizedHtml;
         let didInline = false;
         try {

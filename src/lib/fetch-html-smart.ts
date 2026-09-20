@@ -17,7 +17,7 @@
  * automatically (it just calls our /api routes internally).
  */
 
-import { isSpaShell, rescueViaJina, needsVslHydration, pageNeedsJsRender } from '@/lib/spa-rescue';
+import { isSpaShell, rescueViaJina, needsVslHydration, pageNeedsJsRender, htmlHasRealLayout, looksLikeTextDump } from '@/lib/spa-rescue';
 
 export type FetchHtmlSource =
   /** Plain fetch returned non-SPA HTML — used as-is. */
@@ -74,6 +74,8 @@ export interface FetchHtmlOptions {
   skipPlaywright?: boolean;
   /** Disable Jina entirely (not recommended). */
   skipJina?: boolean;
+  /** Clone/preview: never accept Jina's markdown text-dump as HTML. */
+  skipJinaMarkdown?: boolean;
   /** Optional AbortSignal merged with internal timeouts. */
   signal?: AbortSignal;
 }
@@ -164,6 +166,10 @@ function hasContentTags(lowercaseHtml: string): boolean {
   if (/<article[\s>]/.test(lowercaseHtml)) return true;
   if (/<section[\s>]/.test(lowercaseHtml)) return true;
   if (/<main[\s>]/.test(lowercaseHtml)) return true;
+  // CheckoutChamp / GrapesJS: the whole landing is <div class> + <style>
+  if (lowercaseHtml.includes('<style') && (lowercaseHtml.match(/<div[\s>]/g) || []).length >= 8) {
+    return true;
+  }
   return false;
 }
 
@@ -236,7 +242,8 @@ export async function fetchHtmlSmart(
 
   // If fetch produced non-SPA HTML, we're done.
   const wasSpa = fetchOk
-    ? looksLikeSpaShell(fetchedHtml, sizeThreshold) || pageNeedsJsRender(fetchedHtml)
+    ? (looksLikeSpaShell(fetchedHtml, sizeThreshold) || pageNeedsJsRender(fetchedHtml)) &&
+      !htmlHasRealLayout(fetchedHtml)
     : true;
   if (fetchOk && !wasSpa) {
     return {
@@ -274,8 +281,10 @@ export async function fetchHtmlSmart(
   // ── 3. Jina rescue ────────────────────────────────────────────────
   if (!opts.skipJina) {
     try {
-      const rescued = await rescueViaJina(normalised);
-      if (rescued && rescued.length > 200) {
+      const rescued = await rescueViaJina(normalised, {
+        allowMarkdown: opts.skipJinaMarkdown ? false : undefined,
+      });
+      if (rescued && rescued.length > 200 && !looksLikeTextDump(rescued)) {
         attempts.push(`jina: OK ${rescued.length} chars`);
         const jinaSource: FetchHtmlSource =
           mode === 'text-only' || opts.skipPlaywright

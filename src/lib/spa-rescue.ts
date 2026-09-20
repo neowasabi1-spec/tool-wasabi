@@ -39,6 +39,23 @@ export function isSpaShell(html: string): boolean {
   return visibleText.length < 200;
 }
 
+/** Designed landing (CheckoutChamp / GrapesJS / CF): CSS + real DOM, not a JS shell. */
+export function htmlHasRealLayout(html: string): boolean {
+  if (!html || html.length < 3000) return false;
+  const hasCss = /<style[\s>]|<link[^>]+rel=["']stylesheet["']/i.test(html);
+  if (!hasCss) return false;
+  const divs = (html.match(/<div\b/gi) || []).length;
+  return divs >= 8 && !isSpaShell(html);
+}
+
+/** Jina markdown fallback: copy only, no CSS, no layout. Never use this as a clone. */
+export function looksLikeTextDump(html: string): boolean {
+  if (!html) return true;
+  if (/<style[\s>]|<link[^>]+rel=["']stylesheet["']/i.test(html)) return false;
+  const divs = (html.match(/<div\b/gi) || []).length;
+  return divs < 8;
+}
+
 const EMPTY_APP_ROOT =
   /<div[^>]*\bid=["'](?:root|app|__next|__nuxt|svelte)["'][^>]*>\s*(?:<!--[\s\S]*?-->)?\s*<\/div>/i;
 
@@ -64,6 +81,9 @@ export function isFrameworkRuntime(html: string): boolean {
  */
 export function pageNeedsJsRender(html: string): boolean {
   if (!html || html.length < 80) return true;
+  // CheckoutChamp / GrapesJS / CF already shipped CSS + copy. Do NOT
+  // send those to Jina markdown — that is how a VSL becomes a wall of <p>.
+  if (htmlHasRealLayout(html)) return false;
   if (needsVslHydration(html)) return true;
   if (isSpaShell(html)) return true;
   if (EMPTY_APP_ROOT.test(html)) return true;
@@ -168,10 +188,14 @@ export function hydrateVslSnapshot(html: string): string {
  * `apiKey` (or set JINA_API_KEY env var) to lift Jina's free-tier rate
  * limits and unlock faster browser-mode renders.
  */
-export async function rescueViaJina(url: string): Promise<string | null> {
+export async function rescueViaJina(
+  url: string,
+  opts?: { allowMarkdown?: boolean },
+): Promise<string | null> {
   const apiKey = process.env.JINA_API_KEY?.trim() || '';
   const html = await tryJinaBrowserHtml(url, apiKey);
-  if (html) return html;
+  if (html && !looksLikeTextDump(html)) return html;
+  if (opts?.allowMarkdown === false) return null;
   const md = await tryJinaMarkdown(url, apiKey);
   if (md) return md;
   return null;
