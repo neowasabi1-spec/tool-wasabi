@@ -39,6 +39,43 @@ export function isSpaShell(html: string): boolean {
   return visibleText.length < 200;
 }
 
+const EMPTY_APP_ROOT =
+  /<div[^>]*\bid=["'](?:root|app|__next|__nuxt|svelte)["'][^>]*>\s*(?:<!--[\s\S]*?-->)?\s*<\/div>/i;
+
+/** React / Next / Vite / Vue bundles that re-hydrate and wipe a cloned snapshot. */
+export function isFrameworkRuntime(html: string): boolean {
+  if (!html) return false;
+  return (
+    /\/_next\/static\//i.test(html) ||
+    /id=["']__NEXT_DATA__["']/i.test(html) ||
+    /<script[^>]+type=["']module["'][^>]*src=/i.test(html) ||
+    /\/assets\/index-[a-zA-Z0-9._-]+\.(?:js|mjs)/i.test(html) ||
+    /webpackChunk|webpackJsonp|react-dom\/client|createRoot\s*\(/i.test(html)
+  );
+}
+
+/**
+ * True when a static fetch is NOT enough: the landing (copy, images, video,
+ * quiz options) is built by JavaScript. Those pages must be opened in a
+ * real browser (Playwright / Jina) so we can freeze the post-JS DOM.
+ *
+ * Static HTML landers with hidden steps / FAQ are NOT this — they already
+ * have the markup in the payload.
+ */
+export function pageNeedsJsRender(html: string): boolean {
+  if (!html || html.length < 80) return true;
+  if (needsVslHydration(html)) return true;
+  if (isSpaShell(html)) return true;
+  if (EMPTY_APP_ROOT.test(html)) return true;
+  const nextData = html.match(
+    /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i,
+  )?.[1];
+  if (typeof nextData === 'string' && nextData.replace(/\s/g, '').length < 500) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * r.jina.ai parses `?` / `&` as ITS OWN query string. A target like
  * `https://host/vsl?gate=TOKEN` is therefore fetched as `/vsl` — and
@@ -489,6 +526,10 @@ export function injectInteractivityRescue(
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
     return healClonedLander(html).html;
+  } else if (isFrameworkRuntime(html) && !pageNeedsJsRender(html)) {
+    // Playwright/Jina already froze the DOM. Leaving Next/Vite/React in
+    // the snapshot makes them re-hydrate in our iframe and blank the page.
+    html = stripNonCarouselScripts(html);
   } else if (opts.keepScripts) {
     html = neutralizeRocketLoader(html).html;
   } else {

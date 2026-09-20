@@ -1,5 +1,6 @@
 import { buildSwipeAssetMap, type SwipeAssetMap } from './swipe-asset-map';
 import { readHealStamp } from './lander-heal';
+import { pageNeedsJsRender } from './spa-rescue';
 
 export async function understandClonedLander(
   html: string,
@@ -7,6 +8,9 @@ export async function understandClonedLander(
 ): Promise<{ html: string; map: SwipeAssetMap }> {
   const local = buildSwipeAssetMap(html);
   if (!html || html.length < 80) return { html, map: local };
+  // JS shells need a browser freeze in clone-funnel, not a screenshot
+  // of an empty page. Static HTML already maps without an LLM.
+  if (pageNeedsJsRender(html)) return { html, map: local };
   const remaining = readHealStamp(html).remaining;
   const known =
     local.understood &&

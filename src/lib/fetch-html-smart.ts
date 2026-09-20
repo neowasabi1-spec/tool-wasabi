@@ -17,7 +17,7 @@
  * automatically (it just calls our /api routes internally).
  */
 
-import { isSpaShell, rescueViaJina, needsVslHydration } from '@/lib/spa-rescue';
+import { isSpaShell, rescueViaJina, needsVslHydration, pageNeedsJsRender } from '@/lib/spa-rescue';
 
 export type FetchHtmlSource =
   /** Plain fetch returned non-SPA HTML — used as-is. */
@@ -235,7 +235,9 @@ export async function fetchHtmlSmart(
   }
 
   // If fetch produced non-SPA HTML, we're done.
-  const wasSpa = fetchOk ? looksLikeSpaShell(fetchedHtml, sizeThreshold) : true;
+  const wasSpa = fetchOk
+    ? looksLikeSpaShell(fetchedHtml, sizeThreshold) || pageNeedsJsRender(fetchedHtml)
+    : true;
   if (fetchOk && !wasSpa) {
     return {
       ok: true,
@@ -432,6 +434,38 @@ async function tryPlaywright(
       } catch (scrollErr) {
         const m = scrollErr instanceof Error ? scrollErr.message : String(scrollErr);
         console.warn(`[SPA-FALLBACK] lazy-load scroll skipped: ${m}`);
+      }
+
+      // Bake lazy loaders into real src so the frozen snapshot still has
+      // images/videos after we strip the framework bundles.
+      try {
+        await page.evaluate(() => {
+          const nodes = document.querySelectorAll('[data-src], [data-lazy-src], [data-original], [data-lazy], [data-bg]');
+          nodes.forEach((el) => {
+            const u =
+              el.getAttribute('data-src') ||
+              el.getAttribute('data-lazy-src') ||
+              el.getAttribute('data-original') ||
+              el.getAttribute('data-lazy') ||
+              '';
+            if (!u) return;
+            if (el instanceof HTMLImageElement || el instanceof HTMLIFrameElement || el instanceof HTMLVideoElement) {
+              if (!el.getAttribute('src')) el.setAttribute('src', u);
+            }
+            const bg = el.getAttribute('data-bg');
+            if (bg && el instanceof HTMLElement && !el.style.backgroundImage) {
+              el.style.backgroundImage = `url("${bg}")`;
+            }
+          });
+          document.querySelectorAll('source[data-src]').forEach((el) => {
+            const u = el.getAttribute('data-src');
+            if (u && !el.getAttribute('src')) el.setAttribute('src', u);
+          });
+        });
+        await page.waitForTimeout(400);
+      } catch (lazyErr) {
+        const m = lazyErr instanceof Error ? lazyErr.message : String(lazyErr);
+        console.warn(`[SPA-FALLBACK] lazy src bake skipped: ${m}`);
       }
 
       const html = await page.content();

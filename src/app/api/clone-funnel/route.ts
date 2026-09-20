@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCoreKnowledge } from '@/knowledge/copywriting';
-import { rescueViaJina, stabilizeClonedHtml, isSpaShell, needsVslHydration } from '@/lib/spa-rescue';
+import { rescueViaJina, stabilizeClonedHtml, needsVslHydration, pageNeedsJsRender, isFrameworkRuntime } from '@/lib/spa-rescue';
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
@@ -12,10 +12,22 @@ import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 // keep scripts when the caller explicitly asks (keepScripts) OR when the
 // heuristic detector finds content-generating inline JS.
 function shouldKeepScripts(html: string, explicitFlag: boolean): { keep: boolean; detected: boolean; signals: string[] } {
-  if (explicitFlag) return { keep: true, detected: false, signals: [] };
   try {
     const d = detectDynamicScripts(html);
-    return { keep: d.functional, detected: d.functional, signals: d.signals };
+    const framework = isFrameworkRuntime(html);
+    const stillShell = pageNeedsJsRender(html);
+    // Frozen React/Next/Vite snapshot: never keep the framework bundle —
+    // it re-hydrates in our iframe and blanks the page.
+    if (framework && !stillShell) {
+      return { keep: false, detected: d.functional, signals: [...d.signals, 'frozen-spa'] };
+    }
+    if (d.functional) return { keep: true, detected: true, signals: d.signals };
+    // Last resort for a still-empty SPA: leave scripts so Live iframe can try.
+    if (framework && stillShell) {
+      return { keep: true, detected: true, signals: [...d.signals, 'spa-shell'] };
+    }
+    if (explicitFlag && !framework) return { keep: true, detected: false, signals: [] };
+    return { keep: false, detected: false, signals: d.signals };
   } catch {
     return { keep: false, detected: false, signals: [] };
   }
@@ -140,28 +152,13 @@ async function fetchPageWithFallbacks(url: string): Promise<
       if (res.ok) {
         const html = await res.text();
         if (html && html.length > 50) {
-          // The `looksLikeSpaShell` detector from fetch-html-smart is
-          // aggressive on purpose for the AUDIT flow — any `<div id="root">`
-          // marker triggers Playwright "just in case". For the CLONE flow
-          // that's a regression: an SSR'd Next/Vite/CRA page with the
-          // root div + 300KB of real content gets misclassified and we
-          // throw away a perfectly good HTML, then time out in Playwright,
-          // and Netlify returns a 504 HTML page → "<HTML> <HE..." JSON
-          // parse error on the client.
-          //
-          // Fix: trust the marker ONLY when the body is actually empty.
-          // If we already have substantive content tags (h1/p/article/
-          // section/main) AND a non-trivial payload (>= 15KB), the page
-          // is hydrated SSR — use it as-is. This restores the 2-second
-          // fast path that worked before ef75e58.
-          const hasRealContent =
-            html.length >= 15000 &&
-            /<(h[1-6]|p|article|section|main)[\s>]/i.test(html);
-
-          if ((looksLikeSpaShell(html) && !hasRealContent) || needsVslHydration(html)) {
+          // Fast path: HTML already has the landing. JS-only pages
+          // (empty #root, tiny __NEXT_DATA__, VSL without <video>)
+          // fall through to Playwright so we freeze the post-JS DOM.
+          if (pageNeedsJsRender(html) || needsVslHydration(html)) {
             const why = needsVslHydration(html)
               ? `VSL player without mounted media (${html.length} chars)`
-              : `SPA shell detected (${html.length} chars, no real content)`;
+              : `JS-rendered page (${html.length} chars)`;
             details.push(`${attempt.name}: ${why} — falling through to fetchHtmlSmart (Playwright → Jina)`);
             console.warn(`[clone-funnel] ${attempt.name} returned ${why} for ${url} — trying next attempt`);
           } else {
@@ -851,10 +848,9 @@ export async function POST(request: NextRequest) {
       // Cloudflare/Shopify bot-detection che 403-ano il chrome UA su
       // siti tipo shop.try-spartan.com.
       const FETCH_BUDGET_MS = 12000;
-      const JINA_BUDGET_MS = 30000;
 
       const identicalFetchIsComplete = (html: string) =>
-        !!html && html.length >= 50 && !isSpaShell(html) && !needsVslHydration(html);
+        !!html && html.length >= 50 && !pageNeedsJsRender(html);
 
       type DirectAttempt = { ok: boolean; html: string; status: number; ms: number; name: string; error?: string };
 
@@ -887,7 +883,7 @@ export async function POST(request: NextRequest) {
       }
 
       const t0 = Date.now();
-      console.log(`[clone-funnel] identical: start ${cleanUrl} (fetch_budget=${FETCH_BUDGET_MS}, jina_budget=${JINA_BUDGET_MS})`);
+      console.log(`[clone-funnel] identical: start ${cleanUrl} (fetch_budget=${FETCH_BUDGET_MS})`);
 
       // ── Step 1: Chrome desktop UA ────────────────────────────────
       const chromeAttempt = await fetchDirect(
@@ -997,76 +993,68 @@ export async function POST(request: NextRequest) {
       const anyFetchOk = chromeAttempt.ok || botAttempt.ok;
       const totalFetchMs = chromeAttempt.ms + botAttempt.ms;
 
-      // ── Step 3: Jina (render SPA / sblocca pagine bot-protected) ─
-      const jinaReason = !anyFetchOk
+      // ── Step 3: JS pages — Playwright freeze, then Jina ───────────
+      // Static fetch left us a shell (React/Next/Vite/VSL). Open the
+      // URL in a real browser, wait for JS, serialize the DOM, then
+      // strip the framework so it cannot wipe the snapshot in preview.
+      const jsReason = !anyFetchOk
         ? 'both direct fetches failed'
-        : 'SPA shell detected';
-      console.log(`[clone-funnel] identical: trying Jina (${jinaReason}) for ${cleanUrl}`);
+        : 'page needs JS render';
+      console.log(`[clone-funnel] identical: fetchHtmlSmart (${jsReason}) for ${cleanUrl}`);
 
-      let jinaHtml: string | null = null;
-      const jinaT0 = Date.now();
-      try {
-        jinaHtml = await Promise.race<string | null>([
-          rescueViaJina(cleanUrl),
-          new Promise<null>((resolve) => setTimeout(() => resolve(null), JINA_BUDGET_MS)),
-        ]);
-      } catch (jinaErr) {
-        console.error(`[clone-funnel] identical: Jina threw for ${cleanUrl}:`, jinaErr instanceof Error ? jinaErr.message : jinaErr);
-      }
-      const jinaMs = Date.now() - jinaT0;
+      const smartT0 = Date.now();
+      const smart = await fetchHtmlSmart(cleanUrl, {
+        mode: 'full',
+        fetchTimeoutMs: 20000,
+        playwrightTimeoutMs: 45000,
+      });
+      const smartMs = Date.now() - smartT0;
+      const smartHtml = smart.ok ? smart.html : '';
+      const smartFrozen = smartHtml.length > 200 && !pageNeedsJsRender(smartHtml);
 
-      if (jinaHtml && jinaHtml.length > 200) {
-        // BUG STORICO — Questa via, per SPA Vite/Replit, era il caso
-        // peggiore. Jina ci da' il DOM post-render (testi visibili) MA
-        // l'HTML ritornato contiene ancora i <link rel="stylesheet">
-        // verso /assets/index-*.css dell'origine. Senza inline-css,
-        // il browser sul nostro dominio Netlify fa fetch cross-origin
-        // del CSS Tailwind/Vite -> CORS lo blocca -> render senza
-        // stili = "tutta sconfusionata". E precedentemente non
-        // chiamavamo NEMMENO stabilizeClonedHtml su questo path,
-        // quindi: niente <base href>, niente assolutizzazione URL,
-        // niente accordion-rescue. Ora si.
-        const keepDecision = shouldKeepScripts(jinaHtml, keepScriptsFlag);
-        const stabilizedHtml = stabilizeClonedHtml(jinaHtml, cleanUrl, { keepScripts: keepDecision.keep });
+      if (smartFrozen || (smartHtml.length > 200 && smart.source && smart.source !== 'fetch-spa-failed')) {
+        const keepDecision = shouldKeepScripts(smartHtml, keepScriptsFlag);
+        const stabilizedHtml = stabilizeClonedHtml(smartHtml, cleanUrl, { keepScripts: keepDecision.keep });
         let finalHtml = stabilizedHtml;
         let didInline = false;
         try {
           finalHtml = await inlineExternalAssets(stabilizedHtml, cleanUrl);
           didInline = finalHtml.length !== stabilizedHtml.length;
         } catch (e) {
-          console.warn(`[clone-funnel] inline-css failed (jina path): ${e instanceof Error ? e.message : String(e)}`);
+          console.warn(`[clone-funnel] inline-css failed (js-render path): ${e instanceof Error ? e.message : String(e)}`);
         }
         const dt = Date.now() - t0;
-        console.log(`[clone-funnel] identical: Jina OK ${finalHtml.length}ch in ${jinaMs}ms (total ${dt}ms, cssInlined=${didInline}) for ${cleanUrl}`);
+        const stillShell = pageNeedsJsRender(finalHtml);
+        console.log(`[clone-funnel] identical: JS render via ${smart.source} ${finalHtml.length}ch in ${smartMs}ms (total ${dt}ms, frozen=${!stillShell}) for ${cleanUrl}`);
         return NextResponse.json({
           success: true,
           content: finalHtml,
           mobileContent: null,
           format: 'html',
           mode: 'identical',
-          originalSize: bestRaw.html.length || jinaHtml.length,
+          originalSize: bestRaw.html.length || smartHtml.length,
           finalSize: finalHtml.length,
           cssInlined: didInline,
           jsRendered: true,
-          method: 'jina',
+          method: smart.source || 'fetch-html-smart',
           scripts_kept: keepDecision.keep,
           dynamic_content_detected: keepDecision.detected,
           dynamic_signals: keepDecision.signals,
-          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, smartMs, totalMs: dt },
+          warning: stillShell
+            ? 'JS ran but the page is still a shell — preview may miss content that only exists after extra client fetches.'
+            : undefined,
           title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
 
-      console.warn(`[clone-funnel] identical: Jina timeout/empty in ${jinaMs}ms for ${cleanUrl} (returned ${jinaHtml?.length ?? 0} chars)`);
+      console.warn(`[clone-funnel] identical: JS render failed in ${smartMs}ms for ${cleanUrl} (source=${smart.source}, ${smartHtml.length} chars)`);
 
       // ── Step 4: Shell fallback se almeno un fetch ha dato qualcosa
       if (anyFetchOk && bestRaw.html.length > 200) {
         console.log(`[clone-funnel] identical: returning best fetch shell (${bestRaw.name}, ${bestRaw.html.length}ch) for ${cleanUrl}`);
         const keepDecision = shouldKeepScripts(bestRaw.html, keepScriptsFlag);
         const shellStabilized = stabilizeClonedHtml(bestRaw.html, cleanUrl, { keepScripts: keepDecision.keep });
-        // Anche se e' solo lo shell SPA (no JS render), inlinare il CSS
-        // mantiene il poco contenuto che c'e' (header, fonts, viewport)
-        // visualmente coerente con l'originale.
         let finalHtml = shellStabilized;
         let didInline = false;
         try {
@@ -1085,13 +1073,13 @@ export async function POST(request: NextRequest) {
           originalSize: bestRaw.html.length,
           finalSize: finalHtml.length,
           cssInlined: didInline,
-          jsRendered: false,
+          jsRendered: true,
           method: `fetch-shell-${bestRaw.name}`,
           scripts_kept: keepDecision.keep,
           dynamic_content_detected: keepDecision.detected,
           dynamic_signals: keepDecision.signals,
-          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalMs: dt },
-          warning: 'Page looks like an SPA shell — JS content not rendered. Jina fallback timed out.',
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, smartMs, totalMs: dt },
+          warning: 'Page is JavaScript-rendered and the browser freeze failed — snapshot may be empty. Open Live or retry clone.',
           title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
         });
       }
@@ -1101,12 +1089,12 @@ export async function POST(request: NextRequest) {
       const causes = [
         `chrome=${chromeAttempt.error || `HTTP ${chromeAttempt.status}`}`,
         `googlebot=${botAttempt.error || `HTTP ${botAttempt.status}`}`,
-        `jina=timeout/empty ${jinaMs}ms`,
+        `js-render=${smart.source || 'failed'} ${smartMs}ms`,
       ];
       return NextResponse.json(
         {
           error: `Unable to clone ${cleanUrl}: ${causes.join(' | ')}`,
-          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, jinaMs, totalFetchMs, totalMs: dt },
+          timing: { chromeMs: chromeAttempt.ms, botMs: botAttempt.ms, smartMs, totalFetchMs, totalMs: dt },
         },
         { status: 502 }
       );
