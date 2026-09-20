@@ -406,6 +406,7 @@ export async function POST(req: NextRequest) {
     tone?: string;
     language?: string;
     knowledge?: KnowledgePayload;
+    swipeMap?: { texts?: Array<{ text?: string; original?: string; tag?: string; position?: number }> };
   } = {};
   try {
     body = (await req.json()) as typeof body;
@@ -421,6 +422,28 @@ export async function POST(req: NextRequest) {
   }
 
   let texts = extractTextsFromHtml(body.html);
+  const mapped = Array.isArray(body.swipeMap?.texts) ? body.swipeMap!.texts! : [];
+  if (mapped.length >= 3) {
+    const seen = new Set<string>();
+    const fromMap = mapped
+      .map((t, i) => ({
+        original: String(t.text || t.original || '').trim(),
+        tag: t.tag || 'p',
+        position: typeof t.position === 'number' ? t.position : i,
+      }))
+      .filter((t) => {
+        if (t.original.length < 2 || seen.has(t.original)) return false;
+        seen.add(t.original);
+        return true;
+      });
+    for (const t of texts) {
+      if (!seen.has(t.original)) {
+        seen.add(t.original);
+        fromMap.push(t);
+      }
+    }
+    texts = fromMap;
+  }
   texts = prependDocumentTitle(texts, body.html);
 
   if (texts.length === 0) {

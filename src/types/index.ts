@@ -216,6 +216,8 @@ export interface ClonedPageData {
    *  cross-device — IndexedDB resta solo come backup locale. */
   htmlUrl?: string;
   mobileHtmlUrl?: string;
+  /** Clone-time map of texts / images / videos for swipe. Survives JSONB HTML strip. */
+  swipeMap?: import('../lib/swipe-asset-map').SwipeAssetMap;
 }
 
 export interface FunnelPage {

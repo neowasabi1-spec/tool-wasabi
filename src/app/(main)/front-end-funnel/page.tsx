@@ -22,6 +22,8 @@ import {
 } from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
 import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
+import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
+import { understandClonedLander } from '@/lib/lander-agent-client';
 import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
@@ -461,7 +463,11 @@ const AUDITOR_TARGET_AGENT: Record<Auditor, string | null> = {
 // Kept verbatim with the server version so the rewrite shape stays
 // identical (id-by-position).
 // ────────────────────────────────────────────────────────────────────────
-function extractTextsForRewriteClient(html: string): Array<{ original: string; tag: string; position: number }> {
+function extractTextsForRewriteClient(
+  html: string,
+  mapped?: Array<{ original: string; tag: string; position: number }>,
+): Array<{ original: string; tag: string; position: number }> {
+  if (mapped && mapped.length >= 3) return mapped;
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -592,15 +598,16 @@ async function rewriteWithOpenClawFromBrowser(args: {
   productDescription: string;
   customPrompt?: string;
   targetAgent?: string | null;
+  mappedTexts?: Array<{ original: string; tag: string; position: number }>;
   onProgress?: (batchesDone: number, batchesTotal: number) => void;
 }): Promise<{ html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string }> {
-  const { html, productName, productDescription, customPrompt, targetAgent, onProgress } = args;
+  const { html, productName, productDescription, customPrompt, targetAgent, mappedTexts, onProgress } = args;
   const { supabase } = await import('@/lib/supabase');
 
   // 1. Extract texts CLIENT-SIDE (was hitting /api/quiz-rewrite/extract
   //    which kept returning Netlify "Internal Error. ID: ..." on big
   //    pages — see comment on extractTextsForRewriteClient above).
-  const texts = extractTextsForRewriteClient(html);
+  const texts = extractTextsForRewriteClient(html, mappedTexts);
   const systemPrompt = REWRITE_SYSTEM_PROMPT;
 
   if (texts.length === 0) throw new Error('No texts found to rewrite');
@@ -777,12 +784,13 @@ function finalizeClonedHtml(html: string): string {
   }
 }
 
-function cloneHealNote(html: string): string {
+function cloneHealNote(html: string, map?: SwipeAssetMap | null): string {
   try {
-    const { applied, remaining } = readHealStamp(html);
+    const { applied } = readHealStamp(html);
     const bits: string[] = [];
     if (applied.length) bits.push(`auto-fixed ${applied.join(', ')}`);
-    if (remaining.length) bits.push(`needs adapter: ${remaining.map((i) => i.id).join(', ')}`);
+    const mapped = summarizeSwipeMap(map || undefined).replace(/^; /, '');
+    if (mapped) bits.push(mapped);
     return bits.length ? `; ${bits.join('; ')}` : '';
   } catch {
     return '';
@@ -3729,6 +3737,9 @@ export default function FrontEndFunnel() {
               tone: 'professional',
               language: '',
               knowledge: pageKnowledge,
+              ...(page.clonedData && 'swipeMap' in page.clonedData && page.clonedData.swipeMap
+                ? { swipeMap: page.clonedData.swipeMap }
+                : {}),
               ...(pageCheckoutRules
                 ? { checkoutMode: pageCheckoutMode, checkoutRules: pageCheckoutRules }
                 : {}),
@@ -4052,16 +4063,18 @@ export default function FrontEndFunnel() {
         }>(res, '[clone-all]');
         if (!res.ok || data.error) throw new Error(data.error || 'Clone failed');
 
-        const clonedHtml = finalizeClonedHtml(
+        const healedHtml = finalizeClonedHtml(
           sanitizeClonedHtml(data.content || '', url, { keepScripts: true }),
         );
+        const understood = await understandClonedLander(healedHtml, url);
+        const clonedHtml = understood.html;
         const clonedMobileHtml = data.mobileContent
           ? finalizeClonedHtml(sanitizeClonedHtml(data.mobileContent, url, { keepScripts: true }))
           : '';
 
         updateFunnelPage(page.id, {
           swipeStatus: 'completed',
-          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars${cloneHealNote(clonedHtml)})`,
+          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars${cloneHealNote(clonedHtml, understood.map)})`,
           clonedData: {
             html: clonedHtml,
             mobileHtml: clonedMobileHtml || undefined,
@@ -4070,6 +4083,7 @@ export default function FrontEndFunnel() {
             content_length: data.finalSize || clonedHtml.length,
             duration_seconds: 0,
             cloned_at: new Date(),
+            swipeMap: understood.map,
           },
         });
         void saveHtmlBlob(page.id, 'clonedData', clonedHtml, clonedMobileHtml || undefined);
@@ -4245,11 +4259,17 @@ export default function FrontEndFunnel() {
         // asset relativo (css/img) diventerebbe https://uploaded.local/...
         // → 404 → pagina senza stili/immagini (sembra "vuota"). Il file
         // dell'utente e' gia' self-contained o ha URL assoluti suoi.
-        const clonedHtml = finalizeClonedHtml(
+        const healedHtml = finalizeClonedHtml(
           uploadedHtml
             ? (data.content || '')
             : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts }),
         );
+        updateFunnelPage(pageId, {
+          swipeStatus: 'in_progress',
+          swipeResult: 'Understanding landing (map texts, images, videos)...',
+        });
+        const understood = await understandClonedLander(healedHtml, isUploaded ? '' : url);
+        const clonedHtml = understood.html;
         const clonedMobileHtml = finalizeClonedHtml(
           uploadedHtml
             ? (data.mobileContent || '')
@@ -4257,8 +4277,8 @@ export default function FrontEndFunnel() {
         );
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
-          ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
-          : `Clone OK (${(data.finalSize || data.content?.length || 0).toLocaleString()} chars${data.cssInlined ? ', CSS inlined' : ''}${mobileInfo}${cloneHealNote(clonedHtml)})`;
+          ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete${cloneHealNote(clonedHtml, understood.map)}`
+          : `Clone OK (${(data.finalSize || data.content?.length || 0).toLocaleString()} chars${data.cssInlined ? ', CSS inlined' : ''}${mobileInfo}${cloneHealNote(clonedHtml, understood.map)})`;
 
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
@@ -4271,6 +4291,7 @@ export default function FrontEndFunnel() {
             content_length: data.finalSize || data.content?.length || 0,
             duration_seconds: 0,
             cloned_at: new Date(),
+            swipeMap: understood.map,
           },
         });
 
@@ -4350,6 +4371,8 @@ export default function FrontEndFunnel() {
           }
         }
         const chosenAuditorEarly = auditorRef.current;
+        let pageSwipeMap: SwipeAssetMap | undefined =
+          (currentPage?.clonedData as { swipeMap?: SwipeAssetMap } | undefined)?.swipeMap;
 
         // No size threshold — if there's no cached HTML at all we clone first;
         // anything else (even small SPA shells) is forwarded to Claude.
@@ -4378,16 +4401,50 @@ export default function FrontEndFunnel() {
             throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
           }
           htmlToRewrite = sanitizeClonedHtml(cloneData.content || '', url, { keepScripts: preserveScripts });
-
+          htmlToRewrite = finalizeClonedHtml(htmlToRewrite);
+          const understood = await understandClonedLander(htmlToRewrite, url);
+          htmlToRewrite = understood.html;
+          pageSwipeMap = understood.map;
           updateFunnelPage(pageId, {
             clonedData: {
               html: htmlToRewrite,
               title: cloneData.title || pageName,
-              clonedAt: new Date(),
-              method: 'identical',
+              method_used: 'identical',
+              content_length: htmlToRewrite.length,
+              duration_seconds: 0,
+              cloned_at: new Date(),
+              swipeMap: understood.map,
             },
           });
           void saveHtmlBlob(pageId, 'clonedData', htmlToRewrite);
+        }
+
+        if (htmlToRewrite) {
+          htmlToRewrite = finalizeClonedHtml(htmlToRewrite);
+          if (!pageSwipeMap?.texts?.length) {
+            setCloneProgress({
+              phase: 'extract',
+              totalTexts: 0,
+              processedTexts: 0,
+              message: 'Mapping texts, images, videos...',
+            });
+            const understood = await understandClonedLander(htmlToRewrite, url);
+            htmlToRewrite = understood.html;
+            pageSwipeMap = understood.map;
+            const prev = (currentPage?.clonedData || {}) as Record<string, unknown>;
+            updateFunnelPage(pageId, {
+              clonedData: {
+                ...prev,
+                html: htmlToRewrite,
+                title: (prev.title as string) || pageName,
+                method_used: (prev.method_used as string) || 'identical',
+                content_length: htmlToRewrite.length,
+                duration_seconds: Number(prev.duration_seconds) || 0,
+                cloned_at: (prev.cloned_at as Date) || new Date(),
+                swipeMap: pageSwipeMap,
+              },
+            });
+          }
         }
 
         const chosenAuditor = auditorRef.current;
@@ -4482,6 +4539,7 @@ export default function FrontEndFunnel() {
             language: cloneConfig.language || '',
             knowledge: rowKnowledge,
           };
+          if (pageSwipeMap) swipePayload.swipeMap = pageSwipeMap;
           // Checkout rules resolved HERE and shipped as text: the worker keeps
           // no copy, so src/lib/checkout-modes.ts stays the only source of
           // truth. Standard checkout → addendum '' → fields omitted → payload
@@ -4688,6 +4746,7 @@ export default function FrontEndFunnel() {
             productDescription: swipeDesc,
             customPrompt: cloneConfig.customPrompt || undefined,
             targetAgent: targetAgentForRewrite,
+            mappedTexts: textsFromSwipeMap(pageSwipeMap),
             onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
           });
         } else {

@@ -204,6 +204,7 @@ interface AppFunnelPage {
     // locale vince (anche se il write Supabase Ã¨ fallito o la pagina Ã¨
     // piccola e l'HTML nel JSONB Ã¨ rimasto vecchio).
     editedAt?: number;
+    swipeMap?: import('../lib/swipe-asset-map').SwipeAssetMap;
   };
   swipedData?: {
     html: string;

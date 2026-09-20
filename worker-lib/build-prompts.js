@@ -445,11 +445,38 @@ function langLabel(code) {
   return map[code] || code;
 }
 
+function mergeMappedTexts(extracted, mapped) {
+  if (!Array.isArray(mapped) || mapped.length < 3) return extracted;
+  const seen = new Set();
+  const fromMap = [];
+  for (let i = 0; i < mapped.length; i++) {
+    const t = mapped[i] || {};
+    const original = String(t.text || t.original || '').trim();
+    if (original.length < 2 || seen.has(original)) continue;
+    seen.add(original);
+    fromMap.push({
+      original,
+      tag: t.tag || 'p',
+      position: typeof t.position === 'number' ? t.position : i,
+    });
+  }
+  for (const t of extracted) {
+    if (!t || !t.original || seen.has(t.original)) continue;
+    seen.add(t.original);
+    fromMap.push(t);
+  }
+  if (fromMap.length > MAX_TEXTS_FOR_AI) {
+    fromMap.sort((a, b) => priorityOf(a.tag) - priorityOf(b.tag));
+    return fromMap.slice(0, MAX_TEXTS_FOR_AI);
+  }
+  return fromMap;
+}
+
 /**
  * Build everything the worker needs to send to the local LLM.
  * Sincrono e in-process: ZERO chiamate HTTP a Netlify.
  */
-function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, extraTexts }) {
+function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, extraTexts, mappedTexts, swipeMap }) {
   if (!html || typeof html !== 'string' || html.length < 50) {
     throw new Error('html is required (min 50 chars)');
   }
@@ -457,6 +484,7 @@ function buildPrompts({ html, sourceUrl, product, tone, language, knowledge, ext
     throw new Error('product.name is required');
   }
   let texts = extractTextsFromHtml(html, extraTexts);
+  texts = mergeMappedTexts(texts, mappedTexts || (swipeMap && swipeMap.texts));
   texts = prependDocumentTitle(texts, html);
 
   if (texts.length === 0) throw new Error('No text found in page');
