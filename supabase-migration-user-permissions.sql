@@ -52,35 +52,15 @@ DROP POLICY IF EXISTS "users read own permissions" ON app_user_permissions;
 CREATE POLICY "users read own permissions"
   ON app_user_permissions
   FOR SELECT
-  USING (user_id = auth.uid());
+  USING (user_id = auth.uid() OR public.is_master(auth.uid()));
 
 DROP POLICY IF EXISTS "masters read all permissions" ON app_user_permissions;
-CREATE POLICY "masters read all permissions"
-  ON app_user_permissions
-  FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM app_user_permissions p
-      WHERE p.user_id = auth.uid() AND p.role = 'master'
-    )
-  );
-
 DROP POLICY IF EXISTS "masters write all permissions" ON app_user_permissions;
 CREATE POLICY "masters write all permissions"
   ON app_user_permissions
   FOR ALL
-  USING (
-    EXISTS (
-      SELECT 1 FROM app_user_permissions p
-      WHERE p.user_id = auth.uid() AND p.role = 'master'
-    )
-  )
-  WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM app_user_permissions p
-      WHERE p.user_id = auth.uid() AND p.role = 'master'
-    )
-  );
+  USING (public.is_master(auth.uid()))
+  WITH CHECK (public.is_master(auth.uid()));
 
 -- 4) Auto-promote the very first user to master ----------------------
 -- Runs after INSERT on auth.users. If no master exists yet, the new
@@ -88,7 +68,12 @@ CREATE POLICY "masters write all permissions"
 -- created as a regular user with NO sections (the master then assigns
 -- them via the /admin/users UI).
 CREATE OR REPLACE FUNCTION app_handle_new_user()
-RETURNS TRIGGER AS $$
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+SET row_security = off
+AS $$
 DECLARE
   master_count INTEGER;
 BEGIN
@@ -116,7 +101,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public SET row_security = off;
 
 DROP TRIGGER IF EXISTS trg_app_handle_new_user ON auth.users;
 CREATE TRIGGER trg_app_handle_new_user
