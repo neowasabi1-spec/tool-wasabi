@@ -3399,7 +3399,7 @@ export default function FrontEndFunnel() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async () => {
-      const html = String(reader.result || '');
+      const html = finalizeClonedHtml(String(reader.result || ''));
       if (!html.trim()) { toast.error('The HTML file is empty.'); return; }
       const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
       // Copia locale immediata (sopravvive anche se Storage fallisce).

@@ -224,11 +224,63 @@ export function placeVturbInAnchor(html: string): string {
   );
 }
 
+const SMARTPLAYER_CDN = 'https://scripts.converteai.net/lib/js/smartplayer-wc/v4/smartplayer.js';
+
+/**
+ * Offline VSL dumps ship a relative smartplayer.js with id=vturb-smartplayer-js.
+ * The official player.js then sees that id and skips injecting the CDN copy,
+ * so the custom element never upgrades (black 9:16 box). Also drop the dump's
+ * `[class*="loader"]{display:none}` rule that hides VTurb chrome.
+ */
+export function repairVturbPlayer(html: string): string {
+  if (!html || !/vturb-smartplayer|converteai\.net|vturb\.com/i.test(html)) return html;
+  let out = html;
+  const conv = html.match(/scripts\.converteai\.net\/([0-9a-f-]{36})\/players\/([a-z0-9]+)/i);
+  const oid = conv?.[1] || '';
+  const pid = conv?.[2] || '';
+
+  out = out.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs: string) => {
+    const src = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    if (!src) return full;
+    const id = attrs.match(/\bid\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    if (id === 'vturb-smartplayer-js' && !/scripts\.converteai\.net/i.test(src)) {
+      return `<script id="vturb-smartplayer-js" src="${SMARTPLAYER_CDN}" fetchpriority="high"><\/script>`;
+    }
+    if (/\/(?:js\/)?(?:smart)?player\.js(?:\?|$)/i.test(src) && !/converteai\.net|vturb/i.test(src)) {
+      return '';
+    }
+    return full;
+  });
+
+  if (/\[class\*=["']loader["']\]/.test(out)) {
+    out = out.replace(/,?\s*\[class\*=["']preloader["']\]/gi, '');
+    out = out.replace(/,?\s*\[class\*=["']loader["']\]/gi, '');
+    out = out.replace(/(\.loading)\s*,\s*\{/gi, '$1{');
+  }
+
+  out = placeVturbInAnchor(out);
+
+  if (
+    oid &&
+    pid &&
+    /<vturb-smartplayer\b/i.test(out) &&
+    !/images\.converteai\.net\/[^"']+\/(?:thumbnail|cover)\./i.test(out)
+  ) {
+    const thumb = `https://images.converteai.net/${oid}/players/${pid}/thumbnail.jpg`;
+    out = out.replace(
+      /(<div\b[^>]*class=["'][^"']*vturb-player-placeholder[^"']*["'][^>]*>)(\s*)(<\/div>)?/i,
+      `$1<img class="thumbnail-image" src="${thumb}" alt="" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;display:block">$3`,
+    );
+  }
+
+  return out;
+}
+
 export function healClonedLander(html: string): HealResult {
   if (!html) return { html, applied: [], remaining: [] };
-  let out = placeVturbInAnchor(html);
+  let out = repairVturbPlayer(html);
   const applied: string[] = [];
-  if (out !== html) applied.push('vturb-anchor');
+  if (/vturb-smartplayer/i.test(html) && out !== html) applied.push('vturb-anchor');
 
   if (isPopupQuizHtml(out)) {
     out = injectPopupQuizEngine(out);

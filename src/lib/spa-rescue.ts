@@ -153,7 +153,17 @@ export function hydrateVslSnapshot(html: string): string {
   if (!poster && cdnBase && videoId) poster = `${cdnBase}/${videoId}/thumbnail.jpg`;
   if (!src && m3u8) src = m3u8;
   if (!poster && src) poster = src.replace(/master\.m3u8.*$/i, 'thumbnail.jpg');
-  if (!src && !poster) return html;
+  if (!src && !poster) {
+    const conv = html.match(/scripts\.converteai\.net\/([0-9a-f-]{36})\/players\/([a-z0-9]+)/i);
+    if (conv && /vturb-smartplayer/i.test(html) && !/images\.converteai\.net\/[^"']+\/(?:thumbnail|cover)\./i.test(html)) {
+      const thumb = `https://images.converteai.net/${conv[1]}/players/${conv[2]}/thumbnail.jpg`;
+      return html.replace(
+        /(<div\b[^>]*class=["'][^"']*vturb-player-placeholder[^"']*["'][^>]*>)(\s*)(<\/div>)?/i,
+        `$1<img class="thumbnail-image" src="${thumb}" alt="" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;display:block">$3`,
+      );
+    }
+    return html;
+  }
 
   const esc = (u: string) => u.replace(/"/g, '&quot;');
   const videoTag =

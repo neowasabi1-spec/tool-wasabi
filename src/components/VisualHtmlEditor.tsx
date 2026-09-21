@@ -70,9 +70,12 @@ function injectPreviewScrollFix(html: string): string {
     'iframe[src*="vimeo"],iframe[src*="wistia"],iframe[data-src*="vidalytics"],' +
     '[id*="video"] iframe,[class*="video"] iframe,[class*="player"] iframe' +
     '{pointer-events:none!important;}' +
+    'vturb-smartplayer iframe,#vsl-anchor iframe{pointer-events:auto!important;}' +
     '</style>' +
     '<script>(function(){function fix(){try{var fs=document.querySelectorAll("iframe");' +
-    'for(var i=0;i<fs.length;i++){var f=fs[i];var s=((f.getAttribute("src")||"")+" "+' +
+    'for(var i=0;i<fs.length;i++){var f=fs[i];' +
+    'if(f.closest&&f.closest("vturb-smartplayer,#vsl-anchor"))continue;' +
+    'var s=((f.getAttribute("src")||"")+" "+' +
     '(f.getAttribute("data-src")||""));var p=f.parentElement;var pc=p?((p.className||"")+" "+(p.id||"")):"";' +
     'if(/vidalytics|youtube|youtu\\.be|vimeo|wistia/i.test(s)||/video|player/i.test(pc)){' +
     'f.style.setProperty("pointer-events","none","important");}}}catch(e){}}' +
