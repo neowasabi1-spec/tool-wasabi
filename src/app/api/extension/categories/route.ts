@@ -8,6 +8,7 @@ export const dynamic = 'force-dynamic';
 /**
  * User-defined archive categories (niches: "Survival", "Weight loss", …).
  * Shared between the app's My Archive view and the browser extension.
+ * Team library: every master/user sees the same list.
  *
  * GET    → { categories: string[] }  (known categories + any used on saves)
  * POST   → { name }  create a category
@@ -22,33 +23,28 @@ function isMissingTable(msg?: string): boolean {
 // the folder). Domains must never show up in the niche Category picker.
 const isDomainLike = (s: string) => !/\s/.test(s) && /\.[a-z]{2,}$/i.test(s.trim());
 
-async function knownCategories(userId: string): Promise<string[]> {
+async function knownCategories(): Promise<string[]> {
   const set = new Set<string>();
-  // 1) explicit list (table)
   try {
     const { data, error } = await supabaseAdmin
       .from('archive_categories')
-      .select('name')
-      .eq('owner_user_id', userId);
+      .select('name');
     if (!error) for (const r of data || []) if (r.name && !isDomainLike(String(r.name))) set.add(String(r.name));
   } catch {
     /* table may not exist yet */
   }
-  // 2) categories actually used on the user's saved pages
   try {
     const { data } = await supabaseAdmin
       .from('archived_funnels')
-      .select('steps')
-      .eq('owner_user_id', userId);
+      .select('list_category')
+      .is('project_id', null)
+      .not('list_category', 'is', null);
     for (const f of data || []) {
-      const steps = Array.isArray(f.steps) ? (f.steps as Record<string, unknown>[]) : [];
-      for (const s of steps) {
-        const c = (s.category as string) || ((s.cloned_data as Record<string, unknown>)?.category as string);
-        if (c && !isDomainLike(String(c))) set.add(String(c));
-      }
+      const c = String((f as { list_category?: string }).list_category || '').trim();
+      if (c && !isDomainLike(c)) set.add(c);
     }
   } catch {
-    /* ignore */
+    /* list_category may not exist yet */
   }
   return Array.from(set).sort((a, b) => a.localeCompare(b));
 }
@@ -56,7 +52,7 @@ async function knownCategories(userId: string): Promise<string[]> {
 export async function GET(req: NextRequest) {
   const userId = await getCurrentUserId(req);
   if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  return NextResponse.json({ success: true, categories: await knownCategories(userId) });
+  return NextResponse.json({ success: true, categories: await knownCategories() });
 }
 
 export async function POST(req: NextRequest) {
@@ -80,7 +76,7 @@ export async function POST(req: NextRequest) {
     success: true,
     persisted,
     name,
-    categories: await knownCategories(userId),
+    categories: await knownCategories(),
   });
 }
 
@@ -95,10 +91,9 @@ export async function DELETE(req: NextRequest) {
     await supabaseAdmin
       .from('archive_categories')
       .delete()
-      .eq('owner_user_id', userId)
       .eq('name', name);
   } catch {
     /* ignore */
   }
-  return NextResponse.json({ success: true, categories: await knownCategories(userId) });
+  return NextResponse.json({ success: true, categories: await knownCategories() });
 }

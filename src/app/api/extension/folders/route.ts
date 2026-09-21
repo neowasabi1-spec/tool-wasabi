@@ -56,8 +56,7 @@ export async function GET(req: NextRequest) {
   try {
     const { data } = await supabaseAdmin
       .from('archive_categories')
-      .select('name')
-      .eq('owner_user_id', userId);
+      .select('name');
     for (const c of data || []) {
       const name = c.name ? String(c.name) : '';
       if (name && !isDomainLike(name)) catSet.add(name);

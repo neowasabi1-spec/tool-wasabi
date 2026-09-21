@@ -42,12 +42,12 @@ export function resolvePageType(
   return { value: slug, label, isCustom: true };
 }
 
-export async function listArchivePageTypes(userId: string): Promise<ArchivePageType[]> {
+/** Shared team library: every master/user sees the same folders. */
+export async function listArchivePageTypes(_userId?: string): Promise<ArchivePageType[]> {
   try {
     const { data, error } = await supabaseAdmin
       .from('archive_page_types')
       .select('value, label')
-      .eq('owner_user_id', userId)
       .order('created_at', { ascending: true });
     if (error) {
       if (!isMissingPageTypesTable(error.message)) {
@@ -95,14 +95,13 @@ export async function upsertArchivePageType(
   return true;
 }
 
-export async function deleteArchivePageType(userId: string, value: string): Promise<void> {
+export async function deleteArchivePageType(_userId: string, value: string): Promise<void> {
   const slug = slugifyPageTypeLabel(value);
   if (!slug) return;
   try {
     await supabaseAdmin
       .from('archive_page_types')
       .delete()
-      .eq('owner_user_id', userId)
       .eq('value', slug);
   } catch {
     /* ignore */
