@@ -74,7 +74,7 @@ const menuGroups: MenuGroup[] = [
     items: [
       { name: 'API Keys', href: '/api-keys', icon: KeyRound, sectionId: 'api-keys' },
       { name: 'Spesa API', href: '/api-usage', icon: DollarSign, sectionId: 'api-usage' },
-      { name: 'Clone / Swipe Quiz', href: '/quiz-swipe', icon: HelpCircle, sectionId: 'quiz-swipe' },
+      { name: 'Clone / Swipe Quiz', href: '/quiz-swipe', icon: HelpCircle, sectionId: 'quiz-swipe', masterOnly: true },
       { name: 'Users', href: '/admin/users', icon: Users, sectionId: 'admin-users', masterOnly: true },
     ],
   },
