@@ -38,16 +38,16 @@ export async function POST(req: NextRequest) {
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   const refs = await resolveMockupUrls(projectId, body);
-  const sourceUrl = String(body.sourceImageUrl || '').trim();
+  const packSourceUrl = String(body.sourceImageUrl || '').trim();
   const packAsk = /product|packshot|packaging|mockup|bottle|jar|tub|box|pouch|sachet|stick|pack\b|confezione|prodotto|sku|holding (the )?product|SWIPE PACKSHOT/i
     .test(`${asked} ${nearby}`);
   // Recreate the original pack layout with OUR product. Returning the mockup
   // as-is made every 2/6/3 card look identical.
-  if (packAsk && refs.length && /^https?:\/\//i.test(sourceUrl)) {
+  if (packAsk && refs.length && /^https?:\/\//i.test(packSourceUrl)) {
     const qty = parsePackQty(`${asked} ${nearby}`);
     const made = await openaiGenerateImage({
       prompt: packSwipePrompt({ productName, nearby, qty }),
-      imageUrls: [sourceUrl, ...refs].slice(0, 4),
+      imageUrls: [packSourceUrl, ...refs].slice(0, 4),
       size: '1024x1024',
       quality: 'medium',
       timeoutMs: 90_000,
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
       }
     }
   }
-  if (packAsk && refs.length && !sourceUrl) {
+  if (packAsk && refs.length && !packSourceUrl) {
     return NextResponse.json({ url: refs[0], id: 'step-mock' });
   }
 
