@@ -26,6 +26,7 @@ const HEALED_META = 'wasabi-healed';
 const ISSUES_META = 'wasabi-lander-issues';
 const GENERIC_STYLE_ID = 'wasabi-generic-step-style';
 const GENERIC_SCRIPT_ID = 'wasabi-generic-step-engine';
+const OFFLINE_LAYOUT_ID = 'wasabi-offline-layout';
 
 const GENERIC_STEP_JS = `(function(){
 if(window.__wasabiChatQuiz||window.__wasabiGenericStep)return;
@@ -276,6 +277,49 @@ export function repairVturbPlayer(html: string): string {
   return out;
 }
 
+function hasRelativeStylesheet(html: string): boolean {
+  const re = /<link\b([^>]*)\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const attrs = m[1] || '';
+    if (!/\brel\s*=\s*["']?stylesheet["']?/i.test(attrs)) continue;
+    const href = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+    if (href && !/^(?:https?:|data:|\/\/)/i.test(href)) return true;
+  }
+  return false;
+}
+
+/** When CSS files were not inlined (HTML-only upload), keep a VSL from collapsing into a wall of text. */
+export function injectOfflineLayoutCss(html: string): string {
+  if (!html) return html;
+  if (html.includes(`id="${OFFLINE_LAYOUT_ID}"`)) return html;
+  if (!hasRelativeStylesheet(html) || /data-inlined-from=/.test(html)) return html;
+  const css =
+    `<style id="${OFFLINE_LAYOUT_ID}">` +
+    `*,*::before,*::after{box-sizing:border-box}` +
+    `html,body{margin:0;padding:0;background:#fff;color:#1c1f1d;font-family:"Nunito Sans",Poppins,system-ui,sans-serif;line-height:1.45}` +
+    `img,video,vturb-smartplayer{max-width:100%;height:auto}` +
+    `.container,.principal{width:100%;max-width:900px;margin:0 auto;padding:8px 16px}` +
+    `.hero-section h1,.principal h1{font-size:clamp(22px,4vw,34px);line-height:1.2;font-weight:800;text-align:left;margin:12px 0 16px}` +
+    `.video-container,#vsl-anchor{max-width:400px;margin:12px auto;width:100%}` +
+    `vturb-smartplayer{display:block;margin:0 auto;width:100%;max-width:400px}` +
+    `.red-header,header{background:#a70c0c;color:#fff}` +
+    `header h1{color:#fff;font-size:1.6rem;text-align:center;margin:0;padding:10px 16px;font-weight:600}` +
+    `marquee{display:block;background:#810505;color:#fff;letter-spacing:.12em;text-transform:uppercase;padding:4px 0;font-size:11px}` +
+    `.img_adv{max-width:500px;max-height:100px;margin:12px auto;display:block}` +
+    `.mt-3{margin-top:1rem}` +
+    `#fb-comments,.fb-heading{max-width:900px;margin:24px auto 0;padding:0 16px;text-align:left}` +
+    `.comments-container{display:flex;flex-direction:column;gap:16px;border:1px solid #e9ebee;border-radius:16px;padding:16px}` +
+    `.comment{display:flex;gap:10px;align-items:flex-start;text-align:left}` +
+    `.user-avatar{width:48px;height:48px;border-radius:50%;object-fit:cover;background:#e5e7eb;flex-shrink:0}` +
+    `.comment-data .user{font-weight:700}` +
+    `.esconder{display:block!important}` +
+    `footer{background:#a70c0c;color:#fff;padding:16px;text-align:center}` +
+    `</style>`;
+  if (/<\/head>/i.test(html)) return html.replace(/<\/head>/i, `${css}</head>`);
+  return css + html;
+}
+
 export function healClonedLander(html: string): HealResult {
   if (!html) return { html, applied: [], remaining: [] };
   let out = repairVturbPlayer(html);
@@ -304,6 +348,12 @@ export function healClonedLander(html: string): HealResult {
       }
     }
     remaining = diagnoseLander(out);
+  }
+
+  const laid = injectOfflineLayoutCss(out);
+  if (laid !== out) {
+    out = laid;
+    applied.push('offline-layout');
   }
 
   out = stamp(out, Array.from(new Set(applied)), remaining);

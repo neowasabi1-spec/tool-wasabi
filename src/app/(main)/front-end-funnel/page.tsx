@@ -25,6 +25,7 @@ import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 import { injectLiveCommentClock } from '@/lib/live-comment-clock';
 import { extractTimedComments } from '@/lib/bake-dynamic-comments';
 import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
+import { snapshotFromUploadFiles, remainingRelativeStylesheets } from '@/lib/html-bundle';
 import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
 import { understandClonedLander } from '@/lib/lander-agent-client';
 import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
@@ -81,6 +82,7 @@ import {
   Smartphone,
   Monitor,
   Upload,
+  Folder,
   FileSpreadsheet,
   Rocket,
   Link2,
@@ -3395,14 +3397,18 @@ export default function FrontEndFunnel() {
   // anche un urlToSwipe sintetico ma VALIDO (`https://uploaded.local/<file>`)
   // così tutti i gate esistenti che richiedono un URL e le chiamate
   // `new URL(...)` continuano a funzionare senza modifiche.
-  const handleUploadHtmlFile = (pageId: string, pageName: string, file: File) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const html = finalizeClonedHtml(String(reader.result || ''));
-      if (!html.trim()) { toast.error('The HTML file is empty.'); return; }
-      const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
-      // Copia locale immediata (sopravvive anche se Storage fallisce).
+  const handleUploadHtmlFiles = async (pageId: string, pageName: string, fileList: FileList | File[]) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    try {
+      toast.message('Reading page files…');
+      const snap = await snapshotFromUploadFiles(files);
+      const html = finalizeClonedHtml(snap.html);
+      if (!html.trim()) {
+        toast.error('The HTML file is empty.');
+        return;
+      }
+      const safeName = (snap.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
       void saveHtmlBlob(pageId, 'clonedData', html);
       await updateFunnelPage(pageId, {
         urlToSwipe: `https://uploaded.local/${safeName}`,
@@ -3415,9 +3421,23 @@ export default function FrontEndFunnel() {
           cloned_at: new Date(),
         },
       });
-    };
-    reader.onerror = () => toast.error('Error reading the HTML file.');
-    reader.readAsText(file);
+      const missingCss = remainingRelativeStylesheets(html);
+      if (snap.cssInlined > 0) {
+        toast.success(`Page loaded (${snap.cssInlined} stylesheets inlined)`);
+      } else if (missingCss > 0) {
+        toast.warning(
+          'This HTML needs its CSS folder. Upload the page folder or a .zip that contains assets/ — a single index.html is only unstyled text.',
+        );
+      } else {
+        toast.success('HTML loaded');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Error reading the HTML file.');
+    }
+  };
+
+  const handleUploadHtmlFile = (pageId: string, pageName: string, file: File) => {
+    void handleUploadHtmlFiles(pageId, pageName, [file]);
   };
 
   // Vision Analysis Functions
@@ -6777,19 +6797,37 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           )}
                           <label
                             className="text-gray-400 hover:text-blue-600 p-0.5 flex-shrink-0 cursor-pointer"
-                            title="Upload an HTML file instead of the link"
+                            title="Upload HTML or a .zip of the page folder"
                           >
                             <input
                               type="file"
-                              accept=".html,.htm,text/html"
+                              accept=".html,.htm,.zip,text/html,application/zip"
                               className="hidden"
                               onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) handleUploadHtmlFile(page.id, page.name, f);
+                                const list = e.target.files;
+                                if (list?.length) void handleUploadHtmlFiles(page.id, page.name, list);
                                 e.target.value = '';
                               }}
                             />
                             <Upload className="w-3 h-3" />
+                          </label>
+                          <label
+                            className="text-gray-400 hover:text-blue-600 p-0.5 flex-shrink-0 cursor-pointer"
+                            title="Upload the whole page folder (CSS + images)"
+                          >
+                            <input
+                              type="file"
+                              className="hidden"
+                              multiple
+                              // @ts-expect-error webkitdirectory is not in React's input types
+                              webkitdirectory=""
+                              onChange={(e) => {
+                                const list = e.target.files;
+                                if (list?.length) void handleUploadHtmlFiles(page.id, page.name, list);
+                                e.target.value = '';
+                              }}
+                            />
+                            <Folder className="w-3 h-3" />
                           </label>
                         </div>
                       </td>
