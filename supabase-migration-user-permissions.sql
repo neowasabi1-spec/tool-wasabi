@@ -153,9 +153,13 @@ BEGIN
     ON CONFLICT (user_id) DO NOTHING;
   END IF;
 
-  -- Everyone else without a permissions row → plain user with 0 sections.
+  -- Everyone else without a permissions row → library access, no quiz.
   INSERT INTO app_user_permissions (user_id, role, sections)
-  SELECT u.id, 'user', ARRAY[]::TEXT[]
+  SELECT u.id, 'user', ARRAY[
+    'front-end-funnel', 'templates', 'products',
+    'projects', 'checkpoint', 'protocollo-valchiria',
+    'api-keys', 'api-usage'
+  ]::TEXT[]
   FROM auth.users u
   WHERE NOT EXISTS (
     SELECT 1 FROM app_user_permissions p WHERE p.user_id = u.id
