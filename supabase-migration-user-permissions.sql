@@ -42,10 +42,9 @@ CREATE TRIGGER trg_app_user_permissions_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION app_user_permissions_touch_updated_at();
 
--- 3) Do NOT put RLS on this table. is_master() is called from every
---    other table's policies; a policy here that reads this same table
---    freezes Template / Clone / Projects. Whoami and Users use the
---    service-role client.
+-- 3) Do not enable RLS here. whoami/Users use the service role.
+--    A policy on this table that reads this table freezes is_master()
+--    on every Template query.
 ALTER TABLE app_user_permissions NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE app_user_permissions DISABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "users read own permissions" ON app_user_permissions;
@@ -58,12 +57,7 @@ DROP POLICY IF EXISTS "masters write all permissions" ON app_user_permissions;
 -- created as a regular user with NO sections (the master then assigns
 -- them via the /admin/users UI).
 CREATE OR REPLACE FUNCTION app_handle_new_user()
-RETURNS TRIGGER
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = public
-SET row_security = off
-AS $$
+RETURNS TRIGGER AS $$
 DECLARE
   master_count INTEGER;
 BEGIN
@@ -91,7 +85,7 @@ BEGIN
 
   RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public SET row_security = off;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 DROP TRIGGER IF EXISTS trg_app_handle_new_user ON auth.users;
 CREATE TRIGGER trg_app_handle_new_user
@@ -128,13 +122,9 @@ BEGIN
     ON CONFLICT (user_id) DO NOTHING;
   END IF;
 
-  -- Everyone else without a permissions row → library access, no quiz.
+  -- Everyone else without a permissions row → plain user with 0 sections.
   INSERT INTO app_user_permissions (user_id, role, sections)
-  SELECT u.id, 'user', ARRAY[
-    'front-end-funnel', 'templates', 'products',
-    'projects', 'checkpoint', 'protocollo-valchiria',
-    'api-keys', 'api-usage'
-  ]::TEXT[]
+  SELECT u.id, 'user', ARRAY[]::TEXT[]
   FROM auth.users u
   WHERE NOT EXISTS (
     SELECT 1 FROM app_user_permissions p WHERE p.user_id = u.id

@@ -23,9 +23,6 @@ export interface DashboardSection {
    *  automatically. Stored in DB as a regular id so masters can also
    *  delegate it to other users in the future. */
   masterOnlyByDefault?: boolean;
-  /** If true, new collaborators do not get this section. Enable it per
-   *  user from Settings → Users. */
-  optIn?: boolean;
 }
 
 export const DASHBOARD_SECTIONS: DashboardSection[] = [
@@ -38,7 +35,6 @@ export const DASHBOARD_SECTIONS: DashboardSection[] = [
     id: 'quiz-swipe',
     label: 'Clone / Swipe Quiz',
     path: '/quiz-swipe',
-    optIn: true,
   },
   {
     id: 'templates',
@@ -96,6 +92,7 @@ export const ALL_SECTION_IDS = DASHBOARD_SECTIONS.map(s => s.id);
  *  billing-ish pages — the master will check what they want. */
 export const SAFE_DEFAULT_SECTIONS = [
   'front-end-funnel',
+  'quiz-swipe',
   'templates',
   'projects',
   'checkpoint',
@@ -130,21 +127,6 @@ export interface AppUserWithEmail extends AppUserPermissions {
   last_sign_in_at: string | null;
 }
 
-/** Opt-in only: never granted just because sections is empty. */
-const OPT_IN_SECTIONS = new Set(['quiz-swipe', 'admin-users', 'strategist']);
-
-/** Library the product used before app_user_permissions existed. */
-const CORE_SECTIONS = new Set([
-  'front-end-funnel',
-  'templates',
-  'projects',
-  'checkpoint',
-  'protocollo-valchiria',
-  'api-keys',
-  'api-usage',
-  'products',
-]);
-
 /** Helper: a master implicitly has access to every section regardless of
  *  what's stored in `sections`. Use this instead of raw `.includes()`. */
 export function canAccessSection(
@@ -153,12 +135,5 @@ export function canAccessSection(
 ): boolean {
   if (!permissions) return false;
   if (permissions.role === 'master') return true;
-  if (OPT_IN_SECTIONS.has(sectionId)) {
-    return permissions.sections.includes(sectionId);
-  }
-  // Empty sections = row created by the permissions migration with no
-  // grants. Do not lock Template / Clone / Projects (that is what made
-  // the library look deleted).
-  if (!permissions.sections.length) return CORE_SECTIONS.has(sectionId);
   return permissions.sections.includes(sectionId);
 }

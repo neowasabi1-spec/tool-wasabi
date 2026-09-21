@@ -1,6 +1,5 @@
--- Unbreak Template. Run on the SAME Supabase project the app uses.
--- First result row: if templates_table is NULL you are in the wrong project.
--- LANGUAGE sql only. Safe to re-run.
+-- Put Users/master back how they were before the quiz SQL.
+-- Run on the SAME project as the app (templates_table must not be NULL).
 
 SELECT
   current_database() AS db,
@@ -45,27 +44,11 @@ $$;
 GRANT EXECUTE ON FUNCTION public.is_master(UUID) TO authenticated, anon, service_role;
 GRANT EXECUTE ON FUNCTION public.get_master_id() TO authenticated, anon, service_role;
 
--- Add library sections back. Does not wipe quiz / admin toggles already set.
 UPDATE public.app_user_permissions
-SET sections = (
-  SELECT ARRAY(
-    SELECT DISTINCT x FROM unnest(
-      COALESCE(sections, ARRAY[]::text[]) || ARRAY[
-        'front-end-funnel', 'templates', 'products',
-        'projects', 'checkpoint', 'protocollo-valchiria',
-        'api-keys', 'api-usage'
-      ]
-    ) AS x
-  )
-);
-
-WITH first_row AS (
-  SELECT user_id FROM public.app_user_permissions ORDER BY created_at ASC LIMIT 1
-), has_master AS (
-  SELECT EXISTS (SELECT 1 FROM public.app_user_permissions WHERE role = 'master') AS ok
-)
-UPDATE public.app_user_permissions p
-SET role = 'master'
-FROM first_row, has_master
-WHERE p.user_id = first_row.user_id
-  AND has_master.ok = false;
+SET
+  role = 'master',
+  sections = ARRAY[
+    'front-end-funnel', 'quiz-swipe', 'templates', 'products',
+    'projects', 'checkpoint', 'protocollo-valchiria',
+    'api-keys', 'api-usage', 'admin-users', 'strategist'
+  ];

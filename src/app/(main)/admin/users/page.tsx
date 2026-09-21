@@ -94,7 +94,7 @@ export default function AdminUsersPage() {
 
   return (
     <div className="space-y-6">
-      <Header title="Users" subtitle="Same section toggles as the sidebar. Check Clone / Swipe Quiz only for users who should see it." />
+      <Header title="Users" subtitle="Manage who can access the tool and which sections they see." />
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg p-3 flex items-start gap-2 text-sm">
@@ -518,10 +518,7 @@ function SectionsPicker({
               {checked && <CheckCircle className="w-3 h-3 text-white" />}
             </div>
             <span className="truncate">{s.label}</span>
-            {s.optIn && (
-              <span className="text-[9px] uppercase tracking-wider text-sky-400 ml-auto">opt-in</span>
-            )}
-            {s.masterOnlyByDefault && !s.optIn && (
+            {s.masterOnlyByDefault && (
               <span className="text-[9px] uppercase tracking-wider text-amber-400 ml-auto">admin</span>
             )}
           </button>
