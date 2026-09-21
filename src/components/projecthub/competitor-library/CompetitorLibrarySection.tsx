@@ -3436,19 +3436,6 @@ function ShotsLibraryView({
           <video
             key={playing.id}
             src={getUploadUrl(playing.clean_path || playing.file_path)}
-            onError={(e) => {
-              // Only fall back to the ORIGINAL (subtitled) clip if the cleaned
-              // copy is genuinely broken — and only once. The previous version
-              // compared an absolute src against a relative URL, so it always
-              // "differed" and swapped to the original on the very first hiccup,
-              // making every cleaned shot look like it still had subtitles.
-              const el = e.currentTarget;
-              const orig = getUploadUrl(playing.file_path);
-              if (playing.clean_path && !el.dataset.fellBack && !el.src.endsWith(orig)) {
-                el.dataset.fellBack = "1";
-                el.src = orig;
-              }
-            }}
             controls autoPlay loop playsInline
             className="relative max-h-[80vh] max-w-full rounded-xl bg-black"
             onClick={(e) => e.stopPropagation()}

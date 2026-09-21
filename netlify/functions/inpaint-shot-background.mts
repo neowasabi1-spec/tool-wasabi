@@ -136,7 +136,12 @@ type Cluster = { b: Box; t0: number; t1: number };
 const RGB_W = 400;        // analysis width; height follows the aspect ratio
 const RGB_MAX_PIXELS = 24e6;  // analysed pixels per clip; two clips are held at once
 const COLOR_MIN = 28;     // caption-coloured pixels left in a frame → still readable
-const MAX_DROP = 0.18;    // a few leftover frames still read as a caption to the eye
+const MAX_DROP = 0.04;    // more leftover frames than this still reads as a caption
+/** At most one frozen leftover frame. `Math.max(2, 18% of frames)` used to
+ *  stamp CLEANED while a dozen frames still had readable subtitles. */
+function leftoverFrameBudget(frames: number): number {
+  return Math.min(1, Math.floor(Math.max(0, frames) * MAX_DROP));
+}
 const MASK_PASSES = 3;    // mask passes; each run only removes what its mask covered
 // The neural remover reconstructs a masked region from a window of frames, so it
 // cleans short clips reliably but leaves readable ghosting on long ones (the
@@ -276,14 +281,10 @@ export function analyzeLeftoverText(
   };
 }
 
-/** True when reconstruction removed most caption letters (or we cannot measure). */
-function leftoverWorked(lo: Leftover, origBad = 0): boolean {
-  if (lo.maskPx < 200 || !lo.colour) return true;
-  const maxDrop = Math.max(3, Math.floor(lo.frames * MAX_DROP));
-  if (lo.bad.length <= maxDrop) return true;
-  // Partial clean is still a win vs shipping the original letters.
-  if (origBad > 0 && lo.bad.length <= Math.floor(origBad * 0.5)) return true;
-  return false;
+/** True only when the caption is actually gone. Unknown / unmeasurable ≠ clean. */
+function leftoverWorked(lo: Leftover): boolean {
+  if (lo.maskPx < 200 || !lo.colour) return false;
+  return lo.bad.length === 0;
 }
 
 /**
@@ -1078,8 +1079,8 @@ async function maskDrivenClean(opts: MaskOpts): Promise<{ file: string; srcRgb: 
         // frames drift out of sync and flag even the parts that came out clean.
         const outRgb = await rgbFrames(cleaned.file, W, H, len, fps, workDir);
         const lo = analyzeLeftoverText(cleaned.srcRgb.buf, outRgb.buf, cleaned.srcRgb.w, cleaned.srcRgb.h, cleaned.band);
-        const maxDrop = Math.max(2, Math.floor(lo.frames * MAX_DROP));
-        if (lo.maskPx >= 200 && lo.bad.length <= maxDrop) {
+        const maxDrop = leftoverFrameBudget(lo.frames);
+        if (leftoverWorked(lo)) {
           pieces.push(cleaned.file); cleanedAny = true; if (!band) band = cleaned.band;
         } else {
           log(`chunk window ${i}: caption survived (${lo.bad.length}/${lo.frames}) — shot not fully cleanable`);
@@ -1298,7 +1299,7 @@ export async function cleanClipFile(opts: {
         try {
           const outRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
           leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, captionBand);
-          const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+          const maxDrop = leftoverFrameBudget(leftover.frames);
           if (leftover.maskPx < 200) {
             usedMaskPath = false;
             log('mask path: model changed almost nothing — falling back to the detector');
@@ -1411,7 +1412,7 @@ export async function cleanClipFile(opts: {
   // ── Stage 2a: frames still showing text. ──────────────────────────────────
   if (leftover?.bad.length && leftover.box) {
     try {
-      const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+      const maxDrop = leftoverFrameBudget(leftover.frames);
       if (opts.eraseIfUnreadable) {
         // Whole-video mode: don't blur and don't drop frames here. Blurring
         // leaves an opaque patch ("non ha ricostruito i pixel") and dropping
@@ -1502,7 +1503,8 @@ export async function cleanClipFile(opts: {
         note = 'no leftover text boxes located by OCR';
       }
     } catch (e) {
-      note = `OCR cleanup skipped: ${(e as Error).message}`;
+      unusable = true;
+      note = `OCR still sees leftover text — verification failed (${(e as Error).message})`;
       log(note);
     }
   }
@@ -1512,13 +1514,19 @@ export async function cleanClipFile(opts: {
     try {
       if (!W || !H) throw new Error('source dimensions unknown');
       if (!alignedWithSource) {
-        log('final gate: earlier frame drops broke source alignment — trusting prior checks');
+        if (leftover && leftover.bad.length > leftoverFrameBudget(leftover.frames)) {
+          unusable = true;
+          note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — not marking clean`;
+          log(`final gate: ${note}`);
+        } else {
+          log('final gate: source alignment broken after freeze — keeping only if leftover frames are within budget');
+        }
       } else {
         if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
         const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
         const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h, captionBand);
         if (left.box) sawBox = left.box;
-        const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
+        const maxDrop = leftoverFrameBudget(left.frames);
         if (!left.bad.length) {
           log('verified: no caption left in the result');
         } else if (opts.eraseIfUnreadable) {
@@ -1542,7 +1550,9 @@ export async function cleanClipFile(opts: {
         }
       }
     } catch (e) {
-      log(`final gate: verification skipped (${(e as Error).message})`);
+      unusable = true;
+      if (!note) note = `could not verify caption removal (${(e as Error).message})`;
+      log(`final gate: verification failed — not marking clean (${(e as Error).message})`);
     }
   }
 
@@ -2190,7 +2200,7 @@ export default async (req: Request) => {
             // then flags skin and wood-grain that share it, throwing away
             // perfectly clean reconstructions.
             leftover = analyzeLeftoverText(srcRgb.buf, outRgb.buf, srcRgb.w, srcRgb.h, captionBand);
-            const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+            const maxDrop = leftoverFrameBudget(leftover.frames);
             if (leftover.maskPx < 200) {
               // The model barely touched the frame: its mask missed the caption,
               // so the clip still carries it. Fall back to the detector remover
@@ -2311,7 +2321,7 @@ export default async (req: Request) => {
     // makes the patch blink on and off, which reads worse than a 33ms freeze. ──
     if (leftover?.bad.length && leftover.box) {
       try {
-        const maxDrop = Math.max(2, Math.floor(leftover.frames * MAX_DROP));
+        const maxDrop = leftoverFrameBudget(leftover.frames);
         if (captionReadable && leftover.bad.length > maxDrop) {
           // Readable text on most of the clip cannot be dropped or blurred away
           // without wrecking the footage, and blurred patches were rejected for
@@ -2403,7 +2413,8 @@ export default async (req: Request) => {
           note = 'no leftover text boxes located by OCR';
         }
       } catch (e) {
-        note = `OCR cleanup skipped: ${(e as Error).message}`;
+        unusable = true;
+        note = `OCR still sees leftover text — verification failed (${(e as Error).message})`;
         log(note);
       }
     }
@@ -2419,12 +2430,18 @@ export default async (req: Request) => {
       try {
         if (!W || !H) throw new Error('source dimensions unknown');
         if (!alignedWithSource) {
-          log('final gate: earlier frame drops broke source alignment — trusting prior checks');
+          if (leftover && leftover.bad.length > leftoverFrameBudget(leftover.frames)) {
+            unusable = true;
+            note = `caption still readable on ${leftover.bad.length}/${leftover.frames} frames — not marking clean`;
+            log(`final gate: ${note}`);
+          } else {
+            log('final gate: source alignment broken after freeze — keeping only if leftover frames are within budget');
+          }
         } else {
           if (!srcRgb) srcRgb = await rgbFrames(srcFile, W, H, dur, fps, workDir);
           const finalRgb = await rgbFrames(outFile, W, H, dur, fps, workDir);
           const left = analyzeLeftoverText(srcRgb.buf, finalRgb.buf, srcRgb.w, srcRgb.h, captionBand);
-          const maxDrop = Math.max(2, Math.floor(left.frames * MAX_DROP));
+          const maxDrop = leftoverFrameBudget(left.frames);
           if (!left.bad.length) {
             log('verified: no caption left in the result');
           } else if (left.bad.length > maxDrop) {
@@ -2444,10 +2461,9 @@ export default async (req: Request) => {
           }
         }
       } catch (e) {
-        // A verification hiccup no longer discards the clip: the differential
-        // check is conservative and the mask path already validated the result,
-        // so keeping good footage beats throwing it away on an ffmpeg error.
-        log(`final gate: verification skipped (${(e as Error).message})`);
+        log(`final gate: verification failed — not marking clean (${(e as Error).message})`);
+        unusable = true;
+        if (!note) note = `could not verify caption removal (${(e as Error).message})`;
       }
     }
 
