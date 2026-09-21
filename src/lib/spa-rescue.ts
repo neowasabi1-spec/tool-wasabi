@@ -15,7 +15,7 @@
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
 import { isChatQuizHtml } from './chat-quiz-engine';
 import { healClonedLander } from './lander-heal';
-import { detectDynamicScripts } from './detect-dynamic-scripts';
+import { detectDynamicScripts, detectCommerceMarkers } from './detect-dynamic-scripts';
 import { injectLiveCommentClock } from './live-comment-clock';
 import { extractTimedComments } from './bake-dynamic-comments';
 
@@ -498,6 +498,10 @@ export function stripNonCarouselScripts(html: string): string {
   //     `new Swiper(`, `Swiper.create(`, `.slick(`, `.flickity(`,
   //     `.glide(`, `new Splide(`, `.owlCarousel(`.
   //
+  // Checkout pages (CheckoutChamp-style checkout.php, bundle radios,
+  // member popups) keep their offer/checkout JS. Stripping it leaves
+  // dead bundle cards and popups that never open.
+  //
   // PERCHE' NON manteniamo loader come FunnelKit `fkDynamicScript`:
   // il loader fa `var s=document.createElement('script'); s.src =
   // getAbsolutePath(window.location.href)+'/index.js?f=...';`. Nel
@@ -511,18 +515,24 @@ export function stripNonCarouselScripts(html: string): string {
   // Tutto il resto (analytics, tracking pixel, popup exit-intent,
   // GA/FB pixel, A/B testing, geolocation tracker, FunnelKit loader)
   // viene strippato.
+  const commerce = detectCommerceMarkers(html).length > 0;
   const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia|vidalytics)\b/i;
+  const KEEP_COMMERCE_SRC = /checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design|\/checkout\.js(?:\?|$)|dynamic-tax\.js/i;
+  const DROP_SRC = /pixel|gtag|fbevents|googletagmanager|hotjar|clarity|analytics|facebook\.net|connect\.facebook/i;
   const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\(|fireCommentsForVideoTime|handleVideoTick|vidalytics_embed|getVidalyticsPlayer)/;
+  const TRACKING_INLINE = /googletagmanager|gtag\s*\(|fbq\s*\(|fbevents|hotjar|clarity\.ms|dataLayer\.push/i;
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
     (full, attrs: string, body: string) => {
-      // External script: look at src=
       const srcMatch = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
       if (srcMatch) {
-        return KEEP_SRC.test(srcMatch[1]) ? full : '';
+        if (KEEP_SRC.test(srcMatch[1])) return full;
+        if (commerce && KEEP_COMMERCE_SRC.test(srcMatch[1]) && !DROP_SRC.test(srcMatch[1])) return full;
+        return '';
       }
-      // Inline script: look at body
-      return KEEP_INLINE.test(body) ? full : '';
+      if (KEEP_INLINE.test(body)) return full;
+      if (commerce && body.trim() && !TRACKING_INLINE.test(body)) return full;
+      return '';
     },
   ).replace(/<script\b[^>]*\/>/gi, '');
 }
@@ -551,9 +561,11 @@ export function injectInteractivityRescue(
   // (host checks, conversion pixels, document rewrites). We always strip
   // that runtime and replay the messenger with injectChatQuizEngine.
   const timed = extractTimedComments(html);
+  const commerce = detectCommerceMarkers(html).length > 0;
   const liveChat =
     opts.keepScripts === true ||
     timed.length > 0 ||
+    commerce ||
     (opts.keepScripts !== false && detectDynamicScripts(html).functional);
 
   if (isChatQuizHtml(html)) {

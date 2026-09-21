@@ -55,7 +55,10 @@ const COMMERCE_MARKERS: Array<{ re: RegExp; label: string }> = [
   { re: /paypal\.com\/sdk|paypalobjects\.com|braintreegateway|checkout\.com\/(js|sdk)/i, label: 'payment SDK (PayPal/Braintree/Checkout.com)' },
   { re: /cdn\.shopify\.com|myshopify\.com|Shopify\.(Checkout|theme|shop)|ShopifyAnalytics|\/checkouts\//i, label: 'Shopify checkout/platform' },
   { re: /funnelish|clickfunnels|systeme\.io|shopifycloud|cartflows|woocommerce/i, label: 'funnel/commerce platform' },
-  { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan)\s*\(/i, label: 'multi-step popup checkout / package selector' },
+  { re: /checkoutchamp|konnektive|sticky\.io|limelightcrm/i, label: 'CheckoutChamp/Konnektive checkout' },
+  { re: /\/checkout\.php\b|checkout\/new-design\/(?:checkout|dtc-offers|checkout-whop)\.js/i, label: 'hosted checkout.php runtime' },
+  { re: /data-package-option|name=["']bundle_choice["']|checkout-popup-overlay|member-popup/i, label: 'checkout bundle selector / offer popup' },
+  { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan|selectBundle|chooseBundle)\s*\(/i, label: 'multi-step popup checkout / package selector' },
 ];
 
 // VSL players live in external <script src> (vsl-player.js, VTurb, …) and
@@ -137,7 +140,13 @@ export function extractReinjectableScripts(html: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const attrs = m[1] || '';
-    if (/\bsrc\s*=/.test(attrs)) continue; // inline only
+    if (/\bsrc\s*=/.test(attrs)) {
+      const src = attrs.match(/\bsrc\s*=\s*["']([^"']+)/i)?.[1] || '';
+      if (/checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design\/checkout\.js|\/checkout\.js(?:\?|$)/i.test(src)) {
+        out.push(m[0]);
+      }
+      continue;
+    }
     const body = m[2] || '';
     if (!body.trim()) continue;
     if (/data-fallback|data-swipe-replacer|data-restyle-media|data-editor/i.test(attrs)) continue;
