@@ -2,13 +2,16 @@
  * Auto-heal cloned landers after we strip competitor JS (bouncers / pixels).
  *
  * 1. Known messenger quiz (Landerlab-like) → dedicated engine.
- * 2. Anything else with hidden steps / data-next* → generic stepper so a
+ * 2. CTA quiz popup (#ssqOverlay / SlimSoda-style) → freeze questions into
+ *    the DOM and replay with injectPopupQuizEngine.
+ * 3. Anything else with hidden steps / data-next* → generic stepper so a
  *    new landing works on the first clone without a human adapter.
  *
  * Keep in sync with worker-lib/lander-heal.js
  */
 
 import { injectChatQuizEngine, isChatQuizHtml } from './chat-quiz-engine';
+import { injectPopupQuizEngine, isPopupQuizHtml } from './popup-quiz-engine';
 
 export type LanderIssue = { id: string; label: string };
 
@@ -117,6 +120,7 @@ function looksLikeCarousel(html: string): boolean {
 
 export function looksLikeHiddenStepper(html: string): boolean {
   if (!html) return false;
+  if (isPopupQuizHtml(html)) return false;
   if (isChatQuizHtml(html)) return true;
   const hidden = countClass(html, 'nodisplay') + (html.match(/\shidden(?:\s|>|=)/gi) || []).length;
   const nextAttr = /data-next(?:-chat|-step)?\s*=/i.test(html) || /data-goto\s*=/i.test(html) || /data-show\s*=/i.test(html);
@@ -138,6 +142,10 @@ export function diagnoseLander(html: string): LanderIssue[] {
   const issues: LanderIssue[] = [];
   const hasChatEngine = /wasabi-chat-quiz-engine/.test(html);
   const hasGeneric = /wasabi-generic-step-engine/.test(html);
+  const hasPopupQuiz = /wasabi-popup-quiz-engine/.test(html);
+  if (isPopupQuizHtml(html) && !hasPopupQuiz) {
+    issues.push({ id: 'frozen-popup-quiz', label: 'CTA quiz popup without engine' });
+  }
   if (isChatQuizHtml(body) && !hasChatEngine) {
     issues.push({ id: 'frozen-chat-quiz', label: 'Messenger quiz without engine' });
   }
@@ -147,7 +155,7 @@ export function diagnoseLander(html: string): LanderIssue[] {
   if (looksLikeCarousel(body) && !/wasabi-accordion-rescue/.test(html) && !/__wbCar/.test(html)) {
     issues.push({ id: 'frozen-carousel', label: 'Carousel without fallback' });
   }
-  if (looksLikeHiddenStepper(body) && !hasChatEngine && !hasGeneric) {
+  if (looksLikeHiddenStepper(body) && !hasChatEngine && !hasGeneric && !hasPopupQuiz) {
     issues.push({ id: 'hidden-steps', label: 'Hidden steps with no stepper' });
   }
   return issues;
@@ -191,7 +199,7 @@ function injectBeforeClose(html: string, style: string, script: string): string 
 }
 
 export function injectGenericStepEngine(html: string): string {
-  if (!html || /wasabi-generic-step-engine/.test(html) || /wasabi-chat-quiz-engine/.test(html)) return html;
+  if (!html || /wasabi-generic-step-engine/.test(html) || /wasabi-chat-quiz-engine/.test(html) || /wasabi-popup-quiz-engine/.test(html)) return html;
   const style = `<style id="${GENERIC_STYLE_ID}">.nodisplay{display:none!important}</style>`;
   const script = `<script id="${GENERIC_SCRIPT_ID}">${GENERIC_STEP_JS}</script>`;
   return injectBeforeClose(html, style, script);
@@ -202,7 +210,10 @@ export function healClonedLander(html: string): HealResult {
   let out = html;
   const applied: string[] = [];
 
-  if (isChatQuizHtml(out)) {
+  if (isPopupQuizHtml(out)) {
+    out = injectPopupQuizEngine(out);
+    if (/wasabi-popup-quiz-engine/.test(out)) applied.push('popup-quiz');
+  } else if (isChatQuizHtml(out)) {
     out = injectChatQuizEngine(out);
     if (/wasabi-chat-quiz-engine/.test(out)) applied.push('chat-quiz');
   } else if (looksLikeHiddenStepper(out)) {
@@ -214,7 +225,7 @@ export function healClonedLander(html: string): HealResult {
 
   let remaining = diagnoseLander(out);
   if (remaining.some((i) => i.id === 'hidden-steps' || i.id === 'frozen-chat-quiz')) {
-    if (!/wasabi-chat-quiz-engine/.test(out)) {
+    if (!/wasabi-chat-quiz-engine/.test(out) && !/wasabi-popup-quiz-engine/.test(out)) {
       out = injectGenericStepEngine(out);
       if (/wasabi-generic-step-engine/.test(out) && !applied.includes('generic-step')) {
         applied.push('generic-step');

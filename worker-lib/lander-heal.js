@@ -4,6 +4,7 @@
  */
 
 const { injectChatQuizEngine, isChatQuizHtml } = require('./chat-quiz-engine');
+const { injectPopupQuizEngine, isPopupQuizHtml } = require('./popup-quiz-engine');
 
 const HEALED_META = 'wasabi-healed';
 const ISSUES_META = 'wasabi-lander-issues';
@@ -104,6 +105,7 @@ function looksLikeCarousel(html) {
 
 function looksLikeHiddenStepper(html) {
   if (!html) return false;
+  if (isPopupQuizHtml(html)) return false;
   if (isChatQuizHtml(html)) return true;
   const hidden = countClass(html, 'nodisplay') + (html.match(/\shidden(?:\s|>|=)/gi) || []).length;
   const nextAttr = /data-next(?:-chat|-step)?\s*=/i.test(html) || /data-goto\s*=/i.test(html) || /data-show\s*=/i.test(html);
@@ -125,6 +127,10 @@ function diagnoseLander(html) {
   const issues = [];
   const hasChatEngine = /wasabi-chat-quiz-engine/.test(html);
   const hasGeneric = /wasabi-generic-step-engine/.test(html);
+  const hasPopupQuiz = /wasabi-popup-quiz-engine/.test(html);
+  if (isPopupQuizHtml(html) && !hasPopupQuiz) {
+    issues.push({ id: 'frozen-popup-quiz', label: 'CTA quiz popup without engine' });
+  }
   if (isChatQuizHtml(body) && !hasChatEngine) {
     issues.push({ id: 'frozen-chat-quiz', label: 'Messenger quiz without engine' });
   }
@@ -134,7 +140,7 @@ function diagnoseLander(html) {
   if (looksLikeCarousel(body) && !/wasabi-accordion-rescue/.test(html) && !/__wbCar/.test(html)) {
     issues.push({ id: 'frozen-carousel', label: 'Carousel without fallback' });
   }
-  if (looksLikeHiddenStepper(body) && !hasChatEngine && !hasGeneric) {
+  if (looksLikeHiddenStepper(body) && !hasChatEngine && !hasGeneric && !hasPopupQuiz) {
     issues.push({ id: 'hidden-steps', label: 'Hidden steps with no stepper' });
   }
   return issues;
@@ -166,7 +172,7 @@ function injectBeforeClose(html, style, script) {
 }
 
 function injectGenericStepEngine(html) {
-  if (!html || /wasabi-generic-step-engine/.test(html) || /wasabi-chat-quiz-engine/.test(html)) return html;
+  if (!html || /wasabi-generic-step-engine/.test(html) || /wasabi-chat-quiz-engine/.test(html) || /wasabi-popup-quiz-engine/.test(html)) return html;
   const style = `<style id="${GENERIC_STYLE_ID}">.nodisplay{display:none!important}</style>`;
   const script = `<script id="${GENERIC_SCRIPT_ID}">${GENERIC_STEP_JS}</script>`;
   return injectBeforeClose(html, style, script);
@@ -177,7 +183,10 @@ function healClonedLander(html) {
   let out = html;
   const applied = [];
 
-  if (isChatQuizHtml(out)) {
+  if (isPopupQuizHtml(out)) {
+    out = injectPopupQuizEngine(out);
+    if (/wasabi-popup-quiz-engine/.test(out)) applied.push('popup-quiz');
+  } else if (isChatQuizHtml(out)) {
     out = injectChatQuizEngine(out);
     if (/wasabi-chat-quiz-engine/.test(out)) applied.push('chat-quiz');
   } else if (looksLikeHiddenStepper(out)) {
@@ -189,7 +198,7 @@ function healClonedLander(html) {
 
   let remaining = diagnoseLander(out);
   if (remaining.some((i) => i.id === 'hidden-steps' || i.id === 'frozen-chat-quiz')) {
-    if (!/wasabi-chat-quiz-engine/.test(out)) {
+    if (!/wasabi-chat-quiz-engine/.test(out) && !/wasabi-popup-quiz-engine/.test(out)) {
       out = injectGenericStepEngine(out);
       if (/wasabi-generic-step-engine/.test(out) && applied.indexOf('generic-step') < 0) {
         applied.push('generic-step');

@@ -14,6 +14,7 @@
 
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
 import { isChatQuizHtml } from './chat-quiz-engine';
+import { injectPopupQuizEngine, isPopupQuizHtml } from './popup-quiz-engine';
 import { healClonedLander } from './lander-heal';
 import { detectDynamicScripts, detectCommerceMarkers } from './detect-dynamic-scripts';
 import { injectLiveCommentClock } from './live-comment-clock';
@@ -531,6 +532,12 @@ export function stripNonCarouselScripts(html: string): string {
         return '';
       }
       if (KEEP_INLINE.test(body)) return full;
+      // Original SlimSoda-style popup quiz is replayed by injectPopupQuizEngine.
+      // Keep our engine; drop the competitor IIFE even on Shopify/commerce pages.
+      if (/ssqOverlay|#ssqBody|ssq-overlay/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) {
+        return '';
+      }
+      if (/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) return full;
       if (commerce && body.trim() && !TRACKING_INLINE.test(body)) return full;
       return '';
     },
@@ -571,6 +578,16 @@ export function injectInteractivityRescue(
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
     return healClonedLander(html).html;
+  }
+  if (isPopupQuizHtml(html)) {
+    html = injectPopupQuizEngine(html);
+    if (isFrameworkRuntime(html) && !pageNeedsJsRender(html)) {
+      html = stripNonCarouselScripts(html);
+      html = injectPopupQuizEngine(html);
+    } else if (!liveChat) {
+      html = stripNonCarouselScripts(html);
+      html = injectPopupQuizEngine(html);
+    }
   } else if (isFrameworkRuntime(html) && !pageNeedsJsRender(html)) {
     // Playwright/Jina already froze the DOM. Leaving Next/Vite/React in
     // the snapshot makes them re-hydrate in our iframe and blank the page.
@@ -963,6 +980,7 @@ function once(){
     var t=ev.target;if(!(t instanceof Element))return;
     if(t.closest&&(t.closest('.chat-button')||t.closest('[data-next-chat]')||t.closest('#chatbox-app')||t.closest('#chatbox-content')))return;
     if(t.closest&&t.closest('#mbAccept,#mbNo,#mbOpen,#member,#member-overlay,#member-primary,#pay-now-btn,.mb-cta,.mb-no,.pay-now,[data-package-option],[data-checkout],.member-popup'))return;
+    if(t.closest&&t.closest('#ssqOverlay,.ssq-overlay,.ssq-opt,.ssq-cta,.ssq-continue,.ssq-back,a.cta-btn,a[href*="/click"]'))return;
     // 0a) <details>: il browser fa gia' il toggle nativo. injectInteractivityRescue
     //     ha rimosso 'onclick="return false"' e 'open' dall'HTML, quindi il
     //     click su <summary> apre/chiude il details via meccanismo nativo

@@ -71,6 +71,10 @@ const CHAT_QUIZ_MARKERS = [
   { re: /data-next-chat\s*=|#chatbox-app\b|function\s+displayMessages\s*\(|landerlab\.io/i, label: 'Landerlab chat quiz' },
 ];
 
+const POPUP_QUIZ_MARKERS = [
+  { re: /id=["']ssqOverlay["']|\bssq-overlay\b|\bssqOverlay\b/i, label: 'CTA popup quiz' },
+];
+
 /**
  * Detect script-driven commerce/checkout machinery across the whole HTML.
  * @param {string} html
@@ -94,6 +98,13 @@ function detectChatQuizMarkers(html) {
   if (!html || typeof html !== 'string') return [];
   const out = [];
   for (const m of CHAT_QUIZ_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
+function detectPopupQuizMarkers(html) {
+  if (!html || typeof html !== 'string') return [];
+  const out = [];
+  for (const m of POPUP_QUIZ_MARKERS) if (m.re.test(html)) out.push(m.label);
   return out;
 }
 
@@ -143,6 +154,7 @@ function extractReinjectableScripts(html) {
     const body = m[2] || '';
     if (!body.trim()) continue;
     if (/data-fallback|data-swipe-replacer|data-editor/i.test(attrs)) continue;
+    if (/ssqOverlay|#ssqBody|ssq-overlay/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(attrs + body)) continue;
     if (TRACKING_ONLY.test(body) && !DOM_MUTATION.test(body)) continue;
     out.push(m[0]);
   }
@@ -184,8 +196,9 @@ function detectDynamicScripts(html) {
   const commerceSignals = detectCommerceMarkers(html);
   const playerSignals = detectPlayerMarkers(html);
   const chatQuizSignals = detectChatQuizMarkers(html);
+  const popupQuizSignals = detectPopupQuizMarkers(html);
 
-  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0 && chatQuizSignals.length === 0) {
+  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0 && chatQuizSignals.length === 0 && popupQuizSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
@@ -196,6 +209,7 @@ function detectDynamicScripts(html) {
   for (const s of playerSignals) signals.push(s);
 
   // Chat quizzes are replayed by injectChatQuizEngine — do not keep Landerlab JS.
+  // CTA popup quizzes are replayed by injectPopupQuizEngine.
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But
@@ -213,7 +227,7 @@ function detectDynamicScripts(html) {
   const reported = (functional && combo
     ? signals.concat('inline JS builds content over time (content keyword + DOM mutation + timer)')
     : signals
-  ).concat(chatQuizSignals);
+  ).concat(chatQuizSignals).concat(popupQuizSignals);
   // De-dupe signals for a cleaner report.
   return { functional, signals: Array.from(new Set(reported)), inlineScriptCount };
 }
@@ -223,6 +237,7 @@ module.exports = {
   detectCommerceMarkers,
   detectPlayerMarkers,
   detectChatQuizMarkers,
+  detectPopupQuizMarkers,
   extractInlineScriptText,
   extractReinjectableScripts,
   reattachDynamicScripts,

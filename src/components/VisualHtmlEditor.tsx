@@ -31,6 +31,7 @@ import {
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
+import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
   applyReplacementList,
   applyTextSwap,
@@ -1698,7 +1699,15 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   // .mySwiper con autoplay+pagination) si comporta PIXEL-PERFECT
   // identico al sito originale, sia in editor che in preview.
   // (vedi stripNonCarouselScripts in src/lib/spa-rescue.ts)
+  // Popup quiz questions live in JS. Freeze them into #ssqBody before
+  // strip so the editor can select/edit each step.
+  if (isPopupQuizHtml(clean) && !/data-ssq-step=/.test(clean)) {
+    clean = injectPopupQuizEngine(clean);
+  }
   clean = stripNonCarouselScripts(clean);
+  // Editor clicks must select copy, not open the quiz. Preview/heal
+  // re-injects wasabi-popup-quiz-engine from the materialized steps.
+  clean = clean.replace(/<script\b[^>]*\bid=["']wasabi-popup-quiz-engine["'][^>]*>[\s\S]*?<\/script>/gi, '');
   // Preview-only: this observer rewrites img src in a loop and blocks the
   // editor iframe so "editor-ready" never fires (stuck on Loading editor…).
   clean = clean.replace(/<script\b[^>]*\bdata-restyle-media\b[^>]*>[\s\S]*?<\/script>/gi, '');
@@ -2019,6 +2028,10 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
   let inject = editorCss + script;
   if (isChatQuizHtml(clean)) inject = chatQuizEditorRevealCss() + inject;
+  if (isPopupQuizHtml(clean)) {
+    if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
+    inject = popupQuizEditorRevealCss() + inject;
+  }
   if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
   if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
   return clean + inject;
@@ -2026,7 +2039,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
 
 function stripEditorScript(html: string): string {
   let result = html;
-  result = result.replace(/<style data-editor-override>[\s\S]*?<\/style>/g, '');
+  result = result.replace(/<style\b[^>]*\bdata-editor-override\b[^>]*>[\s\S]*?<\/style>/g, '');
   // Overlay UI dell'editor (plus / cestino / maniglia resize): marcati con
   // data-editor-ui, non devono finire nell'HTML salvato.
   result = result.replace(/<div[^>]*\bdata-editor-ui\b[^>]*>[\s\S]*?<\/div>/gi, '');
