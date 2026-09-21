@@ -31,6 +31,13 @@ import {
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
+import {
+  applyReplacementList,
+  applyTextSwap,
+  extractVisibleSnippets,
+  isHugeAiHtml,
+  parseTextSwapInstruction,
+} from '@/lib/ai-html-text-swap';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
 const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
@@ -4268,7 +4275,32 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setAiEditError('');
     setAiEditProgress(null);
 
+    const sourceHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
+    const commit = (next: string) => {
+      setIframeVersion(v => v + 1);
+      if (editorViewport === 'mobile' && mobileHtml) {
+        setAiEditHistory(prev => [...prev, mobileHtml]);
+        setMobileHtml(next);
+        setMobileCodeHtml(next);
+      } else {
+        setAiEditHistory(prev => [...prev, currentHtml]);
+        setCurrentHtml(next);
+        setCodeHtml(next);
+        pushUndo(next);
+      }
+    };
+
     try {
+      const swap = parseTextSwapInstruction(aiEditPrompt);
+      if (swap) {
+        const applied = applyTextSwap(sourceHtml, swap.from, swap.to);
+        if (applied.count === 0) {
+          throw new Error(`"${swap.from}" was not found on the page`);
+        }
+        commit(applied.html);
+        return;
+      }
+
       const res = await fetch('/api/ai-edit-html', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4347,7 +4379,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setAiEditRunning(false);
       setAiEditProgress(null);
     }
-  }, [aiEditPrompt, aiEditModel, aiEditRunning, activeCheckoutMode, currentHtml, pushUndo]);
+  }, [aiEditPrompt, aiEditModel, aiEditRunning, activeCheckoutMode, currentHtml, mobileHtml, editorViewport, pushUndo]);
 
   const handleAiEditUndo = useCallback(() => {
     if (aiEditHistory.length === 0) return;
@@ -4572,6 +4604,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setElAiMessages(prev => [...prev, { role: 'user', content: instruction }]);
     setElAiLoading(true);
 
+    const pageHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
+    const commitPage = (next: string) => {
+      setIframeVersion(v => v + 1);
+      if (editorViewport === 'mobile' && mobileHtml) {
+        setMobileHtml(next);
+        setMobileCodeHtml(next);
+      } else {
+        setCurrentHtml(next);
+        setCodeHtml(next);
+        pushUndo(next);
+      }
+    };
+
     let elementHtml: string | null = null;
     if (selectedElement) {
       elAiPendingRef.current = null;
@@ -4586,14 +4631,39 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
 
     try {
+      const swap = parseTextSwapInstruction(instruction);
+      if (swap) {
+        const applied = applyTextSwap(pageHtml, swap.from, swap.to);
+        if (applied.count === 0) {
+          throw new Error(`"${swap.from}" was not found on the page`);
+        }
+        commitPage(applied.html);
+        setElAiMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `Done! Replaced "${swap.from}" → "${swap.to}" (${applied.count} time${applied.count === 1 ? '' : 's'}).`,
+        }]);
+        return;
+      }
+
+      const huge = isHugeAiHtml(elementHtml, selectedElement?.tagName);
       const res = await fetch('/api/ai-edit-element', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          elementHtml: elementHtml || undefined,
-          instruction,
-          checkoutMode: activeCheckoutMode,
-        }),
+        body: JSON.stringify(
+          huge
+            ? {
+                instruction,
+                mode: 'patches',
+                snippets: extractVisibleSnippets(elementHtml || pageHtml),
+                excerpt: (elementHtml || pageHtml).slice(0, 6000),
+                checkoutMode: activeCheckoutMode,
+              }
+            : {
+                elementHtml: elementHtml || undefined,
+                instruction,
+                checkoutMode: activeCheckoutMode,
+              },
+        ),
       });
       // Parsing robusto: in caso di timeout del gateway (Netlify/Vercel
       // chiudono la funzione dopo pochi secondi) o errore 5xx, il server
@@ -4614,6 +4684,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+
+      if (data.scope === 'patches') {
+        const applied = applyReplacementList(pageHtml, Array.isArray(data.replacements) ? data.replacements : []);
+        if (applied.count === 0) {
+          throw new Error('Nothing to change on this large block. Try "change X with Y", or select a smaller element.');
+        }
+        commitPage(applied.html);
+        setElAiMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `Done! Updated ${applied.count} text occurrence${applied.count === 1 ? '' : 's'} on the page.`,
+        }]);
+        return;
+      }
 
       if (data.scope === 'page') {
         const { action, target, code } = data;
@@ -4646,7 +4729,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     } finally {
       setElAiLoading(false);
     }
-  }, [elAiInput, elAiLoading, activeCheckoutMode, selectedElement, sendToIframe, currentHtml, pushUndo]);
+  }, [elAiInput, elAiLoading, activeCheckoutMode, selectedElement, sendToIframe, currentHtml, mobileHtml, editorViewport, pushUndo]);
 
   useEffect(() => {
     elAiChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
