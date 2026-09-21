@@ -79,6 +79,7 @@ RETURNS BOOLEAN
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
+SET row_security = off
 STABLE
 AS $$
   SELECT EXISTS (
@@ -96,6 +97,7 @@ RETURNS UUID
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
+SET row_security = off
 STABLE
 AS $$
   SELECT user_id FROM public.app_user_permissions

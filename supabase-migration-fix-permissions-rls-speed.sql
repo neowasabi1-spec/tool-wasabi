@@ -1,10 +1,11 @@
--- UNBREAK the dashboard after app_user_permissions RLS froze every query.
+-- Unbreak Template. Run on the SAME Supabase project the app uses.
+-- First result row: if templates_table is NULL you are in the wrong project.
 -- LANGUAGE sql only. Safe to re-run.
---
--- 1) Turn OFF RLS on the permissions table (this is what made Template
---    hang — policies selected the same table they protected).
--- 2) Recreate is_master / get_master_id as a single PK lookup.
--- 3) Put Template / Clone / Projects back on every empty user row.
+
+SELECT
+  current_database() AS db,
+  to_regclass('public.app_user_permissions') AS permissions_table,
+  to_regclass('public.archived_funnels') AS templates_table;
 
 ALTER TABLE public.app_user_permissions NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE public.app_user_permissions DISABLE ROW LEVEL SECURITY;
@@ -18,6 +19,7 @@ RETURNS BOOLEAN
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
+SET row_security = off
 STABLE
 AS $$
   SELECT EXISTS (
@@ -31,6 +33,7 @@ RETURNS UUID
 LANGUAGE sql
 SECURITY DEFINER
 SET search_path = public
+SET row_security = off
 STABLE
 AS $$
   SELECT user_id FROM public.app_user_permissions
@@ -42,14 +45,19 @@ $$;
 GRANT EXECUTE ON FUNCTION public.is_master(UUID) TO authenticated, anon, service_role;
 GRANT EXECUTE ON FUNCTION public.get_master_id() TO authenticated, anon, service_role;
 
+-- Add library sections back. Does not wipe quiz / admin toggles already set.
 UPDATE public.app_user_permissions
-SET sections = ARRAY[
-  'front-end-funnel', 'templates', 'products',
-  'projects', 'checkpoint', 'protocollo-valchiria',
-  'api-keys', 'api-usage'
-]
-WHERE role IS DISTINCT FROM 'master'
-  AND (sections IS NULL OR cardinality(sections) = 0);
+SET sections = (
+  SELECT ARRAY(
+    SELECT DISTINCT x FROM unnest(
+      COALESCE(sections, ARRAY[]::text[]) || ARRAY[
+        'front-end-funnel', 'templates', 'products',
+        'projects', 'checkpoint', 'protocollo-valchiria',
+        'api-keys', 'api-usage'
+      ]
+    ) AS x
+  )
+);
 
 WITH first_row AS (
   SELECT user_id FROM public.app_user_permissions ORDER BY created_at ASC LIMIT 1
@@ -57,13 +65,7 @@ WITH first_row AS (
   SELECT EXISTS (SELECT 1 FROM public.app_user_permissions WHERE role = 'master') AS ok
 )
 UPDATE public.app_user_permissions p
-SET
-  role = 'master',
-  sections = ARRAY[
-    'front-end-funnel', 'quiz-swipe', 'templates', 'products',
-    'projects', 'checkpoint', 'protocollo-valchiria',
-    'api-keys', 'api-usage', 'admin-users', 'strategist'
-  ]
+SET role = 'master'
 FROM first_row, has_master
 WHERE p.user_id = first_row.user_id
   AND has_master.ok = false;

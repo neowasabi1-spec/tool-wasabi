@@ -94,7 +94,7 @@ export default function AdminUsersPage() {
 
   return (
     <div className="space-y-6">
-      <Header title="Users" subtitle="Manage who can access the tool and which sections they see. Clone / Swipe Quiz is opt-in — enable it here only for the users who need it." />
+      <Header title="Users" subtitle="Same section toggles as the sidebar. Check Clone / Swipe Quiz only for users who should see it." />
 
       {error && (
         <div className="bg-red-500/10 border border-red-500/30 text-red-300 rounded-lg p-3 flex items-start gap-2 text-sm">

@@ -47,6 +47,9 @@ RETURNS TABLE (
 )
 LANGUAGE sql
 STABLE
+SECURITY DEFINER
+SET search_path = public
+SET row_security = off
 SET statement_timeout TO '30s'
 AS $$
   SELECT
@@ -187,7 +190,10 @@ RETURNS TABLE (
 )
 LANGUAGE sql
 STABLE
-SET statement_timeout TO '6s'
+SECURITY DEFINER
+SET search_path = public
+SET row_security = off
+SET statement_timeout TO '20s'
 AS $$
   SELECT
     f.id,
@@ -244,7 +250,7 @@ WHERE f.id IN (
 /** Netlify's edge wrapper kills this HTTP request around 10–26s even when
  *  the function maxDuration is higher. Never touch `steps` jsonb here — those
  *  rows still hold 1–5 MB of HTML and that is what timed Templates out. */
-const TEMPLATE_BUDGET_MS = 8_000;
+const TEMPLATE_BUDGET_MS = 20_000;
 const TEMPLATE_RPC_MAX = 500;
 const PATH_BATCH = 12;
 
@@ -930,7 +936,7 @@ async function loadListCards(cap: number): Promise<{ rows: SlimArchiveRow[]; unt
     const rpc = await supabaseAdmin.rpc(
       'template_list_cards',
       { p_limit: cap },
-      { abortSignal: AbortSignal.timeout(5_000) },
+      { abortSignal: AbortSignal.timeout(15_000) },
     );
     if (!rpc.error && rpc.data) return mapRows(rpc.data);
   } catch (e) {
@@ -943,7 +949,7 @@ async function loadListCards(cap: number): Promise<{ rows: SlimArchiveRow[]; unt
       .is('project_id', null)
       .order('created_at', { ascending: false })
       .limit(cap)
-      .abortSignal(AbortSignal.timeout(5_000));
+      .abortSignal(AbortSignal.timeout(15_000));
     if (error) {
       console.warn('[slim-archived-funnels] list cards:', error.message);
       return null;

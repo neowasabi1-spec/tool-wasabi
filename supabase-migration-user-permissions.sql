@@ -42,25 +42,15 @@ CREATE TRIGGER trg_app_user_permissions_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION app_user_permissions_touch_updated_at();
 
--- 3) RLS -------------------------------------------------------------
--- Users can read their OWN permissions (needed by the client-side
--- sidebar / page guards). Masters can read/write everyone's. Writes
--- from anyone else are blocked.
-ALTER TABLE app_user_permissions ENABLE ROW LEVEL SECURITY;
-
+-- 3) Do NOT put RLS on this table. is_master() is called from every
+--    other table's policies; a policy here that reads this same table
+--    freezes Template / Clone / Projects. Whoami and Users use the
+--    service-role client.
+ALTER TABLE app_user_permissions NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_user_permissions DISABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "users read own permissions" ON app_user_permissions;
-CREATE POLICY "users read own permissions"
-  ON app_user_permissions
-  FOR SELECT
-  USING (user_id = auth.uid() OR public.is_master(auth.uid()));
-
 DROP POLICY IF EXISTS "masters read all permissions" ON app_user_permissions;
 DROP POLICY IF EXISTS "masters write all permissions" ON app_user_permissions;
-CREATE POLICY "masters write all permissions"
-  ON app_user_permissions
-  FOR ALL
-  USING (public.is_master(auth.uid()))
-  WITH CHECK (public.is_master(auth.uid()));
 
 -- 4) Auto-promote the very first user to master ----------------------
 -- Runs after INSERT on auth.users. If no master exists yet, the new
