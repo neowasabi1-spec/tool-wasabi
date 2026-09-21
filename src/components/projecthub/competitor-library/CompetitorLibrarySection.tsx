@@ -27,6 +27,7 @@ import { BUILD_LANGUAGES, LANGUAGE_OTHER } from "@/lib/video-languages";
 import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/landing-media";
 import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
+import CachedScreenshot from "@/components/CachedScreenshot";
 
 const BASE_URL = "";
 
@@ -2576,14 +2577,77 @@ function isShotUrl(u?: string | null) {
   const s = String(u || "").trim();
   if (!s || s === "null" || s === "undefined") return false;
   if (s.startsWith("data:image/")) return true;
+  if (s.startsWith("//") && !/\/api\/funnel-html/i.test(s)) return true;
   if (!/^https?:\/\//i.test(s)) return false;
   if (/\/api\/funnel-html/i.test(s)) return false;
   return true;
 }
 
+function landingShotUrl(landing: Landing) {
+  return [landing.screenshot, landing.screenshot_desktop, landing.screenshot_mobile].find(isShotUrl) || "";
+}
+
 function htmlPreviewUrl(htmlUrl: string) {
   if (!htmlUrl) return "";
   return htmlUrl.includes("inert=") ? htmlUrl : `${htmlUrl}${htmlUrl.includes("?") ? "&" : "?"}inert=1`;
+}
+
+/** Lazy thumbnail from the saved clone HTML when no screenshot URL is stored. */
+function HtmlThumb({
+  htmlUrl,
+  liveUrl,
+  className = "",
+}: {
+  htmlUrl: string;
+  liveUrl?: string;
+  className?: string;
+}) {
+  const [html, setHtml] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [scale, setScale] = useState(0.22);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !htmlUrl) return;
+    const obs = new IntersectionObserver((entries) => {
+      if (!entries[0]?.isIntersecting) return;
+      obs.disconnect();
+      setScale((el.clientWidth || 280) / 1280);
+      fetch(htmlPreviewUrl(htmlUrl) || htmlUrl)
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(String(r.status)))))
+        .then((t) => { if (t && t.length > 100 && /<[a-z]/i.test(t)) setHtml(t); else setFailed(true); })
+        .catch(() => setFailed(true));
+    }, { rootMargin: "400px" });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [htmlUrl]);
+
+  if (failed && liveUrl && /^https?:\/\//i.test(liveUrl)) {
+    return <CachedScreenshot url={liveUrl} alt="" height="100%" className={`w-full h-full ${className}`} />;
+  }
+
+  return (
+    <div ref={ref} className={`relative overflow-hidden bg-white ${className}`}>
+      {html ? (
+        <iframe
+          srcDoc={html}
+          sandbox=""
+          scrolling="no"
+          tabIndex={-1}
+          title="Landing preview"
+          className="absolute top-0 left-0 border-0 pointer-events-none select-none"
+          style={{ width: "1280px", height: "1800px", transform: `scale(${scale})`, transformOrigin: "top left" }}
+        />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center bg-slate-100">
+          {failed
+            ? <Globe className="w-10 h-10 text-slate-400" />
+            : <RefreshCw className="w-6 h-6 text-slate-300 animate-spin" />}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Funnel folders store the domain in `category` — that is not a niche. */
@@ -2593,17 +2657,23 @@ function isNicheCategory(s: string) {
 }
 
 function CardShot({ landing }: { landing: Landing }) {
-  const shot = [landing.screenshot, landing.screenshot_desktop, landing.screenshot_mobile].find(isShotUrl) || "";
+  const shot = landingShotUrl(landing);
   const [broken, setBroken] = useState(false);
   if (shot && !broken) {
     return (
       <img
-        src={shot}
+        src={shot.startsWith("//") ? `https:${shot}` : shot}
         alt={landing.name}
         className="w-full h-full object-cover object-top group-hover:scale-[1.02] transition-transform"
         onError={() => setBroken(true)}
       />
     );
+  }
+  if (landing.html_url) {
+    return <HtmlThumb htmlUrl={landing.html_url} liveUrl={landing.url} className="w-full h-full" />;
+  }
+  if (landing.url && /^https?:\/\//i.test(landing.url)) {
+    return <CachedScreenshot url={landing.url} alt={landing.name} height="100%" className="w-full h-full" />;
   }
   return (
     <div className="w-full h-full flex items-center justify-center bg-slate-100">
@@ -3097,7 +3167,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           {folders.map(f => {
-            const cover = f.items[0];
+            const cover = f.items.find(i => landingShotUrl(i)) || f.items[0];
             const host = hostOf(cover?.url || "");
             const ids = f.items.map(i => i.id);
             const allOn = ids.length > 0 && ids.every(id => selected.has(id));

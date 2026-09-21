@@ -586,6 +586,11 @@ function funnelShellSelect(count: number): string {
       `s${i}_stype:steps->${i}->>step_type`,
       `s${i}_pid:steps->${i}->>page_id`,
       `s${i}_url:steps->${i}->>url_to_swipe`,
+      `s${i}_src:steps->${i}->cloned_data->>source_url`,
+      `s${i}_shot:steps->${i}->cloned_data->>screenshotDesktopUrl`,
+      `s${i}_shotm:steps->${i}->cloned_data->>screenshotMobileUrl`,
+      `s${i}_html:steps->${i}->cloned_data->>htmlUrl`,
+      `s${i}_cat:steps->${i}->cloned_data->>category`,
     );
   }
   return cols.join(', ');
@@ -677,7 +682,14 @@ AS $$
           'step_type', e.elem->>'step_type',
           'page_id', e.elem->>'page_id',
           'step_index', e.elem->'step_index',
-          'url_to_swipe', COALESCE(e.elem->>'url_to_swipe', e.elem#>>'{cloned_data,source_url}')
+          'url_to_swipe', COALESCE(e.elem->>'url_to_swipe', e.elem#>>'{cloned_data,source_url}'),
+          'cloned_data', jsonb_build_object(
+            'source_url', COALESCE(e.elem#>>'{cloned_data,source_url}', e.elem->>'url_to_swipe'),
+            'screenshotDesktopUrl', e.elem#>>'{cloned_data,screenshotDesktopUrl}',
+            'screenshotMobileUrl', e.elem#>>'{cloned_data,screenshotMobileUrl}',
+            'htmlUrl', e.elem#>>'{cloned_data,htmlUrl}',
+            'category', e.elem#>>'{cloned_data,category}'
+          )
         ) AS step
       FROM archived_funnels f
       CROSS JOIN LATERAL jsonb_array_elements(
