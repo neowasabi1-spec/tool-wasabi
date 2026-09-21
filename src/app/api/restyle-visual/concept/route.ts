@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { ingestLandingMediaBytes } from '@/lib/landing-media';
 import { openaiGenerateImage } from '@/lib/openai-image';
+import { packSwipePrompt, parsePackQty } from '@/lib/product-form';
 import { loadStepOffer } from '@/lib/step-offer';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
@@ -22,6 +23,7 @@ export async function POST(req: NextRequest) {
     prompt?: string;
     productImageUrl?: string;
     extraImageUrls?: string[];
+    sourceImageUrl?: string;
     pageType?: string;
     pageName?: string;
   };
@@ -36,9 +38,40 @@ export async function POST(req: NextRequest) {
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
   const refs = await resolveMockupUrls(projectId, body);
-  const packAsk = /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|pack\b|confezione|prodotto|sku|holding (the )?product/i
+  const sourceUrl = String(body.sourceImageUrl || '').trim();
+  const packAsk = /product|packshot|packaging|mockup|bottle|jar|tub|box|pouch|sachet|stick|pack\b|confezione|prodotto|sku|holding (the )?product|SWIPE PACKSHOT/i
     .test(`${asked} ${nearby}`);
-  if (packAsk && refs.length) {
+  // Recreate the original pack layout with OUR product. Returning the mockup
+  // as-is made every 2/6/3 card look identical.
+  if (packAsk && refs.length && /^https?:\/\//i.test(sourceUrl)) {
+    const qty = parsePackQty(`${asked} ${nearby}`);
+    const made = await openaiGenerateImage({
+      prompt: packSwipePrompt({ productName, nearby, qty }),
+      imageUrls: [sourceUrl, ...refs].slice(0, 4),
+      size: '1024x1024',
+      quality: 'medium',
+      timeoutMs: 90_000,
+      openaiOnly: true,
+    });
+    if (made) {
+      const bytes = await bytesFromImageUrl(made);
+      if (bytes) {
+        const item = await ingestLandingMediaBytes(supabaseAdmin, {
+          projectId,
+          buf: bytes.buf,
+          contentType: bytes.mime,
+          sourceUrl: `concept://pack-swipe/${slug(productName)}/${qty || 'n'}`,
+          kind: 'image',
+          section: 'product',
+        });
+        if (item?.storedUrl) {
+          return NextResponse.json({ url: item.storedUrl, id: item.id });
+        }
+        return NextResponse.json({ url: made, id: 'pack-swipe' });
+      }
+    }
+  }
+  if (packAsk && refs.length && !sourceUrl) {
     return NextResponse.json({ url: refs[0], id: 'step-mock' });
   }
 

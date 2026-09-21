@@ -24,6 +24,7 @@ import {
 import VisualHtmlEditor from '@/components/VisualHtmlEditor';
 import { parseJsonResponse } from '@/lib/safe-fetch';
 import { reattachDynamicScripts } from '@/lib/detect-dynamic-scripts';
+import { runVisualRestyle } from '@/lib/restyle-visual-client';
 
 interface ProductInfo {
   name: string;
@@ -624,6 +625,50 @@ export default function CloneLandingPage() {
     }
   };
 
+  const restylePackshots = async (html: string, pageUrl: string): Promise<string> => {
+    if (!selectedProjectId || !product.name.trim()) return html;
+    let imageUrl = '';
+    let extra: string[] = [];
+    try {
+      const r = await fetch(
+        `/api/projecthub/projects/${encodeURIComponent(selectedProjectId)}/step-offer?pageType=landing&name=`,
+      );
+      if (r.ok) {
+        const offer = (await r.json()) as { imageUrl?: string; imageUrls?: string[] };
+        imageUrl = String(offer.imageUrl || '').trim();
+        extra = Array.isArray(offer.imageUrls) ? offer.imageUrls.filter((u) => /^https?:\/\//i.test(u)) : [];
+      }
+    } catch {
+      /* no mockup */
+    }
+    if (!imageUrl && extra.length) imageUrl = extra[0];
+    if (!imageUrl) return html;
+    pushProgress('Recreating original pack photos (2 / 6 / 3) with your mockup — not pasting the same shot…');
+    try {
+      const visual = await runVisualRestyle({
+        html,
+        productName: product.name,
+        description: product.description,
+        brief: briefText,
+        projectId: selectedProjectId,
+        pageUrl,
+        productImageUrl: imageUrl,
+        extraImageUrls: extra,
+        pageType: 'landing',
+        onProgress: (message) => pushProgress(message),
+      });
+      pushProgress(
+        visual.replaced
+          ? `Pack photos: ${visual.replaced} recreated from the original layouts`
+          : `Pack photos unchanged${visual.error ? ` (${visual.error})` : ''}`,
+      );
+      return visual.html || html;
+    } catch (e) {
+      pushProgress(`Pack photo swipe skipped: ${e instanceof Error ? e.message : 'unknown error'}`);
+      return html;
+    }
+  };
+
   const handleSwipe = async () => {
     if (!result?.url) return;
     
@@ -645,8 +690,9 @@ export default function CloneLandingPage() {
       if (auditor !== 'claude') {
         const data = await handleSwipeViaOpenclaw(auditor);
         if (!data.html) throw new Error('No HTML received from worker');
+        const html = await restylePackshots(data.html, result.url);
         setResult({
-          html: data.html,
+          html,
           url: result.url,
           isSwipedVersion: true,
           swipeInfo: {
@@ -696,8 +742,9 @@ export default function CloneLandingPage() {
       const data = parsed.data!;
 
       if (data.html) {
+        const html = await restylePackshots(data.html, result.url);
         setResult({
-          html: data.html,
+          html,
           url: result.url,
           isSwipedVersion: true,
           swipeInfo: {

@@ -654,7 +654,7 @@ ${planRules(plan)}
 CRITICAL RULES:
 1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text. Nothing of the old product may survive: not its name, its body part, its condition, its technology, its unit ("device", "session"), its narrator's credentials.
 2. Keep the same conversational energy/medium (a headline stays a headline, a CTA stays a CTA, body copy stays body copy). LENGTH IS FREE: rewrite at whatever length actually sells the message — don't pad or truncate to match the original word count.
-3. OFFER / PACKAGE BUTTONS: if the source button is a short checkout verb (buy now, order now, add to cart, checkout, shop), KEEP that verb. Do not expand it into "GET MY {product}". Do not add extra package columns. Keep 2x/3x/6x (or whatever the source shows) as pack labels.
+3. OFFER / PACKAGE BUTTONS: if the source button is a short checkout verb (buy now, order now, add to cart, checkout, shop), KEEP that verb. Do not expand it into "GET MY {product}". Do not add extra package columns. Keep pack COUNTS (2/3/6) and supply days; change "bottles" to jars/tubs if that is what our product is.
 4. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
 5. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
 6. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids. Labels that are product-neutral (dates, "Customer Reviews", "5 Star", author bylines you keep) may be returned unchanged.

@@ -68,7 +68,10 @@ For each slot you are shown the picture that is already there, plus the text aro
   const promptGuide = `HOW TO WRITE AN IMAGE PROMPT (the "prompt" field, English, 40-90 words): describe ONE concrete scene that shows what the copy MEANS for the reader — the problem they live with, the moment the copy describes, or the result they want (the person, what they are doing and feeling, the setting, light, camera). NEVER mention or describe a product, pack, box, stick, sachet, bottle, label or brand. Illustrate the OUTCOME or the SITUATION. Example — copy about losing weight: a woman noticing her jeans are loose; NOT a woman holding a stick pack. Strict: no product, no packaging, no text, no logos in the scene.`;
   const genRule = canGenerate
     ? (args.convert
-      ? `WHEN TO GENERATE: story / problem / mechanism / lifestyle / person slots only — generate=true with a scene prompt that contains NO product. Up to ${maxGenerate} per page. Library files labelled USER-UPLOADED PRODUCT MOCKUP / step-mock-* ARE the real product: set mediaId to that id for every product / pack / box / stick / sachet / offer shot. NEVER generate=true for a product shot. NEVER write a prompt that asks to draw, composite, or hold the product. do NOT drop the same product photo into story slots — generate a scene instead.
+      ? `WHEN TO GENERATE:
+- PACK / PRODUCT shots (bottles, jars, 2x/3x/6x bundles, offer cards): generate=true. The original photo's LAYOUT is the template — if it shows 2 units, the new photo must show 2 of OURS; 6→6; 3→3. Do NOT assign the uploaded mockup as mediaId for these (that pastes one photo on every pack). Prompt: recreate that packshot with our product.
+- Story / problem / mechanism / lifestyle / person: generate=true with a scene prompt that contains NO product. Up to ${maxGenerate} lifestyle scenes per page.
+- NEVER drop the same product photo into story slots.
 ${promptGuide}`
       : `When no library file fits, generate=true with an English scene prompt (up to ${maxGenerate}). No product in that prompt.\n${promptGuide}`)
     : 'Image generation is NOT available here: never answer generate=true. When nothing fits perfectly, pick the closest library file anyway.';
@@ -79,7 +82,7 @@ ${head}
 
 LOOK at the picture first.
 - UI chrome (stars, rating bars, checkmarks, ticks, logos, arrows, payment marks, bullets, flags) → skip it.
-- Any picture that shows the OLD product — the item itself, its box, its app screen, hands or feet using it, before/after of its results, its brand name — MUST be replaced. Leaving one on the page is the worst possible outcome. Read the REWRITTEN copy around the slot and decide what the picture should now show: a product shot (library) where the copy presents/sells the product; an illustration of the situation (generate) where the copy tells a story, describes a problem, a result or a mechanism. Pick a library file only when it really shows that subject. If unsure whether a photo shows the old product, replace it.
+- Any picture that shows the OLD product — the item itself, a 2/3/6 pack, its box, hands using it, before/after of its results, its brand name — MUST be replaced. For pack/bundle photos: generate=true (recreate the SAME unit count as the original photo with our product). Do not paste one mockup onto every pack card. For story/problem/result photos: generate a scene. If unsure whether a photo shows the old product, replace it.
 - A photo with NO product in it (a doctor portrait, a landscape, a smiling person, a generic ingredient) may stay only when it still fits the new copy; otherwise replace it too.
 - VIDEO slots: you see the poster frame when there is one, otherwise only the copy. These clips show the old product in use: replace every one. Pick a library video if one fits, otherwise generate an illustration or pick the best matching still photo (it is shown as a slowly animated still).
 ${genRule}
@@ -110,7 +113,7 @@ One object per input id.`;
       type: 'text',
       text: `LIBRARY id=${m.id} (${m.kind})${thumb ? '' : ` file: ${m.file.slice(0, 100) || m.name.slice(0, 80) || '(no preview)'}`}${
         /step-mock|USER-UPLOADED PRODUCT MOCKUP/i.test(`${m.id} ${m.name}`)
-          ? ' ← THIS IS THE USER-UPLOADED PRODUCT MOCKUP. Use this id for every product/pack shot. Do not generate a different colored pack.'
+          ? ' ← USER-UPLOADED PRODUCT MOCKUP (what OUR product looks like). For pack/bundle shots do NOT paste this file — generate=true so we recreate the original 2/3/6 layout with this product inside.'
           : ''
       }`,
     });
@@ -169,9 +172,17 @@ One object per input id.`;
   let generates = 0;
   return results.flat().map((a) => {
     const slot = slotById.get(a.slotId);
-    const blob = `${a.prompt} ${slot?.context || ''}`;
-    if (mockupId && (a.generate || !a.mediaId) && packRe.test(blob) && !/\b(person|people|woman|man|couple|testimonial|portrait)\b/i.test(blob)) {
-      return { slotId: a.slotId, mediaId: mockupId, generate: false, prompt: '' };
+    const blob = `${a.prompt} ${slot?.context || ''} ${slot?.alt || ''}`;
+    const packShot = packRe.test(blob) && !/\b(person|people|woman|man|couple|testimonial|portrait)\b/i.test(blob);
+    // Always swipe pack photos from the original layout. Pasting the mockup
+    // onto a 2-pack, 6-pack and 3-pack made every card look the same.
+    if (canGenerate && mockupId && packShot && slot?.kind !== 'video') {
+      return {
+        slotId: a.slotId,
+        mediaId: null,
+        generate: true,
+        prompt: 'SWIPE PACKSHOT: keep the original photo layout and unit count (2 stays 2, 6 stays 6, 3 stays 3). Replace every competitor unit with our product from the uploaded mockup.',
+      };
     }
     if (!a.generate) return a;
     generates += 1;

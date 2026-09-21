@@ -18,6 +18,7 @@ import {
   type LandingMediaItem,
 } from '@/lib/landing-media';
 import { fillLandingLibrary, landingFillError } from '@/lib/landing-media-client';
+import { looksLikeProductPackSlot, packSwipePrompt, parsePackQty } from '@/lib/product-form';
 
 type PlaceAssignment = {
   slotId: number;
@@ -45,8 +46,20 @@ function httpImageUrls(...groups: Array<string | string[] | undefined>): string[
 }
 
 function looksLikeProductScene(text: string): boolean {
-  return /product|packshot|packaging|mockup|bottle|jar|box|pouch|sachet|stick|device|flacone|barattolo|confezione|prodotto|pack\b|sku|label|holding (the )?product/i
-    .test(String(text || ''));
+  return looksLikeProductPackSlot(text);
+}
+
+function absolutizeSlotSrc(src: string, pageUrl: string): string {
+  const t = String(src || '').trim();
+  if (!t) return '';
+  if (/^https?:\/\//i.test(t)) return t;
+  if (t.startsWith('//')) return `https:${t}`;
+  if (!pageUrl) return pinStoredUrl(t);
+  try {
+    return new URL(t, pageUrl).href;
+  } catch {
+    return pinStoredUrl(t);
+  }
 }
 
 function looksLikeLifestylePerson(text: string): boolean {
@@ -229,41 +242,69 @@ export async function runVisualRestyle(opts: {
   const paints: PaintedMedia[] = [];
   let replaced = 0;
   const mockup = firstMockup(pool);
+  const mockupUrl = mockup?.storedUrl ? pinStoredUrl(mockup.storedUrl) : '';
 
   for (const slot of slots) {
     const plan = assignments.find((a) => a.slotId === slot.id);
+    const nearby = `${slot.context || ''} ${slot.alt || ''} ${plan?.prompt || ''}`;
+    const productScene = looksLikeProductScene(nearby) && !looksLikeLifestylePerson(nearby);
+    const sourceUrl = absolutizeSlotSrc(slot.src, opts.pageUrl || '');
+    const swipePack = Boolean(productScene && mockupUrl && /^https?:\/\//i.test(sourceUrl) && slot.kind !== 'video');
     let url = '';
     let fileKind = 'image';
-    if (plan?.mediaId && byId.get(plan.mediaId)?.storedUrl) {
+
+    if (swipePack) {
+      const qty = parsePackQty(nearby);
+      opts.onProgress?.(
+        qty
+          ? `Recreating the original ${qty}-pack photo with ${opts.productName}…`
+          : `Recreating the original pack photo with ${opts.productName}…`,
+      );
+      try {
+        const made = await fetch('/api/restyle-visual/concept', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: opts.projectId,
+            productName: opts.productName,
+            nearbyText: slot.context || slot.alt || '',
+            prompt: packSwipePrompt({ productName: opts.productName, nearby, qty }),
+            productImageUrl: opts.productImageUrl || mockupUrl,
+            extraImageUrls: opts.extraImageUrls,
+            sourceImageUrl: sourceUrl,
+            pageType: opts.pageType,
+            pageName: opts.pageName,
+          }),
+        });
+        const data = (await made.json().catch(() => ({}))) as { url?: string };
+        if (data.url) url = pinStoredUrl(data.url);
+      } catch {
+        /* fall through to mockup */
+      }
+      if (!url) url = mockupUrl;
+      fileKind = mockup?.kind || 'image';
+    } else if (plan?.mediaId && byId.get(plan.mediaId)?.storedUrl) {
       const item = byId.get(plan.mediaId)!;
       url = pinStoredUrl(item.storedUrl);
       fileKind = item.kind;
     } else if (plan?.generate && plan.prompt) {
-      const nearby = `${slot.context || ''} ${slot.alt || ''} ${plan.prompt}`;
-      const productScene = looksLikeProductScene(nearby);
-      if (mockup?.storedUrl && productScene && !looksLikeLifestylePerson(nearby)) {
-        url = pinStoredUrl(mockup.storedUrl);
-        fileKind = mockup.kind;
-      } else {
-        try {
-          const made = await fetch('/api/restyle-visual/concept', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              projectId: opts.projectId,
-              productName: opts.productName,
-              nearbyText: slot.context || slot.alt || '',
-              prompt: `${plan.prompt} STRICT: no product or packaging in the frame.`,
-              pageType: opts.pageType,
-              pageName: opts.pageName,
-            }),
-          });
-          const data = (await made.json().catch(() => ({}))) as { url?: string };
-          if (data.url) url = pinStoredUrl(data.url);
-          else if (mockup?.storedUrl && productScene) url = pinStoredUrl(mockup.storedUrl);
-        } catch {
-          if (mockup?.storedUrl && productScene) url = pinStoredUrl(mockup.storedUrl);
-        }
+      try {
+        const made = await fetch('/api/restyle-visual/concept', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            projectId: opts.projectId,
+            productName: opts.productName,
+            nearbyText: slot.context || slot.alt || '',
+            prompt: `${plan.prompt} STRICT: no product or packaging in the frame.`,
+            pageType: opts.pageType,
+            pageName: opts.pageName,
+          }),
+        });
+        const data = (await made.json().catch(() => ({}))) as { url?: string };
+        if (data.url) url = pinStoredUrl(data.url);
+      } catch {
+        /* skip slot */
       }
     }
     const paint = paintFor(slot, url, fileKind);
