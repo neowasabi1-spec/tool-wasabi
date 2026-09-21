@@ -2,8 +2,9 @@
  * Auto-heal cloned landers after we strip competitor JS (bouncers / pixels).
  *
  * 1. Known messenger quiz (Landerlab-like) → dedicated engine.
- * 2. CTA quiz popup (#ssqOverlay / SlimSoda-style) → freeze questions into
- *    the DOM and replay with injectPopupQuizEngine.
+ * 2. CTA quiz popup (#ssqOverlay) or inline pitch quiz (.ssq-inline) → freeze
+ *    questions into the DOM and replay with injectPopupQuizEngine.
+ *    VTurb snippets pasted in <head> are moved into #vsl-anchor.
  * 3. Anything else with hidden steps / data-next* → generic stepper so a
  *    new landing works on the first clone without a human adapter.
  *
@@ -205,10 +206,29 @@ export function injectGenericStepEngine(html: string): string {
   return injectBeforeClose(html, style, script);
 }
 
+/** VTurb snippets are often pasted in <head>; move the player into #vsl-anchor. */
+export function placeVturbInAnchor(html: string): string {
+  if (!html) return html;
+  const m = html.match(/<vturb-smartplayer\b[\s\S]*?<\/vturb-smartplayer>/i);
+  if (!m) return html;
+  const player = m[0];
+  if (!/id=["']vsl-anchor["']/i.test(html)) return html;
+  const anchorIdx = html.search(/id=["']vsl-anchor["']/i);
+  const playerIdx = html.indexOf(player);
+  if (anchorIdx >= 0 && playerIdx > anchorIdx && playerIdx - anchorIdx < 2500) return html;
+  const stripped = html.replace(player, '');
+  if (!/id=["']vsl-anchor["']/i.test(stripped)) return html;
+  return stripped.replace(
+    /(<div\b[^>]*id=["']vsl-anchor["'][^>]*>)/i,
+    `$1${player}`,
+  );
+}
+
 export function healClonedLander(html: string): HealResult {
   if (!html) return { html, applied: [], remaining: [] };
-  let out = html;
+  let out = placeVturbInAnchor(html);
   const applied: string[] = [];
+  if (out !== html) applied.push('vturb-anchor');
 
   if (isPopupQuizHtml(out)) {
     out = injectPopupQuizEngine(out);

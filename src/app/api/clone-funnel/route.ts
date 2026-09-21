@@ -4,6 +4,7 @@ import { rescueViaJina, stabilizeClonedHtml, needsVslHydration, pageNeedsJsRende
 import { inlineExternalAssets } from '@/lib/inline-assets';
 import { fetchHtmlSmart, looksLikeSpaShell } from '@/lib/fetch-html-smart';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+import { parseLocalHtmlPath, loadLocalHtmlSnapshot } from '@/lib/clone-local-file';
 
 // Decide whether a cloned page's scripts must be preserved. The Funnel
 // Builder default strips scripts (static frame for the visual editor),
@@ -829,6 +830,58 @@ export async function POST(request: NextRequest) {
     // di User-Agent diversi, niente worker locale. Tutto in una sola
     // route Netlify-friendly.
     if (cloneMode === 'identical' && url) {
+      const localPath = parseLocalHtmlPath(String(url));
+      if (localPath) {
+        try {
+          const fs = await import('fs');
+          if (!fs.existsSync(localPath)) {
+            return NextResponse.json(
+              {
+                error:
+                  `Local file not found: ${localPath}. ` +
+                  'The hosted app cannot read your Downloads folder — upload the HTML with the paperclip, or clone while running the app locally.',
+              },
+              { status: 400 },
+            );
+          }
+          const raw = loadLocalHtmlSnapshot(localPath);
+          const keepDecision = shouldKeepScripts(raw, keepScriptsFlag);
+          const finalHtml = stabilizeClonedHtml(raw, '', {
+            keepScripts: keepDecision.keep,
+            skipAbsolutize: true,
+          });
+          console.log(`[clone-funnel] identical: local file ${localPath} ${finalHtml.length}ch`);
+          return NextResponse.json({
+            success: true,
+            content: finalHtml,
+            mobileContent: null,
+            format: 'html',
+            mode: 'identical',
+            originalSize: raw.length,
+            finalSize: finalHtml.length,
+            cssInlined: true,
+            jsRendered: false,
+            method: 'local-file',
+            scripts_kept: keepDecision.keep,
+            dynamic_content_detected: keepDecision.detected,
+            dynamic_signals: keepDecision.signals,
+            title: finalHtml.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || '',
+            warning:
+              'Cloned from a local HTML file. Images missing from that folder stay broken.',
+          });
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return NextResponse.json(
+            {
+              error:
+                `Cannot read local HTML (${msg}). ` +
+                'Upload the file with the paperclip if you are using the hosted app.',
+            },
+            { status: 400 },
+          );
+        }
+      }
+
       const cleanUrl = normalizeCloneUrl(String(url));
       if (!/^https?:\/\//i.test(cleanUrl)) {
         return NextResponse.json(

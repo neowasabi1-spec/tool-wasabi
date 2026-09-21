@@ -178,10 +178,28 @@ function injectGenericStepEngine(html) {
   return injectBeforeClose(html, style, script);
 }
 
+function placeVturbInAnchor(html) {
+  if (!html) return html;
+  const m = html.match(/<vturb-smartplayer\b[\s\S]*?<\/vturb-smartplayer>/i);
+  if (!m) return html;
+  const player = m[0];
+  if (!/id=["']vsl-anchor["']/i.test(html)) return html;
+  const anchorIdx = html.search(/id=["']vsl-anchor["']/i);
+  const playerIdx = html.indexOf(player);
+  if (anchorIdx >= 0 && playerIdx > anchorIdx && playerIdx - anchorIdx < 2500) return html;
+  const stripped = html.replace(player, '');
+  if (!/id=["']vsl-anchor["']/i.test(stripped)) return html;
+  return stripped.replace(
+    /(<div\b[^>]*id=["']vsl-anchor["'][^>]*>)/i,
+    `$1${player}`,
+  );
+}
+
 function healClonedLander(html) {
   if (!html) return { html, applied: [], remaining: [] };
-  let out = html;
+  let out = placeVturbInAnchor(html);
   const applied = [];
+  if (out !== html) applied.push('vturb-anchor');
 
   if (isPopupQuizHtml(out)) {
     out = injectPopupQuizEngine(out);

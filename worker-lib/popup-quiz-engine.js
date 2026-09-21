@@ -11,6 +11,8 @@ function isPopupQuizHtml(html) {
   if (/\bid\s*=\s*["']ssqOverlay["']/i.test(html)) return true;
   if (/\bclass\s*=\s*["'][^"']*\bssq-overlay\b/i.test(html)) return true;
   if (/\bssqOverlay\b/.test(html) && /ssq-card/.test(html)) return true;
+  if (/\bssq-inline\b/i.test(html) && /id=["']ssqBody["']/i.test(html)) return true;
+  if (/id=["']ssqBody["']/i.test(html) && /ssq-card/.test(html) && /var\s+QS\s*=/.test(html)) return true;
   return false;
 }
 
@@ -19,6 +21,8 @@ function popupQuizEditorRevealCss() {
     `<style data-editor-override id="${STYLE_ID}-editor">` +
     `.ssq-overlay{display:block!important;position:relative!important;inset:auto!important;background:rgba(12,10,35,.08)!important;padding:20px 12px 32px!important;z-index:1!important;overflow:visible!important;min-height:0!important}` +
     `.ssq-overlay .ssq-card{margin:0 auto;box-shadow:0 8px 28px rgba(0,0,0,.18)!important}` +
+    `.esconder{display:block!important}` +
+    `.ssq-inline{display:block!important}` +
     `.ssq-step,.ssq-step[hidden]{display:block!important;margin:0 0 22px;border:1px dashed #c5d0e0;padding:14px 12px;border-radius:12px}` +
     `.ssq-close{pointer-events:none}` +
     `</style>`
@@ -138,7 +142,8 @@ function field(obj, name) {
 }
 
 function parseQuestions(js) {
-  const idx = js.search(/var\s+QS\s*=\s*CFG\.questions\s*\|\|/);
+  let idx = js.search(/var\s+QS\s*=\s*CFG\.questions\s*\|\|/);
+  if (idx < 0) idx = js.search(/var\s+QS\s*=\s*\[/);
   if (idx < 0) return FALLBACK_QS;
   const start = js.indexOf('[', idx);
   const raw = extractBalanced(js, start, '[', ']');
@@ -181,6 +186,59 @@ function parseQuestions(js) {
     });
   }
   return qs.length ? qs : FALLBACK_QS;
+}
+
+function parseProductImg(js) {
+  const m = js.match(/var\s+PRODUCT_IMG\s*=\s*['"]([^'"]+)['"]/);
+  return m?.[1] || '';
+}
+
+function decodeJsEscapes(s) {
+  return String(s || '')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\n/g, '\n')
+    .replace(/\\'/g, "'")
+    .replace(/\\"/g, '"');
+}
+
+function parseBetween(js, startMarker, endMarker) {
+  const i = js.indexOf(startMarker);
+  if (i < 0) return '';
+  const from = i + startMarker.length;
+  const j = js.indexOf(endMarker, from);
+  if (j < 0) return '';
+  return decodeJsEscapes(js.slice(from, j));
+}
+
+function fillCfgFromInlineQuiz(js, cfg) {
+  if (!str(cfg.badge)) {
+    const b = parseBetween(js, 'class="ssq-badge">', '</span>');
+    if (b) cfg.badge = b;
+  }
+  if (!str(cfg.title)) {
+    const t = parseBetween(js, 'class="ssq-restitle">', '</h3>');
+    if (t) cfg.title = t;
+  }
+  if (!str(cfg.estBig)) {
+    const t = parseBetween(js, 'class="big">', '</p>');
+    if (t) cfg.estBig = t;
+  }
+  if (!str(cfg.estSub)) {
+    const after = js.indexOf('class="big">');
+    if (after >= 0) {
+      const rest = js.slice(after, after + 800);
+      const m = rest.match(/<\/p>\s*<p>([\s\S]*?)<\/p>/);
+      if (m) cfg.estSub = decodeJsEscapes(m[1]);
+    }
+  }
+  if (!str(cfg.cta)) {
+    const m = js.match(/class="ssq-cta[^"]*"[^>]*>([^<]+)</);
+    if (m) cfg.cta = decodeJsEscapes(m[1]);
+  }
+  if (!str(cfg.checkoutHref)) {
+    const m = js.match(/bottles6\s*:\s*["'](https?:[^"']+)["']/);
+    if (m) cfg.checkoutHref = m[1];
+  }
 }
 
 function str(v) {
@@ -237,7 +295,7 @@ function materializeSteps(cfg, questions) {
       (img ? `<div class="ssq-prod"><img src="${esc(img)}" alt="" loading="lazy"></div>` : '') +
       scarce +
       (unlock ? `<p class="ssq-unlock">${unlock}</p>` : '') +
-      `<a class="ssq-cta" id="ssqGo" href="#">${cta}</a>` +
+      `<a class="ssq-cta buylink" id="ssqGo" href="${esc(str(cfg.checkoutHref) || '#')}">${cta}</a>` +
       `</div></div>`,
   );
   return parts.join('');
@@ -247,15 +305,20 @@ const ENGINE_JS = `(function(){
 if(window.__wasabiPopupQuiz)return;
 window.__wasabiPopupQuiz=1;
 var ov=document.getElementById('ssqOverlay');
-if(!ov)return;
-var body=document.getElementById('ssqBody')||ov.querySelector('#ssqBody');
-var card=ov.querySelector('.ssq-card');
-var prog=ov.querySelector('#ssqProg i');
-var steps=Array.prototype.slice.call(ov.querySelectorAll('.ssq-step:not(.ssq-result)'));
-var result=ov.querySelector('.ssq-step.ssq-result');
+var root=ov||document.querySelector('.ssq-inline')||document.querySelector('.ssq-card')||document.getElementById('ssqBody');
+if(!root)return;
+var inline=!ov;
+var card=root.querySelector?root.querySelector('.ssq-card'):null;
+if(!card&&root.closest)card=root.closest('.ssq-card');
+if(!card&&root.classList&&root.classList.contains('ssq-card'))card=root;
+var prog=(root.querySelector&&root.querySelector('#ssqProg i'))||document.querySelector('#ssqProg i');
+var steps=Array.prototype.slice.call((card||root).querySelectorAll('.ssq-step:not(.ssq-result)'));
+var result=(card||root).querySelector('.ssq-step.ssq-result');
 if(!steps.length)return;
-var sel=ov.getAttribute('data-ssq-cta')||'a.cta-btn,a[href*="trk.donrephblog.com/click"],a[href*="/click"]';
+var sel=(ov&&ov.getAttribute('data-ssq-cta'))||'a.cta-btn,a[href*="trk.donrephblog.com/click"],a[href*="/click"]';
 var step=0,href='';
+var go0=document.getElementById('ssqGo');
+if(go0){href=go0.getAttribute('data-ssq-href')||go0.getAttribute('href')||'';if(href==='#')href='';}
 function setProg(p){if(prog)prog.style.width=p+'%';}
 function hideAll(){
   steps.forEach(function(el){el.hidden=true;el.style.display='none';});
@@ -282,20 +345,20 @@ function showResult(){
 }
 function openQuiz(h){
   href=h||href;
-  ov.classList.add('open');
-  document.body.style.overflow='hidden';
+  if(ov){ov.classList.add('open');document.body.style.overflow='hidden';}
   if(card)card.classList.remove('res');
   showStep(0);
 }
 function closeQuiz(){
+  if(!ov)return;
   ov.classList.remove('open');
   document.body.style.overflow='';
   hideAll();
 }
-ov.addEventListener('click',function(e){
+root.addEventListener('click',function(e){
   var t=e.target;if(!(t instanceof Element))return;
   if(t.id==='ssqClose'||t.classList.contains('ssq-close')){e.preventDefault();closeQuiz();return;}
-  if(t===ov){closeQuiz();return;}
+  if(ov&&t===ov){closeQuiz();return;}
   var back=t.closest('[data-ssq-back]');
   if(back){e.preventDefault();showStep(Math.max(0,step-1));return;}
   var cont=t.closest('[data-ssq-continue]');
@@ -316,29 +379,33 @@ ov.addEventListener('click',function(e){
     setTimeout(function(){showStep(step+1);},180);
   }
 },true);
-document.addEventListener('click',function(e){
-  try{
-    var t=e.target;if(!(t instanceof Element))return;
-    if(ov.contains(t))return;
-    var a=t.closest(sel);
-    if(!a)return;
-    if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1)return;
-    e.preventDefault();
-    e.stopPropagation();
-    openQuiz(a.getAttribute('href')||a.href||'');
-  }catch(_){}
-},true);
-document.addEventListener('keydown',function(e){
-  if(e.key==='Escape'&&ov.classList.contains('open'))closeQuiz();
-});
-var x=document.getElementById('ssqClose');
-if(x)x.onclick=function(e){e.preventDefault();closeQuiz();};
+if(inline){
+  showStep(0);
+}else{
+  document.addEventListener('click',function(e){
+    try{
+      var t=e.target;if(!(t instanceof Element))return;
+      if(ov.contains(t))return;
+      var a=t.closest(sel);
+      if(!a)return;
+      if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1)return;
+      e.preventDefault();
+      e.stopPropagation();
+      openQuiz(a.getAttribute('data-ssq-href')||a.getAttribute('data-original-href')||a.getAttribute('href')||a.href||'');
+    }catch(_){}
+  },true);
+  document.addEventListener('keydown',function(e){
+    if(e.key==='Escape'&&ov.classList.contains('open'))closeQuiz();
+  });
+  var x=document.getElementById('ssqClose');
+  if(x)x.onclick=function(e){e.preventDefault();closeQuiz();};
+}
 })();`;
 
 function stripOriginalQuizScript(html) {
   return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, (full) => {
     if (/wasabi-popup-quiz-engine/.test(full)) return full;
-    if (/ssqOverlay|#ssqBody|ssq-overlay/.test(full)) return '';
+    if (/ssqOverlay|#ssqBody|ssq-overlay|var\s+QS\s*=/.test(full)) return '';
     return full;
   });
 }
@@ -361,9 +428,11 @@ function injectPopupQuizEngine(html) {
   if (!/data-ssq-step=/.test(out)) {
     const scripts = Array.from(html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi))
       .map((m) => m[1] || '')
-      .filter((t) => /ssqOverlay/.test(t))
       .join('\n');
     const cfg = parseCfg(scripts);
+    fillCfgFromInlineQuiz(scripts, cfg);
+    const img = parseProductImg(scripts);
+    if (img && !str(cfg.productImg)) cfg.productImg = img;
     const questions = parseQuestions(scripts);
     const inner = materializeSteps(cfg, questions);
     if (/id=["']ssqBody["'][^>]*>\s*</i.test(out)) {
@@ -385,11 +454,30 @@ function injectPopupQuizEngine(html) {
     }
   }
 
+  const inline = /\bssq-inline\b/.test(out) && !/\bid=["']ssqOverlay["']/.test(out);
   const style =
     `<style id="${STYLE_ID}">` +
-    `.ssq-overlay{display:none}` +
-    `.ssq-overlay.open{display:block}` +
+    (inline
+      ? `.esconder{display:block!important;visibility:visible!important}.ssq-inline{display:block!important}`
+      : `.ssq-overlay{display:none}.ssq-overlay.open{display:block}`) +
     `.ssq-step[hidden]{display:none!important}` +
+    `.ssq-inline{padding:6px 12px 20px}` +
+    `.ssq-card{max-width:560px;margin:0 auto;background:#fff;border:1px solid #e4eaf3;border-radius:18px;padding:34px 26px 30px;font-family:Poppins,Arial,sans-serif;color:#1d254b}` +
+    `.ssq-progress{height:8px;background:#eef2f8;border-radius:99px;overflow:hidden;margin:0 0 22px}` +
+    `.ssq-progress i{display:block;height:100%;width:0;background:linear-gradient(90deg,#1d254b,#0a1c4e);border-radius:99px}` +
+    `.ssq-opts{display:flex;flex-direction:column;gap:10px}` +
+    `.ssq-opt{display:flex;align-items:center;gap:11px;width:100%;text-align:left;background:#f6f8fb;border:2px solid #d8e0ec;border-radius:12px;padding:14px 16px;font-size:15.5px;font-weight:600;cursor:pointer}` +
+    `.ssq-opt.sel{border-color:#0a1c4e;background:#eef2f8}` +
+    `.ssq-hint{font-size:13.5px;color:#657d96;margin:0 0 18px}` +
+    `.ssq-continue,.ssq-cta{display:flex;align-items:center;justify-content:center;width:100%;margin:18px auto 0;padding:19px 22px;border:0;border-radius:8px;font-weight:800;background:#479c1a;color:#fff!important;text-decoration:none;cursor:pointer}` +
+    `.ssq-back{display:block;margin:12px auto 0;background:none;border:0;color:#657d96;cursor:pointer}` +
+    `.ssq-q{font-size:23px;font-weight:800;color:#0a1c4e;margin:0 0 6px}` +
+    `.ssq-kicker{font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#e19626;margin:0 0 8px}` +
+    `.ssq-res{text-align:center}` +
+    `.ssq-badge{display:inline-block;background:#eef2f8;border-radius:99px;padding:6px 12px;font-size:12px;font-weight:700}` +
+    `.ssq-restitle{font-size:26px;color:#0a1c4e;margin:12px 0}` +
+    `.ssq-est{background:#f6f8fb;border-radius:12px;padding:14px;margin:12px 0;text-align:left}` +
+    `.ssq-est .big{font-size:22px;font-weight:800;color:#0a1c4e}` +
     `</style>`;
   const script = `<script id="${SCRIPT_ID}">${ENGINE_JS}</script>`;
   return injectBeforeClose(out, style, script);

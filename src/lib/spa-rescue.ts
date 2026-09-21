@@ -290,10 +290,13 @@ async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string |
 export function stabilizeClonedHtml(
   html: string,
   originUrl: string,
-  opts: { keepScripts?: boolean } = {},
+  opts: { keepScripts?: boolean; skipAbsolutize?: boolean } = {},
 ): string {
-  let out = absolutizeUrlsInHtml(html, originUrl);
-  out = injectBaseHref(out, originUrl);
+  let out = html;
+  if (!opts.skipAbsolutize && originUrl && /^https?:\/\//i.test(originUrl)) {
+    out = absolutizeUrlsInHtml(out, originUrl);
+    out = injectBaseHref(out, originUrl);
+  }
   // Bake poster/m3u8 into #vsl BEFORE script strip — the mount config lives
   // in inline JS and would otherwise vanish from snapshot preview.
   out = hydrateVslSnapshot(out);
@@ -534,7 +537,7 @@ export function stripNonCarouselScripts(html: string): string {
       if (KEEP_INLINE.test(body)) return full;
       // Original SlimSoda-style popup quiz is replayed by injectPopupQuizEngine.
       // Keep our engine; drop the competitor IIFE even on Shopify/commerce pages.
-      if (/ssqOverlay|#ssqBody|ssq-overlay/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) {
+      if (/ssqOverlay|#ssqBody|ssq-overlay|var\s+QS\s*=/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) {
         return '';
       }
       if (/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) return full;
@@ -980,7 +983,7 @@ function once(){
     var t=ev.target;if(!(t instanceof Element))return;
     if(t.closest&&(t.closest('.chat-button')||t.closest('[data-next-chat]')||t.closest('#chatbox-app')||t.closest('#chatbox-content')))return;
     if(t.closest&&t.closest('#mbAccept,#mbNo,#mbOpen,#member,#member-overlay,#member-primary,#pay-now-btn,.mb-cta,.mb-no,.pay-now,[data-package-option],[data-checkout],.member-popup'))return;
-    if(t.closest&&t.closest('#ssqOverlay,.ssq-overlay,.ssq-opt,.ssq-cta,.ssq-continue,.ssq-back,a.cta-btn,a[href*="/click"]'))return;
+    if(t.closest&&t.closest('#ssqOverlay,.ssq-overlay,.ssq-inline,.ssq-opt,.ssq-cta,.ssq-continue,.ssq-back,a.cta-btn,a[href*="/click"]'))return;
     // 0a) <details>: il browser fa gia' il toggle nativo. injectInteractivityRescue
     //     ha rimosso 'onclick="return false"' e 'open' dall'HTML, quindi il
     //     click su <summary> apre/chiude il details via meccanismo nativo

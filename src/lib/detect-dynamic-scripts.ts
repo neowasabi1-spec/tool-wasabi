@@ -75,7 +75,7 @@ const CHAT_QUIZ_MARKERS: Array<{ re: RegExp; label: string }> = [
 ];
 
 const POPUP_QUIZ_MARKERS: Array<{ re: RegExp; label: string }> = [
-  { re: /id=["']ssqOverlay["']|\bssq-overlay\b|\bssqOverlay\b/i, label: 'CTA popup quiz' },
+  { re: /id=["']ssqOverlay["']|\bssq-overlay\b|\bssqOverlay\b|\bssq-inline\b/i, label: 'CTA popup quiz' },
 ];
 
 /**
@@ -162,7 +162,7 @@ export function extractReinjectableScripts(html: string): string[] {
     const body = m[2] || '';
     if (!body.trim()) continue;
     if (/data-fallback|data-swipe-replacer|data-restyle-media|data-editor/i.test(attrs)) continue;
-    if (/ssqOverlay|#ssqBody|ssq-overlay/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(attrs + body)) continue;
+    if (/ssqOverlay|#ssqBody|ssq-overlay|var\s+QS\s*=/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(attrs + body)) continue;
     if (TRACKING_ONLY.test(body) && !DOM_MUTATION.test(body)) continue;
     out.push(m[0]);
   }

@@ -4296,8 +4296,10 @@ export default function FrontEndFunnel() {
         // asset relativo (css/img) diventerebbe https://uploaded.local/...
         // → 404 → pagina senza stili/immagini (sembra "vuota"). Il file
         // dell'utente e' gia' self-contained o ha URL assoluti suoi.
+        const isLocalFileClone = /^file:/i.test(url);
+        const skipSanitize = Boolean(uploadedHtml) || isLocalFileClone;
         const healedHtml = finalizeClonedHtml(
-          uploadedHtml
+          skipSanitize
             ? (data.content || '')
             : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts }),
         );
@@ -4305,10 +4307,10 @@ export default function FrontEndFunnel() {
           swipeStatus: 'in_progress',
           swipeResult: 'Understanding landing (map texts, images, videos)...',
         });
-        const understood = await understandClonedLander(healedHtml, isUploaded ? '' : url);
+        const understood = await understandClonedLander(healedHtml, isUploaded || isLocalFileClone ? '' : url);
         const clonedHtml = understood.html;
         const clonedMobileHtml = finalizeClonedHtml(
-          uploadedHtml
+          skipSanitize
             ? (data.mobileContent || '')
             : (data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : ''),
         );
@@ -4344,7 +4346,7 @@ export default function FrontEndFunnel() {
         // HTML caricato: niente URL reale da iframe-are → snapshot dell'HTML
         // salvato. Altrimenti la live mode punterebbe a uploaded.local (404)
         // e la preview resterebbe vuota.
-        const isUploadedClone = uploadedHtml.length > 0 || url.startsWith('https://uploaded.local/');
+        const isUploadedClone = uploadedHtml.length > 0 || url.startsWith('https://uploaded.local/') || isLocalFileClone;
         // Always default to 'snapshot' — the saved HTML always renders
         // inside our sandbox, while pointing the iframe at the live URL
         // gets blocked by X-Frame-Options / CSP on most modern sites.
