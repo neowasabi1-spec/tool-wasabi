@@ -962,6 +962,7 @@ function once(){
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
     if(t.closest&&(t.closest('.chat-button')||t.closest('[data-next-chat]')||t.closest('#chatbox-app')||t.closest('#chatbox-content')))return;
+    if(t.closest&&t.closest('#mbAccept,#mbNo,#mbOpen,#member,#member-overlay,#member-primary,#pay-now-btn,.mb-cta,.mb-no,.pay-now,[data-package-option],[data-checkout],.member-popup'))return;
     // 0a) <details>: il browser fa gia' il toggle nativo. injectInteractivityRescue
     //     ha rimosso 'onclick="return false"' e 'open' dall'HTML, quindi il
     //     click su <summary> apre/chiude il details via meccanismo nativo
@@ -1106,13 +1107,58 @@ function once(){
 }
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',once)}else{once()}
 })();</script>`;
+  // SlimSoda / CheckoutChamp: GET MY DISCOUNT (#mbAccept) e No thanks
+  // (#mbNo) vivono in checkout.js, ma quel file esce subito se manca
+  // #checkoutForm e in Preview puo' essere stato stripato. Riagganciamo
+  // i bottoni in vanilla, indipendenti dal form.
+  const offerRescue = `<script id="wasabi-checkout-offer-rescue">(function(){
+function wire(){
+  var open=document.getElementById('mbOpen');
+  var box=document.getElementById('member');
+  var decline=document.getElementById('mbNo')||document.querySelector('button.mb-no');
+  var accept=document.getElementById('mbAccept')||document.querySelector('button.mb-cta');
+  var selected=document.getElementById('dtc_yearly_offer');
+  if(!box||(!open&&!accept&&!decline))return;
+  if(document.documentElement.getAttribute('data-wasabi-offer')==='1')return;
+  document.documentElement.setAttribute('data-wasabi-offer','1');
+  if(open)open.addEventListener('click',function(ev){
+    ev.preventDefault();
+    box.hidden=false;
+    open.hidden=true;
+    try{box.scrollIntoView({behavior:'smooth',block:'nearest'});}catch(e){}
+  });
+  if(accept)accept.addEventListener('click',function(ev){
+    ev.preventDefault();
+    if(selected)selected.value='1';
+    box.hidden=true;
+    if(open){
+      open.hidden=false;
+      open.textContent='★ NEW-MEMBER OFFER SELECTED — Complete checkout';
+      try{open.setAttribute('aria-label','New-member offer selected. Complete checkout to continue.');}catch(e){}
+    }
+  });
+  if(decline)decline.addEventListener('click',function(ev){
+    ev.preventDefault();
+    if(selected)selected.value='0';
+    box.hidden=true;
+    if(open){
+      open.hidden=false;
+      open.textContent='★ NEW-MEMBER OFFER — Become a member';
+      try{open.removeAttribute('aria-label');}catch(e){}
+    }
+  });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',wire);
+else wire();
+})();</script>`;
   // Idempotenza: rimuovi eventuali iniezioni precedenti (lo snapshot
   // clonato puo' gia' contenerle da una pipeline precedente). Due copie
   // dello stesso handler in fase di capture si annullerebbero (doppio
   // toggle = nessun toggle).
   let out = html
     .replace(/<style id="wasabi-accordion-rescue-style">[\s\S]*?<\/style>/gi, '')
-    .replace(/<script id="wasabi-accordion-rescue">[\s\S]*?<\/script>/gi, '');
+    .replace(/<script id="wasabi-accordion-rescue">[\s\S]*?<\/script>/gi, '')
+    .replace(/<script id="wasabi-checkout-offer-rescue">[\s\S]*?<\/script>/gi, '');
   if (/<\/head>/i.test(out)) {
     out = out.replace(/<\/head>/i, `${styleTag}</head>`);
   } else if (/<head\b[^>]*>/i.test(out)) {
@@ -1121,9 +1167,9 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     out = `<head>${styleTag}</head>${out}`;
   }
   if (/<\/body>/i.test(out)) {
-    out = out.replace(/<\/body>/i, `${script}</body>`);
+    out = out.replace(/<\/body>/i, `${script}${offerRescue}</body>`);
   } else {
-    out += script;
+    out += script + offerRescue;
   }
   return healClonedLander(out).html;
 }

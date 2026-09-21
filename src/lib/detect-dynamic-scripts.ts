@@ -57,7 +57,7 @@ const COMMERCE_MARKERS: Array<{ re: RegExp; label: string }> = [
   { re: /funnelish|clickfunnels|systeme\.io|shopifycloud|cartflows|woocommerce/i, label: 'funnel/commerce platform' },
   { re: /checkoutchamp|konnektive|sticky\.io|limelightcrm/i, label: 'CheckoutChamp/Konnektive checkout' },
   { re: /\/checkout\.php\b|checkout\/new-design\/(?:checkout|dtc-offers|checkout-whop)\.js/i, label: 'hosted checkout.php runtime' },
-  { re: /data-package-option|name=["']bundle_choice["']|checkout-popup-overlay|member-popup/i, label: 'checkout bundle selector / offer popup' },
+  { re: /data-package-option|name=["']bundle_choice["']|checkout-popup-overlay|member-popup|id=["']mbAccept["']|id=["']mbNo["']|id=["']member["']/i, label: 'checkout bundle selector / offer popup' },
   { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan|selectBundle|chooseBundle)\s*\(/i, label: 'multi-step popup checkout / package selector' },
 ];
 
