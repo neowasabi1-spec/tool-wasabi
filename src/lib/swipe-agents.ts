@@ -579,10 +579,11 @@ ${input.customInstructions ? `- Custom Instructions: ${input.customInstructions}
 
 Create the optimal section-by-section blueprint that:
 1. INHERITS the visual design system from the source landing
-2. RESTRUCTURES sections for maximum conversion for THIS product
+2. KEEPS the source offer/pricing UI (same packages, same CTA verbs, same checkout-link pattern — Digistore buy-now stays buy-now)
 3. WRITES complete copy for every section (not placeholder text)
 4. Addresses the target's awareness level: ${productAnalysis.target_avatar.awareness_level}
-5. Handles the top objections identified in the product analysis`;
+5. Handles the top objections identified in the product analysis
+6. Does NOT invent a "GET MY {product}" bundle if the source did not have one`;
 
   const response = await callClaude(CRO_ARCHITECT_PROMPT, userMessage, {
     maxTokens: 12000,

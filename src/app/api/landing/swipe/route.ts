@@ -327,7 +327,12 @@ function buildProductContextMarkdown(product: ProductInfo): string {
   }
   if (product.brand_name) lines.push(`Brand: ${product.brand_name}`);
   if (product.price != null && String(product.price).trim()) lines.push(`Price: ${product.price}`);
-  if (product.cta_text) lines.push(`Preferred CTA label: ${product.cta_text}`);
+  if (product.cta_text) {
+    lines.push(
+      `Preferred PRIMARY hero CTA (optional): ${product.cta_text}\n` +
+        `Use this ONLY on the main hero / sticky intent button. Do NOT replace package-card buttons that already say buy now / order / add to cart / checkout.`,
+    );
+  }
   if (product.cta_url) lines.push(`CTA URL: ${product.cta_url}`);
   if (product.target_audience) lines.push(`Target audience: ${product.target_audience}`);
   if (product.social_proof) lines.push(`Social proof notes: ${product.social_proof}`);
@@ -649,9 +654,10 @@ ${planRules(plan)}
 CRITICAL RULES:
 1. Treat each input line as discrete visible copy — rewrite it completely for OUR product/offering whenever it is substantive marketing text. Nothing of the old product may survive: not its name, its body part, its condition, its technology, its unit ("device", "session"), its narrator's credentials.
 2. Keep the same conversational energy/medium (a headline stays a headline, a CTA stays a CTA, body copy stays body copy). LENGTH IS FREE: rewrite at whatever length actually sells the message — don't pad or truncate to match the original word count.
-3. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
-4. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
-5. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids. Labels that are product-neutral (dates, "Customer Reviews", "5 Star", author bylines you keep) may be returned unchanged.
+3. OFFER / PACKAGE BUTTONS: if the source button is a short checkout verb (buy now, order now, add to cart, checkout, shop), KEEP that verb. Do not expand it into "GET MY {product}". Do not add extra package columns. Keep 2x/3x/6x (or whatever the source shows) as pack labels.
+4. Plain text ONLY in rewritten strings — NO HTML, markdown, or JSON escapes beyond normal string characters.
+5. Legal/compliance texts: rewrite only where safe; preserve mandatory disclosures when uncertainty exists.
+6. Every batch MUST return one {"id","rewritten"} object per supplied id — never omit ids. Labels that are product-neutral (dates, "Customer Reviews", "5 Star", author bylines you keep) may be returned unchanged.
 `;
 
     // WasabiCRM checkout: the copy rewriter must not hardcode prices/product

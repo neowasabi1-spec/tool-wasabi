@@ -55,6 +55,7 @@ const COMMERCE_MARKERS = [
   { re: /cdn\.shopify\.com|myshopify\.com|Shopify\.(Checkout|theme|shop)|ShopifyAnalytics|\/checkouts\//i, label: 'Shopify checkout/platform' },
   { re: /funnelish|clickfunnels|systeme\.io|shopifycloud|cartflows|woocommerce/i, label: 'funnel/commerce platform' },
   { re: /checkoutchamp|konnektive|sticky\.io|limelightcrm/i, label: 'CheckoutChamp/Konnektive checkout' },
+  { re: /digistore24|checkout-ds24\.com|digistore24-scripts/i, label: 'Digistore24 checkout' },
   { re: /\/checkout\.php\b|checkout\/new-design\/(?:checkout|dtc-offers|checkout-whop)\.js/i, label: 'hosted checkout.php runtime' },
   { re: /data-package-option|name=["']bundle_choice["']|checkout-popup-overlay|member-popup|id=["']mbAccept["']|id=["']mbNo["']|id=["']member["']/i, label: 'checkout bundle selector / offer popup' },
   { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan|selectBundle|chooseBundle)\s*\(/i, label: 'multi-step popup checkout / package selector' },
@@ -134,7 +135,7 @@ function extractReinjectableScripts(html) {
     const attrs = m[1] || '';
     if (/\bsrc\s*=/.test(attrs)) {
       const src = (attrs.match(/\bsrc\s*=\s*["']([^"']+)/i) || [])[1] || '';
-      if (/checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design\/checkout\.js|\/checkout\.js(?:\?|$)/i.test(src)) {
+      if (/checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design\/checkout\.js|\/checkout\.js(?:\?|$)|digistore24|checkout-ds24/i.test(src)) {
         out.push(m[0]);
       }
       continue;

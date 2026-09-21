@@ -517,7 +517,7 @@ export function stripNonCarouselScripts(html: string): string {
   // viene strippato.
   const commerce = detectCommerceMarkers(html).length > 0;
   const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia|vidalytics)\b/i;
-  const KEEP_COMMERCE_SRC = /checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design|\/checkout\.js(?:\?|$)|dynamic-tax\.js/i;
+  const KEEP_COMMERCE_SRC = /checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design|\/checkout\.js(?:\?|$)|dynamic-tax\.js|digistore24|checkout-ds24/i;
   const DROP_SRC = /pixel|gtag|fbevents|googletagmanager|hotjar|clarity|analytics|facebook\.net|connect\.facebook/i;
   const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\(|fireCommentsForVideoTime|handleVideoTick|vidalytics_embed|getVidalyticsPlayer)/;
   const TRACKING_INLINE = /googletagmanager|gtag\s*\(|fbq\s*\(|fbevents|hotjar|clarity\.ms|dataLayer\.push/i;
