@@ -23,6 +23,9 @@ export interface DashboardSection {
    *  automatically. Stored in DB as a regular id so masters can also
    *  delegate it to other users in the future. */
   masterOnlyByDefault?: boolean;
+  /** If true, new collaborators do not get this section. Enable it per
+   *  user from Settings → Users. */
+  optIn?: boolean;
 }
 
 export const DASHBOARD_SECTIONS: DashboardSection[] = [
@@ -35,6 +38,7 @@ export const DASHBOARD_SECTIONS: DashboardSection[] = [
     id: 'quiz-swipe',
     label: 'Clone / Swipe Quiz',
     path: '/quiz-swipe',
+    optIn: true,
   },
   {
     id: 'templates',
@@ -92,7 +96,6 @@ export const ALL_SECTION_IDS = DASHBOARD_SECTIONS.map(s => s.id);
  *  billing-ish pages — the master will check what they want. */
 export const SAFE_DEFAULT_SECTIONS = [
   'front-end-funnel',
-  'quiz-swipe',
   'templates',
   'projects',
   'checkpoint',
