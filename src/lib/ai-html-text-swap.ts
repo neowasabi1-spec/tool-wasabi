@@ -12,6 +12,18 @@ const STYLE_OR_LAYOUT =
 const SWAP_RE =
   /^(?:please\s+)?(?:chang(?:e|es|ing|ei)?|cange|cambia(?:re)?|replace|sostituisci|rinomina(?:re)?|rename|swap|scambia)\s+["“”']?(.+?)["“”']?\s+(?:con|with|to|in|into|by|→|->|=>)\s+["“”']?(.+?)["“”']?[.!?]?$/i;
 
+/** "cambia tutte le parole SlimSoda con X" → needle is SlimSoda, not the filler. */
+function cleanSwapNeedle(from: string): string {
+  return String(from || '')
+    .trim()
+    .replace(/^(?:tutte?\s+(?:le\s+)?)?(?:parole|occorrenze|volte|istanze)(?:\s+di)?\s+/i, '')
+    .replace(/^tutte?\s+(?:le\s+)?/i, '')
+    .replace(/^all(?:\s+the)?\s+(?:words?|occurrences?|instances?)(?:\s+of)?\s+/i, '')
+    .replace(/^every(?:\s+(?:word|occurrence|instance))?(?:\s+of)?\s+/i, '')
+    .replace(/^(?:the\s+)?(?:word|brand|name|product)\s+/i, '')
+    .trim();
+}
+
 export function parseTextSwapInstruction(
   instruction: string,
 ): { from: string; to: string } | null {
@@ -19,7 +31,7 @@ export function parseTextSwapInstruction(
   if (!s || STYLE_OR_LAYOUT.test(s)) return null;
   const m = s.match(SWAP_RE);
   if (!m) return null;
-  const from = m[1].trim();
+  const from = cleanSwapNeedle(m[1]);
   const to = m[2].trim();
   if (from.length < 2 || !to || from.toLowerCase() === to.toLowerCase()) return null;
   if (STYLE_OR_LAYOUT.test(from)) return null;
