@@ -13,10 +13,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
   Upload, FileText, Image, Download, X, Pencil, Check, FolderOpen, Plus, Trash2,
-  LayoutTemplate, Save, Loader2, ExternalLink, DollarSign,
+  LayoutTemplate, Save, Loader2, ExternalLink, DollarSign, AlignLeft,
 } from "lucide-react";
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { useStore } from "@/store/useStore";
@@ -166,10 +167,11 @@ function FileRow({ file, onDelete }: { file: ProjectFile; onDelete: (id: number)
 }
 
 // ─── GENERAL BRIEF TAB CONTENT ───
-function GeneralBriefTabContent({ projectId, files, projectName }: {
+function GeneralBriefTabContent({ projectId, files, projectName, projectDescription }: {
   projectId: string;
   files: ProjectFile[];
   projectName: string;
+  projectDescription: string;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -177,6 +179,12 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(projectName);
   const [savingName, setSavingName] = useState(false);
+  const [descDraft, setDescDraft] = useState(projectDescription);
+  const [savingDesc, setSavingDesc] = useState(false);
+
+  useEffect(() => {
+    setDescDraft(projectDescription);
+  }, [projectDescription]);
 
   const byType = (t: string) => files.filter(f => f.file_type === t);
 
@@ -202,6 +210,35 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
       toast({ title: "Network error", variant: "destructive" });
     } finally { setSavingName(false); }
   };
+
+  const saveDescription = async () => {
+    const trimmed = descDraft.trim();
+    if (trimmed === (projectDescription || "").trim()) return;
+    setSavingDesc(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: trimmed }),
+      });
+      if (r.ok) {
+        queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
+        queryClient.invalidateQueries({ queryKey: getListProjectsQueryKey() });
+        useStore.setState((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId ? { ...p, description: trimmed } : p
+          ),
+        }));
+        toast({ title: "Product description saved" });
+      } else {
+        toast({ title: "Error saving", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Network error", variant: "destructive" });
+    } finally { setSavingDesc(false); }
+  };
+
+  const descDirty = descDraft.trim() !== (projectDescription || "").trim();
 
   const deleteFile = (id: number) => {
     queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
@@ -235,6 +272,37 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Product description — enough for Clone/Swipe when there is no brief / MR file */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <AlignLeft className="w-3.5 h-3.5 text-primary" /> Product description
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              What the product is, who it is for, and why it exists. Clone/Swipe uses this even without a brief or market-research document.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={saveDescription}
+            disabled={savingDesc || !descDirty}
+            className="bg-primary text-white gap-1.5 shrink-0"
+          >
+            <Check className="w-3.5 h-3.5" /> {savingDesc ? "Saving..." : "Save"}
+          </Button>
+        </div>
+        <Textarea
+          value={descDraft}
+          onChange={(e) => setDescDraft(e.target.value)}
+          onBlur={() => { if (descDirty && !savingDesc) void saveDescription(); }}
+          placeholder="e.g. Daily greens powder for women 35+. Mix with water in the morning. Main claims: energy, bloating, skin. Sold as a 30-day tub with 2x / 3x packs."
+          rows={5}
+          disabled={savingDesc}
+          className="text-sm resize-y min-h-[120px]"
+        />
       </div>
 
       {/* Market Research */}
@@ -500,10 +568,11 @@ function applyPickedTemplate(
   };
 }
 
-export function GeneralBriefSection({ projectId, files, projectName, onGoToFunnel }: {
+export function GeneralBriefSection({ projectId, files, projectName, projectDescription, onGoToFunnel }: {
   projectId: string;
   files: ProjectFile[];
   projectName: string;
+  projectDescription?: string;
   onGoToFunnel?: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -844,7 +913,12 @@ export function GeneralBriefSection({ projectId, files, projectName, onGoToFunne
 
       {/* ── TAB CONTENT ── */}
       {activeTab === "general" && (
-        <GeneralBriefTabContent projectId={projectId} files={files} projectName={projectName} />
+        <GeneralBriefTabContent
+          projectId={projectId}
+          files={files}
+          projectName={projectName}
+          projectDescription={projectDescription || ""}
+        />
       )}
       {pbSections.map((section, idx) =>
         activeTab === section.id ? (

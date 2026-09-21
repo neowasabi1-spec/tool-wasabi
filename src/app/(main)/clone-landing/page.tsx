@@ -212,15 +212,20 @@ export default function CloneLandingPage() {
       const r = await fetch(`/api/swipe/load-knowledge?projectId=${encodeURIComponent(id)}`);
       if (!r.ok) return;
       const j = await r.json();
-      const p = (j?.project || null) as { brief?: string | null; market_research?: unknown } | null;
+      const p = (j?.project || null) as {
+        brief?: string | null;
+        description?: string | null;
+        market_research?: unknown;
+      } | null;
       if (p) {
         const projBrief = (p.brief || '').toString().trim();
+        const projDesc = (p.description || '').toString().trim();
         const projMR = (() => {
           if (!p.market_research) return '';
           if (typeof p.market_research === 'string') return p.market_research.trim();
           try { return JSON.stringify(p.market_research, null, 2); } catch { return ''; }
         })();
-        setBriefText((curr) => curr.trim() ? curr : projBrief);
+        setBriefText((curr) => curr.trim() ? curr : (projBrief || projDesc));
         setMarketResearchText((curr) => curr.trim() ? curr : projMR);
       }
     } catch {/* ignore */}
@@ -438,9 +443,17 @@ export default function CloneLandingPage() {
       if (kRes.ok) {
         const kj = await kRes.json();
         prompts = Array.isArray(kj.prompts) ? kj.prompts : [];
-        const kproj = kj?.project as { name?: string; brief?: string | null; market_research?: unknown } | null;
+        const kproj = kj?.project as {
+          name?: string;
+          brief?: string | null;
+          description?: string | null;
+          market_research?: unknown;
+        } | null;
         projName = (kproj?.name as string | undefined) || availableProjects.find((p) => p.id === selectedProjectId)?.name;
-        projBriefFromDb = (kproj?.brief && String(kproj.brief).trim()) || '';
+        projBriefFromDb =
+          (kproj?.brief && String(kproj.brief).trim()) ||
+          (kproj?.description && String(kproj.description).trim()) ||
+          '';
         projMrFromDb = kproj?.market_research ?? null;
       }
     } catch {/* non fatale */}
@@ -480,6 +493,7 @@ export default function CloneLandingPage() {
       prompts,
       project: {
         name: projName || product.name?.trim() || 'Custom',
+        description: (product.description || '').trim() || null,
         brief: briefForJob,
         market_research: mrForJob,
         notes: null,
@@ -994,7 +1008,7 @@ export default function CloneLandingPage() {
                 {(() => {
                   const briefOk = briefText.trim().length >= 30;
                   const mrOk = marketResearchText.trim().length >= 30;
-                  const blocked = auditor !== 'claude' && (!briefOk || !mrOk);
+                  const blocked = auditor !== 'claude' && !briefOk;
                   return (
                     <div className={`mt-4 border-2 rounded-lg p-4 ${
                       blocked ? 'bg-red-50 border-red-300' : 'bg-white border-orange-200'
@@ -1009,13 +1023,13 @@ export default function CloneLandingPage() {
                         </div>
                         <div className="flex-1">
                           <label className="block text-sm font-semibold text-gray-800 mb-1">
-                            Brief & Market Research
+                            Product description / brief
                             {auditor !== 'claude' && (
                               <span className="ml-1 text-red-600 font-bold">* REQUIRED for Neo/Morfeo</span>
                             )}
                           </label>
                           <p className="text-xs text-gray-600 mb-3">
-                            Neo and Morfeo use these two texts to choose the big idea + levers, and apply the techniques of <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins, Collier</b> from their internal archives.
+                            A short product description is enough. Market research is optional. Neo and Morfeo use this text to choose the big idea + levers, and apply the techniques of <b>Stefan Georgi, Sultanic, Eugene Schwartz, Gary Halbert, John Caples, Gary Bencivenga, David Ogilvy, John Carlton, Dan Kennedy, Sugarman, Hopkins, Collier</b> from their internal archives.
                           </p>
 
                           {availableProjects.length > 0 && (
@@ -1041,7 +1055,7 @@ export default function CloneLandingPage() {
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <div>
                               <label className="block text-xs font-medium text-gray-700 mb-1">
-                                Project brief {auditor !== 'claude' && <span className="text-red-600">*</span>}
+                                Product description / brief {auditor !== 'claude' && <span className="text-red-600">*</span>}
                                 <span className={`ml-2 ${briefOk ? 'text-emerald-600' : 'text-red-600'}`}>
                                   {briefText.trim().length} chars {briefOk ? '✓' : '(min 30)'}
                                 </span>
@@ -1060,9 +1074,9 @@ export default function CloneLandingPage() {
                             </div>
                             <div>
                               <label className="block text-xs font-medium text-gray-700 mb-1">
-                                Market research {auditor !== 'claude' && <span className="text-red-600">*</span>}
-                                <span className={`ml-2 ${mrOk ? 'text-emerald-600' : 'text-red-600'}`}>
-                                  {marketResearchText.trim().length} chars {mrOk ? '✓' : '(min 30)'}
+                                Market research <span className="text-gray-400 font-normal">(optional)</span>
+                                <span className={`ml-2 ${mrOk ? 'text-emerald-600' : 'text-gray-400'}`}>
+                                  {marketResearchText.trim().length} chars {mrOk ? '✓' : ''}
                                 </span>
                               </label>
                               <textarea
@@ -1070,11 +1084,7 @@ export default function CloneLandingPage() {
                                 onChange={(e) => setMarketResearchText(e.target.value)}
                                 placeholder="Awareness level (Schwartz), market sophistication, big competitor, angles that work in the niche, target language patterns, pain points, primary/secondary desires, winning creative formats, competitor reviews."
                                 rows={6}
-                                className={`w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm font-mono ${
-                                  auditor !== 'claude' && !mrOk
-                                    ? 'border-red-400 focus:ring-red-500 focus:border-red-500'
-                                    : 'border-gray-300 focus:ring-orange-500 focus:border-orange-500'
-                                }`}
+                                className="w-full px-3 py-2 border rounded-lg focus:ring-2 text-sm font-mono border-gray-300 focus:ring-orange-500 focus:border-orange-500"
                               />
                             </div>
                           </div>
