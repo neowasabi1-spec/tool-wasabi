@@ -10,8 +10,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { getUserAccessContext } from '@/lib/auth/get-current-user';
+import { hasServiceRoleKey } from '@/lib/supabase-admin';
 import { dedupeStepsByUrl } from '@/lib/archive-placement';
 import { loadSlimArchivedFunnels } from '@/lib/slim-archived-funnels';
 
@@ -88,52 +87,18 @@ function slimSteps(rowId: string, steps: unknown): unknown {
   });
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(_req: NextRequest) {
   try {
-    const ctx = await getUserAccessContext(req);
-
     const slim = await loadSlimArchivedFunnels(null, 2000);
-    if (slim.error && !slim.rows.length) throw new Error(slim.error);
-
-    const metaById = new Map<string, {
-      id: string;
-      owner_user_id: string | null;
-      show_in_valchiria: boolean | null;
-      share_with_users: boolean | null;
-    }>();
-    const ids = slim.rows.map((r) => r.id).filter(Boolean);
-    for (let i = 0; i < ids.length; i += 120) {
-      const chunk = ids.slice(i, i + 120);
-      const metaRes = await supabaseAdmin
-        .from('archived_funnels')
-        .select('id, owner_user_id, show_in_valchiria, share_with_users')
-        .in('id', chunk);
-      for (const m of metaRes.data || []) {
-        metaById.set(m.id, m as {
-          id: string;
-          owner_user_id: string | null;
-          show_in_valchiria: boolean | null;
-          share_with_users: boolean | null;
-        });
-      }
-    }
-
-    let pickedIds = new Set<string>();
-    if (ctx.userId && !ctx.isMaster) {
-      const picksRes = await supabaseAdmin
-        .from('valchiria_user_picks')
-        .select('funnel_id')
-        .eq('user_id', ctx.userId);
-      if (!picksRes.error) {
-        pickedIds = new Set((picksRes.data || []).map((p: { funnel_id: string }) => p.funnel_id));
-      }
+    if (slim.error && !slim.rows.length) {
+      const hint = hasServiceRoleKey()
+        ? slim.error
+        : `${slim.error} (SUPABASE_SERVICE_ROLE_KEY missing — RLS is hiding templates)`;
+      throw new Error(hint);
     }
 
     const rows: ValchiriaFunnelRow[] = slim.rows.map((r) => {
-      const meta = metaById.get(r.id);
       const cleaned = uniqueSteps(r.steps);
-      const ownerId = meta?.owner_user_id ?? null;
-      const mine = !ownerId || ownerId === ctx.userId || ctx.isMaster || !ctx.userId;
       return {
         id: r.id,
         name: r.name,
@@ -141,11 +106,11 @@ export async function GET(req: NextRequest) {
         steps: slimSteps(r.id, cleaned.steps.length ? cleaned.steps : r.steps),
         section: r.section,
         created_at: r.created_at,
-        owner_user_id: ownerId,
-        show_in_valchiria: !!meta?.show_in_valchiria,
-        share_with_users: !!meta?.share_with_users,
+        owner_user_id: null,
+        show_in_valchiria: false,
+        share_with_users: false,
         isShared: false,
-        isInMyValchiria: mine ? !!meta?.show_in_valchiria : pickedIds.has(r.id),
+        isInMyValchiria: false,
       };
     });
     return NextResponse.json({ success: true, funnels: rows });

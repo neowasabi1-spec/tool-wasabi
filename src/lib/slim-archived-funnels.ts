@@ -961,62 +961,38 @@ async function loadListCards(cap: number): Promise<{ rows: SlimArchiveRow[]; unt
   }
 }
 
+async function selectArchiveLight(
+  cols: string,
+  cap: number,
+  ms: number,
+): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
+  const { data, error } = await supabaseAdmin
+    .from('archived_funnels')
+    .select(cols)
+    .is('project_id', null)
+    .order('created_at', { ascending: false })
+    .limit(cap)
+    .abortSignal(AbortSignal.timeout(ms));
+  if (error) return { rows: [], error: error.message };
+  const rows = (Array.isArray(data) ? data : [])
+    .map((raw) => listRowToSlim(raw as Record<string, unknown>))
+    .filter((r) => r.id);
+  return { rows, error: null };
+}
+
 async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
-  const deadline = Date.now() + TEMPLATE_BUDGET_MS;
-  void ensureSlimFn();
-  await ensureListCols();
-
+  // One admin SELECT. Do not wait on exec_sql / RPC create — that is what
+  // returned an empty Template list when the DB was slow.
   try {
-    let listed = await loadListCards(cap);
-    if (listed && listed.untyped > 0 && deadline - Date.now() > 5_500) {
-      await backfillListCols();
-      listed = (await loadListCards(cap)) || listed;
-    }
-    if (listed && listed.rows.length) {
-      const pages = listed.rows.filter((r) => isPageRow(r));
-      let funnels = listed.rows.filter((r) => !isPageRow(r));
-      if (funnels.some((r) => !r.steps.length) && Date.now() < deadline) {
-        try {
-          const viaFunnels = await loadTemplateFunnelsRpc(deadline, cap);
-          if (viaFunnels && viaFunnels.length) {
-            const have = new Set(viaFunnels.map((r) => r.id));
-            funnels = [...viaFunnels, ...funnels.filter((r) => !have.has(r.id))];
-          }
-        } catch (e) {
-          console.warn('[slim-archived-funnels] funnel rpc:', e);
-        }
-      }
-      pages.sort((a, b) => createdAtMs(b) - createdAtMs(a));
-      return { rows: [...pages, ...funnels], error: null };
-    }
-
-    const viaRpc = await loadTemplatePagesRpc(deadline, cap);
-    if (viaRpc && viaRpc.length) {
-      let funnels: SlimArchiveRow[] = [];
-      const have = new Set(viaRpc.map((r) => r.id));
-      try {
-        const viaFunnels = await loadTemplateFunnelsRpc(deadline, cap);
-        if (viaFunnels && viaFunnels.length) {
-          funnels = viaFunnels.filter((r) => !have.has(r.id));
-        } else {
-          const all = await loadMeta(null, cap);
-          funnels = all.filter((r) => !have.has(r.id) && !isPageRow(r));
-        }
-      } catch (e) {
-        console.warn('[slim-archived-funnels] funnel meta:', e);
-      }
-      return { rows: [...viaRpc, ...funnels], error: null };
-    }
-
-    const rows = await loadMeta(null, cap);
-    return { rows, error: null };
+    const listed = await selectArchiveLight(LIST_COLS, cap, 8_000);
+    if (listed.rows.length || !listed.error) return listed;
   } catch (e) {
-    try {
-      const rows = await loadMeta(null, cap);
-      return { rows, error: null };
-    } catch {
-      return { rows: [], error: e instanceof Error ? e.message : String(e) };
-    }
+    console.warn('[slim-archived-funnels] list cols select:', e instanceof Error ? e.message : e);
+  }
+  try {
+    return await selectArchiveLight(META_COLS, cap, 8_000);
+  } catch (e) {
+    return { rows: [], error: e instanceof Error ? e.message : String(e) };
   }
 }
 
