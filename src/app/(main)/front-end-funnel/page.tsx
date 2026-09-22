@@ -1874,12 +1874,14 @@ export default function FrontEndFunnel() {
 
   // Conferma salvataggio dal modal: instrada verso archivio o progetto.
   const handleConfirmSave = () => {
-    // Se l'utente ha spuntato righe specifiche → salva quel subset.
-    // Selezione vuota → salva tutte (back-compat). Convertiamo il Set
-    // in array per propagarlo a saveCurrentFunnelTo{Project,Archive}.
+    // Editor: only the open page (saveScopeIds). List: only checked rows.
     const subset = (saveScopeIds && saveScopeIds.length > 0)
       ? saveScopeIds
-      : (selectedStepIds.size > 0 ? Array.from(selectedStepIds) : undefined);
+      : Array.from(selectedStepIds);
+    if (subset.length === 0) {
+      toast.error('Check the pages you want to save.');
+      return;
+    }
     if (saveTarget === 'project') {
       if (!saveProjectId) return;
       // Il Flow name è obbligatorio per il save su progetto: senza, gli
@@ -5974,6 +5976,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     toast.error('No steps to save');
                     return;
                   }
+                  if (selectedStepIds.size === 0) {
+                    toast.error('Check the pages you want to save.');
+                    return;
+                  }
                   setSaveFunnelName('');
                   setSaveScopeIds(null);
                   setShowSaveModal(true);
@@ -5984,8 +5990,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     : 'bg-green-50 text-green-700 hover:bg-green-100'
                 }`}
                 title={selectedStepIds.size > 0
-                  ? `Save ONLY the ${selectedStepIds.size} selected step${selectedStepIds.size === 1 ? '' : 's'}`
-                  : 'Save all steps as funnel in archive'}
+                  ? `Save the ${selectedStepIds.size} checked step${selectedStepIds.size === 1 ? '' : 's'}`
+                  : 'Check the pages you want to save'}
               >
                 <Download className="w-5 h-5" />
                 {selectedStepIds.size > 0
@@ -9665,13 +9671,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">
-              {saveScopeIds && saveScopeIds.length === 1
-                ? 'Save this page. Choose where to put it.'
+              {saveScopeIds && saveScopeIds.length > 0
+                ? `Save ${saveScopeIds.length === 1 ? 'this page' : `${saveScopeIds.length} pages`}. Choose where to put ${saveScopeIds.length === 1 ? 'it' : 'them'}.`
                 : <>
-                    Save {saveScopeIds?.length || (selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0))} step
-                    {(saveScopeIds?.length || selectedStepIds.size) === 1 ? '' : 's'}
-                    {selectedStepIds.size > 0 && !saveScopeIds ? <span className="text-purple-700 font-medium"> (selected)</span> : null}
-                    . Choose where to save them.
+                    Save {selectedStepIds.size} checked step{selectedStepIds.size === 1 ? '' : 's'}.
+                    Choose where to save them.
                   </>}
             </p>
 
