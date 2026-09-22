@@ -449,6 +449,61 @@ const EDITOR_SCRIPT = `
     var t=el.tagName&&el.tagName.toLowerCase();
     return!t||t==='html'||t==='head'||t==='style'||t==='link'||t==='meta'||t==='script'||t==='noscript';
   }
+  function isEditorUi(el){
+    return !!(el&&el.getAttribute&&el.getAttribute('data-editor-ui')==='1');
+  }
+  function realKids(p){
+    var out=[];
+    if(!p)return out;
+    for(var i=0;i<p.children.length;i++){
+      var c=p.children[i];
+      if(isEditorUi(c)||sk(c))continue;
+      out.push(c);
+    }
+    return out;
+  }
+  /* Climb wrapper-only parents (Elementor widget > figure > img) so Move up
+     swaps the whole image block with the button, not a no-op on a lone <img>. */
+  function movableBlock(el){
+    var n=el,guard=0;
+    while(n&&n.parentElement&&n.parentElement!==document.body&&n.parentElement!==document.documentElement&&guard++<16){
+      var kids=realKids(n.parentElement);
+      if(kids.length===1&&kids[0]===n){n=n.parentElement;continue;}
+      break;
+    }
+    return n;
+  }
+  function nextReal(n,dir){
+    var s=dir<0?n.previousElementSibling:n.nextElementSibling;
+    while(s&&(isEditorUi(s)||sk(s)))s=dir<0?s.previousElementSibling:s.nextElementSibling;
+    return s;
+  }
+  function moveSel(dir){
+    if(!sel)return;
+    var n=movableBlock(sel);
+    if(!n||!n.parentElement)return;
+    var sib=nextReal(n,dir);
+    if(sib){
+      if(dir<0)n.parentElement.insertBefore(n,sib);
+      else n.parentElement.insertBefore(sib,n);
+    }else{
+      var p=n.parentElement;
+      if(!p||p===document.body||p===document.documentElement||!p.parentElement)return;
+      if(dir<0)p.parentElement.insertBefore(n,p);
+      else{
+        var after=p.nextElementSibling;
+        if(after)p.parentElement.insertBefore(n,after);
+        else p.parentElement.appendChild(n);
+      }
+    }
+    if(sel){
+      sel.style.outline=SS;sel.style.outlineOffset='2px';
+      try{sel.scrollIntoView({block:'nearest',inline:'nearest'});}catch(e){}
+      positionPlus();positionDel(sel);positionResize(sel);
+    }
+    sendHtml();
+    window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
+  }
 
   var plusBtn=document.createElement('div');
   plusBtn.setAttribute('data-editor-ui','1');
@@ -1091,6 +1146,10 @@ const EDITOR_SCRIPT = `
       var t=editEl&&editEl.tagName&&editEl.tagName.toLowerCase();
       if(t&&['h1','h2','h3','h4','h5','h6','span','a','button','li','label'].indexOf(t)>=0){e.preventDefault();finishEdit();}
     }
+    if(!editing&&sel&&(e.key==='ArrowUp'||e.key==='ArrowDown')){
+      e.preventDefault();
+      moveSel(e.key==='ArrowUp'?-1:1);
+    }
   });
 
   document.addEventListener('submit',function(e){e.preventDefault();},true);
@@ -1231,10 +1290,8 @@ const EDITOR_SCRIPT = `
         var cl=sel.cloneNode(true);sel.parentElement.insertBefore(cl,sel.nextSibling);
         co(sel);sel=cl;sel.style.outline=SS;sel.style.outlineOffset='2px';sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
-      case 'cmd-move-up':if(sel&&sel.previousElementSibling){
-        sel.parentElement.insertBefore(sel,sel.previousElementSibling);sendHtml();}break;
-      case 'cmd-move-down':if(sel&&sel.nextElementSibling){
-        sel.parentElement.insertBefore(sel.nextElementSibling,sel);sendHtml();}break;
+      case 'cmd-move-up':moveSel(-1);break;
+      case 'cmd-move-down':moveSel(1);break;
       case 'cmd-get-html':
         if(sel)co(sel);if(editEl){editEl.contentEditable='false';co(editEl);}
         var ch='<!DOCTYPE html>'+document.documentElement.outerHTML;

@@ -249,7 +249,14 @@ export async function runVisualRestyle(opts: {
     const nearby = `${slot.context || ''} ${slot.alt || ''} ${plan?.prompt || ''}`;
     const productScene = looksLikeProductScene(nearby) && !looksLikeLifestylePerson(nearby);
     const sourceUrl = absolutizeSlotSrc(slot.src, opts.pageUrl || '');
-    const swipePack = Boolean(productScene && mockupUrl && /^https?:\/\//i.test(sourceUrl) && slot.kind !== 'video');
+    const bannerStrip = slot.width >= 180 && slot.height > 0 && slot.height <= 90 && slot.width / slot.height >= 3.2;
+    const swipePack = Boolean(
+      productScene &&
+      mockupUrl &&
+      /^https?:\/\//i.test(sourceUrl) &&
+      slot.kind !== 'video' &&
+      !bannerStrip,
+    );
     let url = '';
     let fileKind = 'image';
 
