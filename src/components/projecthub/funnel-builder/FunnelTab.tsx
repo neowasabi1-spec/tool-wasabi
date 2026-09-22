@@ -1124,6 +1124,19 @@ export function FunnelTab({ projectId }: { projectId: string }) {
     setPreviewLoading(false);
   }, [loadStepHtml]);
 
+  const openStepEditor = useCallback(async (step: FunnelStep) => {
+    const html = (step.result_content || '').trim() || (await loadStepHtml(step)).trim();
+    if (!html) {
+      toast({
+        title: 'No page to edit',
+        description: 'This step was saved without the page HTML. Open it in the editor and save again.',
+        variant: 'destructive',
+      });
+      return;
+    }
+    setEditStep({ ...step, result_content: html });
+  }, [loadStepHtml, toast]);
+
   const closeStepPreview = useCallback(() => {
     setPreviewStep(null);
     setPreviewHtml('');
@@ -1567,10 +1580,9 @@ export function FunnelTab({ projectId }: { projectId: string }) {
                       <div className="flex items-center gap-1">
                         {/* EDITING — apre l'HTML dello step nel Visual Editor */}
                         <button
-                          onClick={() => setEditStep(step)}
-                          disabled={!step.result_content}
-                          title={step.result_content ? "Open in Visual Editor" : "No content to edit"}
-                          className="flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold transition-colors bg-amber-400 hover:bg-amber-500 text-black disabled:opacity-40 disabled:cursor-not-allowed"
+                          onClick={() => { void openStepEditor(step); }}
+                          title="Open in Visual Editor"
+                          className="flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-semibold transition-colors bg-amber-400 hover:bg-amber-500 text-black"
                         >
                           <Wand2 className="w-3 h-3" />
                           Editing

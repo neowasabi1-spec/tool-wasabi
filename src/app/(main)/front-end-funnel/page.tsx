@@ -1486,6 +1486,15 @@ export default function FrontEndFunnel() {
           }
         } catch { /* IDB non disponibile: resta vuoto */ }
       }
+      if (!resultHtml) {
+        const url = p.swipedData?.htmlUrl || p.clonedData?.htmlUrl;
+        if (url) {
+          try {
+            const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+            resultHtml = (await fetchHtmlFromStorage(url)) || '';
+          } catch { /* offline */ }
+        }
+      }
       return {
         step_number: i + 1,
         page_name: p.name || `Step ${i + 1}`,
@@ -1657,6 +1666,13 @@ export default function FrontEndFunnel() {
 
     setSaveProgress(pages.length === 1 ? 'Saving this page…' : `Saving ${pages.length} steps…`);
 
+    const missingHtml = steps.filter((s) => !s.result_content);
+    if (missingHtml.length) {
+      throw new Error(
+        `No page HTML for ${missingHtml.map((s) => s.page_name).join(', ')}. Open the page in the editor and save again.`,
+      );
+    }
+
     // 1) INSERT delle pagine NUOVE (append). Body leggero (result_content:null);
     //    l'HTML pesante arriva dopo via PATCH, una pagina per richiesta.
     if (toInsert.length) {
@@ -1673,7 +1689,7 @@ export default function FrontEndFunnel() {
       const created = await res.json();
       if (Array.isArray(created)) {
         for (const row of created as Array<{ id?: number; step_number?: number }>) {
-          const ins = toInsert.find((t) => t.assignedStep === row.step_number);
+          const ins = toInsert.find((t) => Number(t.assignedStep) === Number(row.step_number));
           if (!ins || !row.id) continue;
           stepIdByPageIdx.set(ins.pageIdx, row.id);
           const html = ins.step.result_content;
