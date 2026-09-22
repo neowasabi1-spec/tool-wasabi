@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type MouseEvent } from "react";
 import { useLiveReload } from "@/lib/live-refresh";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
@@ -162,6 +162,73 @@ function FileRow({ file, onDelete }: { file: ProjectFile; onDelete: (id: number)
         className="text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0">
         <Trash2 className="w-3.5 h-3.5" />
       </button>
+    </div>
+  );
+}
+
+function MockupTile({
+  file,
+  projectId,
+  onOpen,
+  onDeleted,
+}: {
+  file: ProjectFile;
+  projectId: string;
+  onOpen: () => void;
+  onDeleted: (id: number) => void;
+}) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const handleDelete = async (e: MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/files/${file.id}`, {
+        method: "DELETE",
+      });
+      if (r.ok || r.status === 204) {
+        onDeleted(file.id);
+        toast({ title: "Image deleted" });
+      } else {
+        toast({ title: "Could not delete image", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Delete error", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="group relative w-full aspect-square rounded-lg overflow-hidden border border-border bg-muted">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="block w-full h-full hover:border-primary/40"
+        >
+          <img
+            src={getUploadUrl(file.file_path)}
+            alt={file.original_name}
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          />
+        </button>
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={busy}
+          title="Delete image"
+          className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded-md bg-black/70 text-white hover:bg-red-600 disabled:opacity-50 shadow-sm"
+        >
+          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+        </button>
+      </div>
+      <p className="text-[11px] text-muted-foreground truncate text-center" title={file.original_name}>
+        {file.original_name}
+      </p>
     </div>
   );
 }
@@ -344,16 +411,13 @@ function GeneralBriefTabContent({ projectId, files, projectName, projectDescript
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
             {byType("ugc").map(f => (
-              <div key={f.id} className="space-y-1.5">
-                <button onClick={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
-                  className="group block w-full aspect-square rounded-lg overflow-hidden border border-border bg-muted hover:border-primary/40 transition-all">
-                  <img src={getUploadUrl(f.file_path)} alt={f.original_name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                </button>
-                <p className="text-[11px] text-muted-foreground truncate text-center" title={f.original_name}>
-                  {f.original_name}
-                </p>
-              </div>
+              <MockupTile
+                key={f.id}
+                file={f}
+                projectId={projectId}
+                onOpen={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
+                onDeleted={deleteFile}
+              />
             ))}
           </div>
         )}
@@ -389,11 +453,6 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemp
   const mockupFiles = files.filter(f => f.file_type === `img_${section.id}`);
 
   const deleteFile = () => {
-    queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
-  };
-
-  const deleteMockup = async (fileId: number) => {
-    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/files/${fileId}`, { method: "DELETE" });
     queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
   };
 
@@ -520,16 +579,13 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemp
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
             {mockupFiles.map(f => (
-              <div key={f.id} className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-muted">
-                <button className="w-full h-full" onClick={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}>
-                  <img src={getUploadUrl(f.file_path)} alt={f.original_name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                </button>
-                <button onClick={() => deleteMockup(f.id)}
-                  className="absolute top-1 right-1 p-1 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600">
-                  <Trash2 className="w-2.5 h-2.5" />
-                </button>
-              </div>
+              <MockupTile
+                key={f.id}
+                file={f}
+                projectId={projectId}
+                onOpen={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
+                onDeleted={deleteFile}
+              />
             ))}
           </div>
         )}
