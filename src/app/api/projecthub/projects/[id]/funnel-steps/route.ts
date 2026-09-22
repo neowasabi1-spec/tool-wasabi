@@ -80,9 +80,12 @@ export async function GET(
   const { deny } = await checkProjectAccess(req, params.id);
   if (deny) return deny;
 
+  // Save-funnel only needs identity columns. select('*') pulls every
+  // result_content blob and can stall the dialog on "Saving…" for minutes.
+  const slim = req.nextUrl.searchParams.get('slim') === '1';
   const { data, error } = await supabaseAdmin
     .from('funnel_steps')
-    .select('*')
+    .select(slim ? 'id, step_number, page_name, url, flow_name' : '*')
     .eq('project_id', params.id)
     .order('step_number', { ascending: true });
 

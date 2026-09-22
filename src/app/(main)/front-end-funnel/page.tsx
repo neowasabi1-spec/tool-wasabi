@@ -1406,6 +1406,7 @@ export default function FrontEndFunnel() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveFunnelName, setSaveFunnelName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState('');
   // Destinazione del salvataggio: archivio (Saved Funnel) oppure il tab
   // "Funnel" di un'offerta in My Projects.
   const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
@@ -1414,6 +1415,9 @@ export default function FrontEndFunnel() {
   // di tenere più flow separati nello stesso progetto (es. "Flow A",
   // "Flow B"): nel FunnelTab gli step vengono raggruppati per flow_name.
   const [saveFlowName, setSaveFlowName] = useState('');
+  // When Save is opened from the visual editor, only that page is saved.
+  // null = table Save (selected rows, or every step if none are checked).
+  const [saveScopeIds, setSaveScopeIds] = useState<string[] | null>(null);
 
   // ── Per-row selection (Save subset) ──────────────────────────────
   // Quando l'utente spunta una o più righe della tabella, il bottone
@@ -1521,9 +1525,20 @@ export default function FrontEndFunnel() {
       `${norm(fn || '')}|||${norm(pn)}|||${norm(u)}`;
 
     // Leggo gli step già presenti nel progetto per decidere update vs insert.
+    const fetchTimed = async (url: string, init: RequestInit = {}, ms = 25_000) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      try {
+        return await fetch(url, { ...init, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
     let existingSteps: Array<{ id: number; step_number: number; page_name: string; url: string; flow_name?: string | null }> = [];
     try {
-      const exRes = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`);
+      setSaveProgress('Checking existing steps…');
+      const exRes = await fetchTimed(`/api/projecthub/projects/${projectId}/funnel-steps?slim=1`, {}, 20_000);
       if (exRes.ok) {
         const rows = await exRes.json();
         if (Array.isArray(rows)) existingSteps = rows;
@@ -1640,15 +1655,17 @@ export default function FrontEndFunnel() {
       }
     };
 
+    setSaveProgress(pages.length === 1 ? 'Saving this page…' : `Saving ${pages.length} steps…`);
+
     // 1) INSERT delle pagine NUOVE (append). Body leggero (result_content:null);
     //    l'HTML pesante arriva dopo via PATCH, una pagina per richiesta.
     if (toInsert.length) {
       const lightInsert = toInsert.map((t) => ({ ...t.step, result_content: null }));
-      const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
+      const res = await fetchTimed(`/api/projecthub/projects/${projectId}/funnel-steps`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ steps: lightInsert, replace: false }),
-      });
+      }, 30_000);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         throw new Error(txt || `Error ${res.status}`);
@@ -1665,13 +1682,14 @@ export default function FrontEndFunnel() {
           let apiOk = false;
           let apiResponse: Response | null = null;
           try {
-            apiResponse = await fetch(
-              `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
+            apiResponse = await fetchTimed(
+              `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}?return=id`,
               {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ result_content: html }),
               },
+              40_000,
             );
             apiOk = apiResponse.ok;
           } catch (err) {
@@ -1716,13 +1734,14 @@ export default function FrontEndFunnel() {
       let apiOk = false;
       let apiResponse: Response | null = null;
       try {
-        apiResponse = await fetch(
-          `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}`,
+        apiResponse = await fetchTimed(
+          `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}?return=id`,
           {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(patch),
           },
+          40_000,
         );
         apiOk = apiResponse.ok;
       } catch (err) {
@@ -1858,7 +1877,9 @@ export default function FrontEndFunnel() {
     // Se l'utente ha spuntato righe specifiche → salva quel subset.
     // Selezione vuota → salva tutte (back-compat). Convertiamo il Set
     // in array per propagarlo a saveCurrentFunnelTo{Project,Archive}.
-    const subset = selectedStepIds.size > 0 ? Array.from(selectedStepIds) : undefined;
+    const subset = (saveScopeIds && saveScopeIds.length > 0)
+      ? saveScopeIds
+      : (selectedStepIds.size > 0 ? Array.from(selectedStepIds) : undefined);
     if (saveTarget === 'project') {
       if (!saveProjectId) return;
       // Il Flow name è obbligatorio per il save su progetto: senza, gli
@@ -1871,15 +1892,15 @@ export default function FrontEndFunnel() {
       }
       setIsSaving(true);
       saveCurrentFunnelToProject(saveProjectId, subset, flowLabel)
-        .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveFlowName(''); })
-        .catch((e) => { setIsSaving(false); toast.error('Error saving to project: ' + ((e as Error)?.message || '')); });
+        .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveProgress(''); setSaveFlowName(''); setSaveScopeIds(null); })
+        .catch((e) => { setIsSaving(false); setSaveProgress(''); toast.error('Error saving to project: ' + ((e as Error)?.message || '')); });
       return;
     }
     if (!saveFunnelName.trim()) return;
     setIsSaving(true);
     saveCurrentFunnelAsArchive(saveFunnelName.trim(), undefined, subset)
-      .then(() => { setShowSaveModal(false); setIsSaving(false); })
-      .catch(() => { setIsSaving(false); toast.error('Error saving'); });
+      .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveProgress(''); setSaveScopeIds(null); })
+      .catch(() => { setIsSaving(false); setSaveProgress(''); toast.error('Error saving'); });
   };
 
   /* ────────── Swipe All ──────────
@@ -5954,6 +5975,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     return;
                   }
                   setSaveFunnelName('');
+                  setSaveScopeIds(null);
                   setShowSaveModal(true);
                 }}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-base font-semibold transition-colors ${
@@ -9609,8 +9631,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           // Salva nel progetto direttamente dall'editor: persiste l'edit
           // corrente sulla pagina e apre il modal "Save Funnel" preselezionato
           // su Progetto/Funnel (stessa logica del pulsante in frontend).
-          onSaveToProject={(html, mobileHtml) => {
-            void persistEditorHtmlToPage(html, mobileHtml);
+          onSaveToProject={async (html, mobileHtml) => {
+            const pid = htmlPreviewModal.pageId;
+            await persistEditorHtmlToPage(html, mobileHtml);
+            setSaveScopeIds(pid ? [pid] : null);
             setSaveTarget('project');
             setShowSaveModal(true);
           }}
@@ -9641,9 +9665,14 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">
-              Save {selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0)} step
-              {selectedStepIds.size > 0 ? <span className="text-purple-700 font-medium"> (selected)</span> : null}
-              . Choose where to save them.
+              {saveScopeIds && saveScopeIds.length === 1
+                ? 'Save this page. Choose where to put it.'
+                : <>
+                    Save {saveScopeIds?.length || (selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0))} step
+                    {(saveScopeIds?.length || selectedStepIds.size) === 1 ? '' : 's'}
+                    {selectedStepIds.size > 0 && !saveScopeIds ? <span className="text-purple-700 font-medium"> (selected)</span> : null}
+                    . Choose where to save them.
+                  </>}
             </p>
 
             {/* Selettore destinazione */}
@@ -9734,7 +9763,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
             <div className="flex justify-end gap-3 mt-5">
               <button
-                onClick={() => setShowSaveModal(false)}
+                onClick={() => { setShowSaveModal(false); setSaveScopeIds(null); setSaveProgress(''); }}
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 transition-colors"
                 disabled={isSaving}
               >
@@ -9750,7 +9779,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 className="px-5 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                {isSaving ? 'Saving...' : 'Save'}
+                {isSaving ? (saveProgress || 'Saving...') : 'Save'}
               </button>
             </div>
           </div>
