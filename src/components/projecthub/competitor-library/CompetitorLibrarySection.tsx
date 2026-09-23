@@ -71,6 +71,8 @@ type CompetitorAd = {
   headline: string;
   hook: string;
   body_text: string;
+  /** Spoken words. Meta primary text stays in body_text. */
+  transcript?: string | null;
   landing_url?: string | null;
   is_active: string;
   created_at: string;
@@ -725,7 +727,9 @@ function CreativeDetailPanel({
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const [text, setText] = useState(ad.body_text || "");
+  const [transcript, setTranscript] = useState(ad.transcript || "");
   const [transcribing, setTranscribing] = useState(false);
+  const autoTried = useRef<number | null>(null);
   const [winner, setWinner] = useState(!!ad.is_winner);
   const [markingWinner, setMarkingWinner] = useState(false);
   // Phase 1 — "same script, new video": rewrite the winning transcript for the
@@ -907,7 +911,7 @@ function CreativeDetailPanel({
       toast({ title: "Paste a bit more copy (min ~20 chars)", variant: "destructive" });
       return;
     }
-    if (copyMode === "original" && text.trim().length < 20) {
+    if (copyMode === "original" && transcript.trim().length < 20) {
       toast({ title: "Extract the transcript first, or switch to My copy and paste one.", variant: "destructive" });
       return;
     }
@@ -920,7 +924,7 @@ function CreativeDetailPanel({
         body: JSON.stringify({
           mode: "localize", voice, language,
           copySource: copyMode,
-          script: copyMode === "custom" ? custom : text.trim(),
+          script: copyMode === "custom" ? custom : transcript.trim(),
         }),
       });
       const j = await r.json().catch(() => ({}));
@@ -1073,9 +1077,10 @@ function CreativeDetailPanel({
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/transcribe`, { method: "POST" });
       const j = await r.json().catch(() => ({}));
-      if (r.ok && j.body_text) {
-        setText(j.body_text);
-        onTranscribed?.(ad.id, j.body_text);
+      const spoken = String(j.transcript || "").trim();
+      if (r.ok && spoken) {
+        setTranscript(spoken);
+        onTranscribed?.(ad.id, spoken);
         toast({ title: "Transcript ready" });
       } else {
         toast({ title: j.error || "Transcription failed", variant: "destructive" });
@@ -1083,6 +1088,18 @@ function CreativeDetailPanel({
     } catch { toast({ title: "Transcription failed", variant: "destructive" }); }
     finally { setTranscribing(false); }
   };
+  useEffect(() => {
+    setText(ad.body_text || "");
+    setTranscript(ad.transcript || "");
+  }, [ad.id, ad.body_text, ad.transcript]);
+  useEffect(() => {
+    if (ad.media_type !== "video") return;
+    if ((ad.transcript || "").trim()) return;
+    if (autoTried.current === ad.id) return;
+    autoTried.current = ad.id;
+    void transcribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ad.id, ad.media_type, ad.transcript]);
   const libraryUrl = adLibraryUrlForCreative(ad, adsLibraryUrl || ad.ads_library_url);
   return (
     <>
@@ -1147,13 +1164,11 @@ function CreativeDetailPanel({
         </div>
         <div className="p-4 space-y-4 flex-1">
           <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Creative Content</p>
-          {ad.media_type !== "video" && (
-            <CopyField
-              label="Primary text"
-              value={text}
-              onCopy={(v) => void copyTranscript(v)}
-            />
-          )}
+          <CopyField
+            label="Primary text"
+            value={text}
+            onCopy={(v) => void copyTranscript(v)}
+          />
           <CopyField label="Title" value={ad.headline} onCopy={(v) => void copyTranscript(v)} />
           <CopyField label="Description" value={ad.hook} onCopy={(v) => void copyTranscript(v)} />
           <CopyField label="Destination" value={ad.landing_url} href onCopy={(v) => void copyTranscript(v)} />
@@ -1162,26 +1177,26 @@ function CreativeDetailPanel({
               <div className="flex items-center justify-between mb-1">
                 <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Transcript</p>
                 <div className="flex items-center gap-2">
-                  {text && (
-                    <button onClick={() => copyTranscript(text)}
+                  {transcript && (
+                    <button onClick={() => copyTranscript(transcript)}
                       className="flex items-center gap-1 text-[10px] font-semibold text-muted-foreground hover:text-primary transition-colors">
                       {copied ? <><Check className="w-3 h-3 text-green-600" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
                     </button>
                   )}
-                  <button onClick={transcribe} disabled={transcribing}
+                  <button onClick={() => void transcribe()} disabled={transcribing}
                     className="flex items-center gap-1 text-[10px] font-semibold text-primary hover:underline disabled:opacity-60">
                     {transcribing
                       ? <><RefreshCw className="w-3 h-3 animate-spin" /> Extracting…</>
-                      : <><FileText className="w-3 h-3" /> {text ? "Re-transcribe" : "Extract text"}</>}
+                      : <><FileText className="w-3 h-3" /> {transcript ? "Re-transcribe" : "Extract text"}</>}
                   </button>
                 </div>
               </div>
-              {text
-                ? <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{text}</p>
-                : <p className="text-[11px] text-muted-foreground">No transcript yet. Click “Extract text” to transcribe (works for long videos too).</p>}
+              {transcript
+                ? <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto pr-1">{transcript}</p>
+                : <p className="text-[11px] text-muted-foreground">{transcribing ? "Transcribing the video…" : "No transcript yet. Click “Extract text” to transcribe (works for long videos too)."}</p>}
             </div>
           ) : null}
-          {text && (
+          {(ad.media_type === "video" ? transcript : text) && (
             <div className="pt-2 border-t border-border space-y-2">
               <div className="flex items-center gap-1.5">
                 <Repeat className="w-3.5 h-3.5 text-primary" />
@@ -1460,7 +1475,7 @@ function CreativeDetailPanel({
                     type="button"
                     onClick={() => {
                       setCopyMode(v);
-                      if (v === "custom" && !localizeCopy.trim()) setLocalizeCopy(text || script || "");
+                      if (v === "custom" && !localizeCopy.trim()) setLocalizeCopy(transcript || script || "");
                     }}
                     className={`px-2.5 py-1 text-[10px] rounded-md font-medium transition-colors ${copyMode === v ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
                     {l}
@@ -1468,8 +1483,8 @@ function CreativeDetailPanel({
                 ))}
               </div>
               {copyMode === "original" ? (
-                text.trim().length >= 20
-                  ? <p className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-24 overflow-y-auto pr-1 bg-muted/40 rounded-lg p-2">{text}</p>
+                transcript.trim().length >= 20
+                  ? <p className="text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap max-h-24 overflow-y-auto pr-1 bg-muted/40 rounded-lg p-2">{transcript}</p>
                   : <p className="text-[11px] text-amber-700">No transcript yet. Click “Extract text” above, or switch to <b>My copy</b> and paste one.</p>
               ) : (
                 <textarea
@@ -2288,7 +2303,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           onClose={() => setDetailAd(null)}
           onSaveTemplate={(id) => { saveToTemplates([id]); }}
           onDelete={(id) => { delAd(id); setDetailAd(null); }}
-          onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
+          onTranscribed={(adId, t) => setAds(p => p.map(a => a.id === adId ? { ...a, transcript: t } : a))}
           onWinnerChange={(adId, w) => setAds(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />
@@ -2537,7 +2552,7 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
           onClose={() => setDetailAd(null)}
           onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { del(detailAd); setDetailAd(null); }}
-          onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
+          onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, transcript: t } : a))}
           onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />
@@ -4774,7 +4789,7 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           onClose={() => setDetailAd(null)}
           onSaveTemplate={() => { saveTpl(detailAd); }}
           onDelete={() => { delAd(detailAd); setDetailAd(null); }}
-          onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, body_text: t } : a))}
+          onTranscribed={(adId, t) => setCreatives(p => p.map(a => a.id === adId ? { ...a, transcript: t } : a))}
           onWinnerChange={(adId, w) => setCreatives(p => p.map(a => a.id === adId ? { ...a, is_winner: w } : a))}
           onOpenCreated={onOpenCreated}
         />

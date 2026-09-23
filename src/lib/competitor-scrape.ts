@@ -508,6 +508,7 @@ export async function ingestDataset(opts: {
         dl?.contentType || (mapped.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
 
       let bodyText = mapped.bodyText;
+      let spoken = '';
       if (
         mapped.mediaType === 'video' &&
         dl?.buffer &&
@@ -515,8 +516,7 @@ export async function ingestDataset(opts: {
         Date.now() - startedAt < TRANSCRIBE_BUDGET_MS
       ) {
         const remaining = TRANSCRIBE_BUDGET_MS - (Date.now() - startedAt);
-        const transcript = await transcribeVideo(dl.buffer, contentType, remaining).catch(() => '');
-        if (transcript) bodyText = `${bodyText ? bodyText + '\n\n' : ''}${transcript}`.slice(0, 4000);
+        spoken = await transcribeVideo(dl.buffer, contentType, remaining).catch(() => '');
       }
 
       const res = await insertCompetitorAd({
@@ -540,6 +540,7 @@ export async function ingestDataset(opts: {
           headline: mapped.headline,
           hook: mapped.hook,
           body_text: bodyText,
+          transcript: spoken,
           landing_url: mapped.landingUrl || '',
         },
       });

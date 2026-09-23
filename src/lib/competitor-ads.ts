@@ -82,10 +82,31 @@ export interface CreativeMeta {
   headline?: string;
   hook?: string;
   body_text?: string;
+  /** Spoken transcript. Kept off body_text so Meta primary text is not shown as the script. */
+  transcript?: string;
   landing_url?: string;
 }
 
-/** True if this brand already has a creative with the given external id. */
+let transcriptColumnReady: Promise<void> | null = null;
+
+/** Spoken words live in `transcript`, not in `body_text` (that's Meta primary text). */
+export function ensureTranscriptColumn(): Promise<void> {
+  if (!transcriptColumnReady) {
+    transcriptColumnReady = (async () => {
+      const statements = [
+        'ALTER TABLE public.competitor_ads ADD COLUMN IF NOT EXISTS transcript text;',
+        "NOTIFY pgrst, 'reload schema';",
+      ];
+      for (const sql of statements) {
+        const { error } = await supabaseAdmin.rpc('exec_sql', { sql });
+        if (error) console.warn('[competitor-ads] transcript column:', error.message);
+      }
+    })().catch((e) => {
+      console.warn('[competitor-ads] transcript column:', e instanceof Error ? e.message : e);
+    });
+  }
+  return transcriptColumnReady;
+}
 export async function adExistsByExternalId(
   brandId: number,
   externalId: string,
@@ -235,6 +256,12 @@ export async function insertCompetitorAd(opts: {
   if (opts.spend) { insertRow.spend = opts.spend; extraKeys.push('spend'); }
   if (opts.impressions) { insertRow.impressions = opts.impressions; extraKeys.push('impressions'); }
   if (opts.reach !== undefined && opts.reach !== null) { insertRow.reach = opts.reach; extraKeys.push('reach'); }
+  const spoken = (meta.transcript || '').trim();
+  if (spoken) {
+    await ensureTranscriptColumn();
+    insertRow.transcript = spoken.slice(0, 8000);
+    extraKeys.push('transcript');
+  }
   const landingUrl = (opts.landingUrl || meta.landing_url || '').trim();
   const hasLanding = Boolean(landingUrl);
   if (hasLanding) insertRow.landing_url = landingUrl.slice(0, 2000);
@@ -244,6 +271,15 @@ export async function insertCompetitorAd(opts: {
     .insert(insertRow)
     .select()
     .single();
+
+  if (error && insertRow.transcript && /transcript/i.test(error.message || '')) {
+    delete insertRow.transcript;
+    ({ data, error } = await supabaseAdmin
+      .from('competitor_ads')
+      .insert(insertRow)
+      .select()
+      .single());
+  }
 
   // Missing-column fallback (PostgREST error code 42703 / PGRST204).
   // Drop landing_url first (newest column), then the older winner-signal keys.

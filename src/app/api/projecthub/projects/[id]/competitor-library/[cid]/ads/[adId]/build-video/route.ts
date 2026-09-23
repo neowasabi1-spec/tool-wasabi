@@ -42,17 +42,27 @@ export async function POST(
   const copySource = body.copySource === 'custom' ? 'custom' : 'original';
   const mode = body.mode === 'build' ? 'build' : 'localize';
 
-  const { data: ad } = await supabaseAdmin
+  let adQuery = await supabaseAdmin
     .from('competitor_ads')
-    .select('id, rewritten_script, body_text, file_path, media_type, clean_full_path')
+    .select('id, rewritten_script, body_text, transcript, file_path, media_type, clean_full_path')
     .eq('id', adIdNum)
     .eq('brand_id', brandIdNum)
     .eq('project_id', id)
     .maybeSingle();
+  if (adQuery.error && /transcript/i.test(adQuery.error.message || '')) {
+    adQuery = await supabaseAdmin
+      .from('competitor_ads')
+      .select('id, rewritten_script, body_text, file_path, media_type, clean_full_path')
+      .eq('id', adIdNum)
+      .eq('brand_id', brandIdNum)
+      .eq('project_id', id)
+      .maybeSingle();
+  }
+  const ad = adQuery.data;
   if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
 
   const a = ad as {
-    rewritten_script?: string; body_text?: string;
+    rewritten_script?: string; body_text?: string; transcript?: string | null;
     file_path?: string; media_type?: string; clean_full_path?: string | null;
   };
 
@@ -65,7 +75,7 @@ export async function POST(
     }
     // Original copy = the transcript the user saw. Never fall back to
     // rewritten_script (that's "My script") and never invent a new ad.
-    const transcript = String(a.body_text || '').trim();
+    const transcript = String(a.transcript || '').trim();
     const usingCustomCopy = copySource === 'custom';
     const copy = usingCustomCopy ? customCopy : (customCopy || transcript);
     if (copy.length < 20) {
@@ -116,7 +126,7 @@ export async function POST(
 
   // mode 'build' — assemble from the shot pool.
   const script = (customCopy ||
-    String(a.rewritten_script || a.body_text || '')).trim();
+    String(a.rewritten_script || a.transcript || '')).trim();
   if (script.length < 30) {
     return NextResponse.json(
       { error: 'No script yet. Paste your own copy, or generate “my script” / transcribe first.' },

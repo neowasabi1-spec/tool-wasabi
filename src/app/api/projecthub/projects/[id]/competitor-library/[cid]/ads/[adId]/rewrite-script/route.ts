@@ -45,6 +45,7 @@ Keep it roughly the same length as the original. Write in the requested language
 interface AdRow {
   id: number;
   body_text: string;
+  transcript?: string | null;
   headline: string;
   hook: string;
   media_type: string;
@@ -71,18 +72,28 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
 
-  const { data: ad } = await supabaseAdmin
+  let adQuery = await supabaseAdmin
     .from('competitor_ads')
-    .select('id, body_text, headline, hook, media_type')
+    .select('id, body_text, transcript, headline, hook, media_type')
     .eq('id', adIdNum)
     .eq('brand_id', Number(cid))
     .eq('project_id', id)
     .maybeSingle();
+  if (adQuery.error && /transcript/i.test(adQuery.error.message || '')) {
+    adQuery = await supabaseAdmin
+      .from('competitor_ads')
+      .select('id, body_text, headline, hook, media_type')
+      .eq('id', adIdNum)
+      .eq('brand_id', Number(cid))
+      .eq('project_id', id)
+      .maybeSingle();
+  }
 
-  if (!ad) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
+  if (!adQuery.data) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
 
-  const a = ad as AdRow;
-  const transcript = (a.body_text || '').trim();
+  const a = adQuery.data as AdRow;
+  const spoken = String(a.transcript || '').trim();
+  const transcript = spoken || (a.media_type === 'video' ? '' : String(a.body_text || '').trim());
   if (transcript.length < 20) {
     return NextResponse.json(
       { error: 'No script to rewrite yet. Use “Extract text” to transcribe the video first.' },

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { ensureTranscriptColumn } from '@/lib/competitor-ads';
 import { transcribeVideoAnySize } from '@/lib/transcribe';
 
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,8 @@ const BUCKET = 'project-files';
 /**
  * POST /api/projecthub/projects/:id/competitor-library/:cid/ads/:adId/transcribe
  * On-demand transcription for a saved video creative (handles long videos via
- * the Gemini File API). Stores the transcript in body_text and returns it.
+ * the Gemini File API). Stores speech in `transcript` and leaves Meta primary
+ * text in `body_text`.
  */
 export async function POST(
   req: NextRequest,
@@ -68,8 +70,22 @@ export async function POST(
     return NextResponse.json({ error: 'Transcription produced no text' }, { status: 502 });
   }
 
-  const body_text = transcript.slice(0, 4000);
-  await supabaseAdmin.from('competitor_ads').update({ body_text }).eq('id', ad.id);
+  const spoken = transcript.slice(0, 8000);
+  await ensureTranscriptColumn();
+  let { error } = await supabaseAdmin
+    .from('competitor_ads')
+    .update({ transcript: spoken })
+    .eq('id', ad.id);
+  if (error && /transcript|schema cache|42703|PGRST204/i.test(error.message || '')) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    ({ error } = await supabaseAdmin
+      .from('competitor_ads')
+      .update({ transcript: spoken })
+      .eq('id', ad.id));
+  }
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
-  return NextResponse.json({ ok: true, body_text });
+  return NextResponse.json({ ok: true, transcript: spoken, body_text: ad.body_text || '' });
 }
