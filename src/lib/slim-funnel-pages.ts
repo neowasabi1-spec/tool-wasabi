@@ -8,6 +8,7 @@
 import { supabaseAdmin } from './supabase-admin';
 
 const LIST_COLS = [
+  'id, name, page_type, template_id, product_id, project_id, url_to_swipe, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, owner_user_id, sort_order, created_at, updated_at',
   'id, name, page_type, template_id, product_id, project_id, url_to_swipe, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, owner_user_id, created_at, updated_at',
   'id, name, page_type, template_id, product_id, project_id, url_to_swipe, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, created_at, updated_at',
   'id, name, page_type, template_id, product_id, url_to_swipe, prompt, swipe_status, swipe_result, created_at, updated_at',

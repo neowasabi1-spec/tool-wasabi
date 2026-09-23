@@ -456,11 +456,12 @@ function sanitizeFunnelPagePayload<T extends Partial<FunnelPageInsert | FunnelPa
 // them is missing we drop it and retry, so the rest of the row still saves.
 //   angle         → supabase-migration-funnel-pages-angle.sql
 //   checkout_mode → supabase-migration-funnel-pages-checkout-mode.sql
-const OPTIONAL_FUNNEL_PAGE_COLUMNS = ['angle', 'checkout_mode'] as const;
+const OPTIONAL_FUNNEL_PAGE_COLUMNS = ['angle', 'checkout_mode', 'sort_order'] as const;
 
 const OPTIONAL_COLUMN_MIGRATION: Record<string, string> = {
   angle: 'supabase-migration-funnel-pages-angle.sql',
   checkout_mode: 'supabase-migration-funnel-pages-checkout-mode.sql',
+  sort_order: 'supabase-migration-funnel-pages-sort-order.sql',
 };
 
 /** The optional column this error is complaining about, if any. */

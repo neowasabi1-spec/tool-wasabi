@@ -144,6 +144,8 @@ export interface Database {
           analysis_status: SwipeStatus | null;
           analysis_result: string | null;
           extracted_data: Json | null;
+          /** Nullable; added by supabase-migration-funnel-pages-sort-order.sql. */
+          sort_order: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -166,6 +168,7 @@ export interface Database {
           analysis_status?: SwipeStatus | null;
           analysis_result?: string | null;
           extracted_data?: Json | null;
+          sort_order?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -188,6 +191,7 @@ export interface Database {
           analysis_status?: SwipeStatus | null;
           analysis_result?: string | null;
           extracted_data?: Json | null;
+          sort_order?: number | null;
           updated_at?: string;
         };
       };

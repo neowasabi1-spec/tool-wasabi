@@ -1258,11 +1258,38 @@ export default function FrontEndFunnel() {
     addFunnelPage,
     updateFunnelPage,
     deleteFunnelPage,
+    reorderFunnelPages,
     customPageTypes,
     addCustomPageType,
     saveCurrentFunnelAsArchive,
     loadArchivedFunnels,
   } = useStore();
+  const [dragStepId, setDragStepId] = useState<string | null>(null);
+  const [dropStepIndex, setDropStepIndex] = useState<number | null>(null);
+
+  const moveStep = (pageId: string, direction: -1 | 1) => {
+    const ids = (funnelPages || []).map((p) => p.id);
+    const from = ids.indexOf(pageId);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    const next = ids.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    reorderFunnelPages(next);
+  };
+
+  const dropStepAt = (draggedId: string | null, targetIndex: number) => {
+    setDragStepId(null);
+    setDropStepIndex(null);
+    if (!draggedId) return;
+    const ids = (funnelPages || []).map((p) => p.id);
+    const from = ids.indexOf(draggedId);
+    if (from < 0 || from === targetIndex) return;
+    const next = ids.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(targetIndex, 0, moved);
+    reorderFunnelPages(next);
+  };
 
   const allPageTypeOptions: PageTypeOption[] = [
     ...BUILT_IN_PAGE_TYPE_OPTIONS,
@@ -6601,7 +6628,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       }}
                     />
                   </th>
-                  <th className="w-10 px-2" title="Step order (1 = first page of funnel)">Step</th>
+                  <th className="w-[4.5rem] px-1" title="Drag a step, or use the arrows, to move it above or below another. 1 = first page.">Step</th>
                   <th className="min-w-[120px]">Page</th>
                   <th className="min-w-[100px]">Type</th>
                   <th className="min-w-[120px]">Template</th>
@@ -6625,7 +6652,25 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   (funnelPages || []).map((page, index) => {
                     const isSelected = selectedStepIds.has(page.id);
                     return (
-                    <tr key={page.id} className={isSelected ? 'bg-purple-50/50' : undefined}>
+                    <tr
+                      key={page.id}
+                      onDragOver={(e) => {
+                        if (!dragStepId) return;
+                        e.preventDefault();
+                        if (dropStepIndex !== index) setDropStepIndex(index);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const draggedId = e.dataTransfer.getData('text/plain') || dragStepId;
+                        dropStepAt(draggedId, index);
+                      }}
+                      className={[
+                        isSelected ? 'bg-purple-50/50' : '',
+                        dropStepIndex === index && dragStepId && dragStepId !== page.id
+                          ? 'outline outline-2 outline-indigo-400'
+                          : '',
+                      ].filter(Boolean).join(' ') || undefined}
+                    >
                       {/* Per-row select checkbox — drives the Save subset.
                          Sfondo righe selezionate viola tenue per dare
                          feedback visivo della selezione attiva. */}
@@ -6638,9 +6683,47 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           onChange={() => toggleStepSelected(page.id)}
                         />
                       </td>
-                      {/* Step number (sequential: 1 = first, 2 = second, etc.) */}
-                      <td className="text-center text-gray-500 bg-gray-50 font-medium">
-                        {index + 1}
+                      <td className="text-center text-gray-500 bg-gray-50 font-medium px-1">
+                        <div className="inline-flex items-center gap-0.5">
+                          <span className="flex flex-col">
+                            <button
+                              type="button"
+                              aria-label={`Move step ${index + 1} up`}
+                              title="Move up"
+                              disabled={index === 0}
+                              onClick={() => moveStep(page.id, -1)}
+                              className="text-gray-400 hover:text-indigo-600 disabled:opacity-25 disabled:hover:text-gray-400 leading-none"
+                            >
+                              <ChevronUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Move step ${index + 1} down`}
+                              title="Move down"
+                              disabled={index === (funnelPages || []).length - 1}
+                              onClick={() => moveStep(page.id, 1)}
+                              className="text-gray-400 hover:text-indigo-600 disabled:opacity-25 disabled:hover:text-gray-400 leading-none"
+                            >
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            </button>
+                          </span>
+                          <span
+                            draggable
+                            title="Drag to move this step"
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', page.id);
+                              setDragStepId(page.id);
+                            }}
+                            onDragEnd={() => {
+                              setDragStepId(null);
+                              setDropStepIndex(null);
+                            }}
+                            className="cursor-grab active:cursor-grabbing select-none px-0.5 min-w-[1rem]"
+                          >
+                            {index + 1}
+                          </span>
+                        </div>
                       </td>
 
                       {/* Page Name */}

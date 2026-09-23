@@ -73,6 +73,40 @@ function writeLocalCheckoutMode(pageId: string, mode: CheckoutMode): void {
   }
 }
 
+const FUNNEL_STEP_ORDER_LS_KEY = 'wasabi_funnel_step_order';
+
+function readLocalStepOrder(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(FUNNEL_STEP_ORDER_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalStepOrder(ids: string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(FUNNEL_STEP_ORDER_LS_KEY, JSON.stringify(ids));
+  } catch {
+    /* quota / private mode — the sort_order column still has it */
+  }
+}
+
+function persistFunnelStepOrder(ids: string[]): void {
+  writeLocalStepOrder(ids);
+  void authFetch('/api/funnel-pages/reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  }).catch((e) => {
+    console.warn('[funnel] step order persist failed:', e instanceof Error ? e.message : e);
+  });
+}
+
 /** Mirror to the server sidecar. Fire-and-forget: never blocks or throws. */
 function mirrorCheckoutModeToServer(
   pageId: string,
@@ -273,6 +307,8 @@ interface AppFunnelPage {
   /** Master-only: who created this Clone/Swipe step. */
   ownerUserId?: string | null;
   ownerEmail?: string | null;
+  /** Position in the Front End Funnel table. Lower comes first. */
+  sortOrder?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -589,9 +625,36 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
       typeof (p as { owner_email?: unknown }).owner_email === 'string'
         ? (p as { owner_email: string }).owner_email
         : null,
+    sortOrder: (() => {
+      const raw = (p as { sort_order?: unknown }).sort_order;
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw !== '' ? Number(raw) : NaN;
+      return Number.isFinite(n) ? n : undefined;
+    })(),
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };
+}
+
+/** DB sort_order when any row has one; otherwise the last order set in this browser. */
+function orderFunnelPages(pages: AppFunnelPage[]): AppFunnelPage[] {
+  const hasSort = pages.some((p) => typeof p.sortOrder === 'number');
+  if (hasSort) {
+    return [...pages].sort((a, b) => {
+      const ao = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+      const bo = typeof b.sortOrder === 'number' ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
+  }
+  const stored = readLocalStepOrder();
+  if (!stored.length) return pages;
+  const rank = new Map(stored.map((id, i) => [id, i]));
+  return [...pages].sort((a, b) => {
+    const ar = rank.has(a.id) ? rank.get(a.id)! : Number.MAX_SAFE_INTEGER;
+    const br = rank.has(b.id) ? rank.get(b.id)! : Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
 }
 
 function dbPostPurchaseToApp(p: PostPurchasePage): AppPostPurchasePage {
@@ -650,6 +713,8 @@ interface Store {
   addFunnelPage: (page: Omit<AppFunnelPage, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
   updateFunnelPage: (id: string, page: Partial<AppFunnelPage>) => Promise<void>;
   deleteFunnelPage: (id: string) => Promise<void>;
+  /** Put these page ids in this order (1 = first step). Unknown ids stay at the end. */
+  reorderFunnelPages: (ids: string[]) => void;
   launchSwipe: (id: string) => Promise<void>;
 
   // Post Purchase Pages
@@ -753,7 +818,7 @@ export const useStore = create<Store>()((set, get) => ({
       let appFunnelPages: AppFunnelPage[] = [];
       try {
         const funnelPages = await supabaseOps.fetchFunnelPages();
-        appFunnelPages = funnelPages.map(dbFunnelPageToApp);
+        appFunnelPages = orderFunnelPages(funnelPages.map(dbFunnelPageToApp));
         const localModes = readLocalCheckoutModes();
         const localTemplates = readLocalTemplateIds();
         for (const p of appFunnelPages) {
@@ -1106,6 +1171,7 @@ export const useStore = create<Store>()((set, get) => ({
       set((state) => ({
         funnelPages: [...state.funnelPages, createdApp],
       }));
+      writeLocalStepOrder(get().funnelPages.map((p) => p.id));
     } catch (error) {
       console.error('Error adding funnel page:', error);
       throw error;
@@ -1255,6 +1321,7 @@ export const useStore = create<Store>()((set, get) => ({
             // omitted/retried and fromDb.templateId comes back null. Keep
             // the picker value the user just chose.
             templateId: fromDb.templateId || p.templateId,
+            sortOrder: fromDb.sortOrder ?? p.sortOrder,
           };
         }),
       }));
@@ -1288,10 +1355,30 @@ export const useStore = create<Store>()((set, get) => ({
       set((state) => ({
         funnelPages: state.funnelPages.filter((p) => p.id !== id),
       }));
+      writeLocalStepOrder(get().funnelPages.map((p) => p.id));
     } catch (error) {
       console.error('Error deleting funnel page:', error);
       throw error;
     }
+  },
+
+  reorderFunnelPages: (ids) => {
+    const current = get().funnelPages;
+    const byId = new Map(current.map((p) => [p.id, p]));
+    const seen = new Set<string>();
+    const next: AppFunnelPage[] = [];
+    for (const id of ids) {
+      const page = byId.get(id);
+      if (!page || seen.has(id)) continue;
+      seen.add(id);
+      next.push(page);
+    }
+    for (const page of current) {
+      if (!seen.has(page.id)) next.push(page);
+    }
+    const ordered = next.map((page, index) => ({ ...page, sortOrder: index }));
+    set({ funnelPages: ordered });
+    persistFunnelStepOrder(ordered.map((p) => p.id));
   },
 
   launchSwipe: async (id) => {
