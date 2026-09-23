@@ -25,7 +25,6 @@ async function saveLandingMedia(
       html,
       pageUrl,
       ownerUserId,
-      limit: 16,
     });
   } catch (e) {
     console.warn('[save-page] landing media extract:', (e as Error).message);

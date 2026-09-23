@@ -74,7 +74,7 @@ export default async (req: Request, _context: Context) => {
       excludeTerms = stored.exclude;
     }
     product = stored.product || (await productFromProject(projectId));
-    collectMedia = !stored.product?.affiliate;
+    collectMedia = true;
   }
 
   const started = Date.now();

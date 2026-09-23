@@ -206,9 +206,10 @@ export function inferLandingSourceUrl(
 
 const JUNK_LANDING_HOSTS = /^(google\.com|google\.[a-z.]+|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|x\.com|twitter\.com|bing\.com)$/i;
 
-/** Icons, stars, payment marks — not product photos. */
+/** Icons, stars, payment marks, logos — not product photos.
+ *  Tokens are whole words so "start" and "lexicon" are not treated as stars/icons. */
 export const DECORATIVE_MEDIA =
-  /logo|icon|favicon|sprite|pixel|1x1|tracking|analytics|badge|seal|award|star[s]?|rating|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|credit[-_ ]?cards?|cards[-_@]|pay[-_ ]?badge|emoji|loader|spinner|spacer|blank\.|placeholder|trustpilot|cookie|check(?:mark|-?icon)?|green[-_]?tick|tick(?:mark)?|spunta|compare[-_]?icon|arrow|play-btn|close-btn|hamburger|social|whatsapp|pinterest/i;
+  /(?:^|[^\p{L}\p{N}])(?:logos?|logotype|wordmark|icons?|favicon|sprite|pixel|1x1|tracking|analytics|badges?|seals?|awards?|stars?|ratings?|payment|visa|mastercard|amex|paypal|klarna|apple-?pay|g-?pay|credit[-_ ]?cards?|emoji|loader|spinner|spacer|placeholder|trustpilot|cookie|checkmark|green[-_]?tick|tick(?:mark)?|spunta|arrows?|hamburger|whatsapp|pinterest|instagram|facebook|tiktok|youtube|trademark|brand[-_]?mark)(?=$|[^\p{L}\p{N}])/iu;
 
 export function isDecorativeMedia(...parts: Array<string | undefined | null>): boolean {
   return parts.some((p) => !!p && DECORATIVE_MEDIA.test(p));
@@ -458,15 +459,13 @@ function pageIdFromHtmlUrl(raw: string): string {
 }
 
 const BUCKET = 'project-files';
-const MAX_PER_PAGE = 24;
-const MAX_PER_RUN = 60;
+const MAX_PER_PAGE = 80;
+const MAX_PER_RUN = 400;
 const MAX_BYTES: Record<LandingMediaKind, number> = {
   image: 8_000_000,
   gif: 12_000_000,
   video: 22_000_000,
 };
-
-const JUNK_RE = DECORATIVE_MEDIA;
 
 function absolutize(src: string, pageUrl: string): string {
   const s = String(src || '').trim();
@@ -493,6 +492,23 @@ export function classifyLandingAsset(url: string): LandingMediaKind | null {
   return null;
 }
 
+function declaredTiny(tag: string): boolean {
+  const w = Number.parseInt(tag.match(/\bwidth\s*=\s*["']?(\d+)/i)?.[1] || '', 10);
+  const h = Number.parseInt(tag.match(/\bheight\s*=\s*["']?(\d+)/i)?.[1] || '', 10);
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return false;
+  if (Math.max(w, h) < 96) return true;
+  if (h <= 48 && w / h >= 3) return true;
+  return false;
+}
+
+function enclosingTag(html: string, index: number): string {
+  const start = html.lastIndexOf('<', index);
+  if (start < 0 || index - start > 1800) return '';
+  const end = html.indexOf('>', index);
+  if (end < 0 || end - start > 2200) return '';
+  return html.slice(start, end + 1);
+}
+
 function pushAsset(
   out: Array<{ url: string; kind: LandingMediaKind; section: LandingSection; position: number }>,
   seen: Set<string>,
@@ -503,7 +519,12 @@ function pushAsset(
   tag = '',
 ) {
   const abs = absolutize(raw, pageUrl);
-  if (!abs || seen.has(abs) || JUNK_RE.test(abs)) return;
+  if (!abs || seen.has(abs)) return;
+  const around = tag.includes('<') ? tag : enclosingTag(html, index);
+  const alt = around.match(/\balt\s*=\s*["']([^"']*)["']/i)?.[1] || '';
+  const cls = around.match(/\bclass\s*=\s*["']([^"']+)["']/i)?.[1] || '';
+  if (isDecorativeMedia(abs, alt, cls, around) || declaredTiny(around)) return;
+  if (/google-analytics|googletagmanager|doubleclick|facebook\.com\/tr|hotjar|clarity\.ms|bat\.bing/i.test(abs)) return;
   const kind = classifyLandingAsset(abs);
   if (!kind) return;
   seen.add(abs);
@@ -540,19 +561,28 @@ export function collectLandingAssetUrls(
   const h = String(html || '');
   if (!h) return out;
 
-  const attrRe = /\b(?:src|data-src|data-lazy-src|poster)\s*=\s*["']([^"']+)["']/gi;
+  const attrRe = /\b(?:src|data-src|data-lazy-src|data-original|data-lazy|data-lazyload|data-bg|data-image|data-flickity-lazyload|poster)\s*=\s*["']([^"']+)["']/gi;
   let m: RegExpExecArray | null;
   while ((m = attrRe.exec(h)) !== null) {
     pushAsset(out, seen, m[1], pageUrl, h, m.index, m[0]);
   }
 
-  const srcsetRe = /\bsrcset\s*=\s*["']([^"']+)["']/gi;
+  const srcsetRe = /\b(?:srcset|data-srcset)\s*=\s*["']([^"']+)["']/gi;
   while ((m = srcsetRe.exec(h)) !== null) {
     pushAsset(out, seen, largestSrcset(m[1]), pageUrl, h, m.index, m[0]);
   }
 
   const cssRe = /url\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
   while ((m = cssRe.exec(h)) !== null) {
+    pushAsset(out, seen, m[1], pageUrl, h, m.index, m[0]);
+  }
+
+  const metaRe = /<meta\b[^>]*(?:property|name)=["'](?:og:image|twitter:image)["'][^>]*content=["']([^"']+)["'][^>]*>/gi;
+  while ((m = metaRe.exec(h)) !== null) {
+    pushAsset(out, seen, m[1], pageUrl, h, m.index, m[0]);
+  }
+  const metaRe2 = /<meta\b[^>]*content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["'][^>]*>/gi;
+  while ((m = metaRe2.exec(h)) !== null) {
     pushAsset(out, seen, m[1], pageUrl, h, m.index, m[0]);
   }
 
@@ -648,6 +678,55 @@ function sniffContentType(buf: Buffer, fallback: string): string {
   return fallback;
 }
 
+/** Width/height from the file header. Null when the format is not readable. */
+export function imagePixelSize(buf: Buffer): { w: number; h: number } | null {
+  if (buf.length < 24) return null;
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+  }
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) {
+    return { w: buf.readUInt16LE(6), h: buf.readUInt16LE(8) };
+  }
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && buf.toString('ascii', 8, 12) === 'WEBP') {
+    const chunk = buf.toString('ascii', 12, 16);
+    if (chunk === 'VP8X' && buf.length >= 30) {
+      return { w: 1 + buf.readUIntLE(24, 3), h: 1 + buf.readUIntLE(27, 3) };
+    }
+    if (chunk === 'VP8 ' && buf.length >= 30) {
+      return { w: buf.readUInt16LE(26) & 0x3fff, h: buf.readUInt16LE(28) & 0x3fff };
+    }
+    if (chunk === 'VP8L' && buf.length >= 25) {
+      const b = buf.readUInt32LE(21);
+      return { w: (b & 0x3fff) + 1, h: ((b >> 14) & 0x3fff) + 1 };
+    }
+  }
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) { i++; continue; }
+      const marker = buf[i + 1];
+      if (marker === 0xd8 || marker === 0xd9) { i += 2; continue; }
+      const len = buf.readUInt16BE(i + 2);
+      if (len < 2) break;
+      if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+        return { w: buf.readUInt16BE(i + 7), h: buf.readUInt16BE(i + 5) };
+      }
+      i += 2 + len;
+    }
+  }
+  return null;
+}
+
+/** Icons, star rows, payment strips, header logos — short or tiny files. */
+export function isChromeImage(buf: Buffer): boolean {
+  const size = imagePixelSize(buf);
+  if (!size || size.w < 2 || size.h < 2) return false;
+  if (Math.max(size.w, size.h) < 96) return true;
+  if (size.h <= 48 && size.w / size.h >= 3) return true;
+  if (size.w <= 48 && size.h / size.w >= 3) return true;
+  return false;
+}
+
 function looksLikeMediaBytes(buf: Buffer, contentType: string, url: string, kind: LandingMediaKind): boolean {
   if (contentType.startsWith('image/') || contentType.startsWith('video/')) return true;
   if (contentType.includes('octet-stream')) return true;
@@ -678,6 +757,7 @@ async function fetchAssetOnce(
     headerCt || (kind === 'video' ? 'video/mp4' : kind === 'gif' ? 'image/gif' : 'image/jpeg'),
   );
   if (!looksLikeMediaBytes(buf, contentType, url, kind)) return null;
+  if (kind !== 'video' && isChromeImage(buf)) return null;
   return { buf, contentType };
 }
 
@@ -953,6 +1033,8 @@ export async function ingestLandingMediaBytes(
   },
 ): Promise<LandingMediaItem | null> {
   if (!args.buf?.length || args.buf.length < 80 || args.buf.length > MAX_BYTES[args.kind]) return null;
+  if (isDecorativeMedia(args.sourceUrl)) return null;
+  if (args.kind !== 'video' && isChromeImage(args.buf)) return null;
   const existing = await listLandingMedia(sb, args.projectId);
   const prev = existing.find((e) => e.sourceUrl === args.sourceUrl);
   if (prev && prev.filePath && !isRemoteUrl(prev.filePath)) return prev;

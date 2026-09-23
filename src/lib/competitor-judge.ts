@@ -36,10 +36,57 @@ export type AdvertiserCard = {
 
 const normHost = (h: string) => h.toLowerCase().replace(/^www\./, '');
 
-/** Names worth matching literally: 4+ chars, not a generic word. */
+/** Category words that describe a kind of product, not this offer.
+ *  "cutting board" / "titanium" match every brand in the niche. */
+const GENERIC_TOKEN = new Set([
+  'the', 'and', 'for', 'with', 'your', 'our', 'this', 'that', 'from', 'best', 'new', 'pro', 'plus',
+  'official', 'review', 'reviews', 'buy', 'shop', 'store', 'home', 'page', 'offer', 'sale', 'product',
+  'products', 'brand', 'natural', 'organic', 'premium', 'original', 'advanced', 'ultra', 'super', 'max',
+  'mini', 'board', 'boards', 'cutting', 'chopping', 'tagliere', 'titanium', 'steel', 'wood', 'wooden',
+  'kitchen', 'set', 'kit', 'pack', 'bundle', 'supplement', 'gummies', 'gummy', 'coffee', 'tea', 'cream',
+  'oil', 'serum', 'drops', 'capsule', 'capsules', 'powder', 'device', 'tool', 'tools', 'health',
+  'wellness', 'weight', 'loss', 'slim', 'diet', 'fat', 'burn', 'burner', 'detox', 'clean', 'cleaner',
+  'cleanse', 'free', 'shipping', 'order', 'today', 'limited', 'discount', 'guarantee', 'money', 'back',
+  'results', 'before', 'after', 'stainless', 'double', 'sided', 'hygiene', 'hygienic', 'antibacterial',
+  'amazon', 'walmart', 'official', 'website', 'get', 'now',
+]);
+
+/** Brand / offer tokens only. A generic product phrase does not count as a name. */
+export function distinctiveOfferTokens(product: ProductProfile): string[] {
+  const raw = [product.name, ...(product.names || [])].join(' ');
+  const tokens = raw
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 4 && !GENERIC_TOKEN.has(t) && !/^\d+$/.test(t));
+  return [...new Set(tokens)];
+}
+
+/** Names worth matching literally: the full offer strings, generic phrases removed. */
 function matchableNames(product: ProductProfile): string[] {
   const names = [product.name, ...(product.names || [])].map((n) => String(n || '').trim()).filter((n) => n.length >= 4);
-  return [...new Set(names.map((n) => n.toLowerCase()))];
+  const distinctive = new Set(distinctiveOfferTokens(product));
+  return [...new Set(names.map((n) => n.toLowerCase()))].filter((n) => {
+    const parts = n.split(/[^a-z0-9]+/).filter((t) => t.length >= 4);
+    return parts.some((t) => distinctive.has(t));
+  });
+}
+
+/**
+ * Affiliate: this advertiser is the same offer (identical or a lookalike
+ * pre-lander), not another brand in the category.
+ * Returns a short reason, or '' when the only overlap is generic.
+ */
+export function sameOfferEvidence(product: ProductProfile, card: AdvertiserCard): string {
+  const hosts = new Set((product.hosts || []).map(normHost).filter(Boolean));
+  const lh = normHost(card.landingHost || '');
+  if (lh && hosts.has(lh)) return 'lands on the offer domain';
+  const linksToOffer = (card.landingLinks || []).map(normHost).some((h) => hosts.has(h));
+  if (linksToOffer) return 'pre-lander links to the offer domain';
+  const tokens = distinctiveOfferTokens(product);
+  if (!tokens.length) return '';
+  const hay = `${card.name} ${(card.samples || []).join(' ')} ${card.landingText || ''} ${card.landingHost || ''}`.toLowerCase();
+  const hit = tokens.find((t) => hay.includes(t));
+  return hit ? `names the offer (${hit})` : '';
 }
 
 /** Does the text name the product? Case/spacing/hyphen-insensitive ("JellyStick" = "Jelly Stick"). */
@@ -66,18 +113,17 @@ export async function judgeAdvertisers(
   const key = getAnthropicKey();
   if (!key) throw new Error('ANTHROPIC_API_KEY is not configured');
 
-  // Affiliate: domain evidence needs no model call — the ad lands on the
-  // offer's own domain, or its pre-lander links out to it. A NAME match is
-  // only a hint for the model (the product name may be a generic phrase that
-  // other brands use too), never a verdict on its own.
-  const hosts = new Set((product.hosts || []).map(normHost).filter(Boolean));
+  // Affiliate: another brand in the same category is not a competitor.
+  // Keep the ad only with hard evidence of THIS offer — its domain, a
+  // pre-lander that links there, or a distinctive brand token (not
+  // "cutting board" / "titanium"). Everything else is dropped before the
+  // model, so a loose "same kind of product" verdict cannot leak in.
   const pending: AdvertiserCard[] = [];
   for (const c of cards) {
     if (!product.affiliate) { pending.push(c); continue; }
-    const lh = normHost(c.landingHost || '');
-    const linksToOffer = (c.landingLinks || []).map(normHost).some((h) => hosts.has(h));
-    if (lh && hosts.has(lh)) out.set(c.id, { id: c.id, competitor: true, why: 'lands on the offer domain' });
-    else if (linksToOffer) out.set(c.id, { id: c.id, competitor: true, why: 'pre-lander links to the offer domain' });
+    const why = sameOfferEvidence(product, c);
+    if (!why) out.set(c.id, { id: c.id, competitor: false, why: 'different product — no offer name or domain' });
+    else if (!why.startsWith('names ')) out.set(c.id, { id: c.id, competitor: true, why });
     else pending.push(c);
   }
   if (!pending.length) return out;
@@ -94,6 +140,14 @@ export async function judgeAdvertisers(
     else { failed++; console.warn('[competitor-judge] batch failed:', (r.reason as Error)?.message); }
   }
   if (failed && failed === results.length) throw new Error('every judge batch failed');
+  if (product.affiliate) {
+    for (const card of cards) {
+      const v = out.get(card.id);
+      if (v?.competitor && !sameOfferEvidence(product, card)) {
+        out.set(card.id, { id: card.id, competitor: false, why: 'same category, different product' });
+      }
+    }
+  }
   return out;
 }
 
@@ -107,9 +161,9 @@ You get a list of advertisers found by keyword search on ad libraries, each with
 
 ${head}
 
-An advertiser is a COMPETITOR only when it sells EXACTLY this product: the same product/brand name (any spelling, spacing, casing or translation of it), a nickname clearly used for it, or a landing on one of the offer domains. Other affiliates' pre-landers and advertorials for this product count — affiliates often keep the brand out of the AD and name it only on the LANDING PAGE, so read the landing excerpt as carefully as the ad copy.
+An advertiser is a COMPETITOR only when it sells THIS product: the same brand (any spelling, spacing or casing), a nickname clearly used for it, or a landing on one of the offer domains. Other affiliates' pre-landers and advertorials for this product count — they are similar on purpose. Affiliates often keep the brand out of the AD and name it only on the LANDING PAGE, so read the landing excerpt as carefully as the ad copy.
 
-NOT a competitor: a different product, even the same kind (another product of the same format, another brand with the same promise), shops/marketplaces, tools, media, unrelated categories, and ads with no readable offer.
+NOT a competitor: a different brand, even when the product is the same kind (another cutting board, another supplement, another gadget with the same promise). Similar category is not enough. Also drop shops/marketplaces, tools, media, and ads with no readable offer.
 
 Decide from the product actually named or shown in the copy or on the landing page. If neither identifies this specific product, say competitor=false.
 

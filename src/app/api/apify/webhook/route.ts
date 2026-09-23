@@ -100,8 +100,9 @@ export async function POST(req: NextRequest) {
       excludeTerms = stored.exclude;
     }
     product = stored.product || (await productFromProject(projectId));
-    // Affiliate runs: the library is the promoted offer's photos only.
-    collectMedia = !stored.product?.affiliate;
+    // Saved landings are already the same offer (affiliate) or real competitors.
+    // Pull every real photo off those pages; icons are dropped in the extractor.
+    collectMedia = true;
   }
 
   const result = await ingestDataset({
