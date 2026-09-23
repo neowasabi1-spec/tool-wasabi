@@ -25,6 +25,7 @@ import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 import { injectLiveCommentClock } from '@/lib/live-comment-clock';
 import { extractTimedComments } from '@/lib/bake-dynamic-comments';
 import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
+import { preservePageShellLayout } from '@/lib/page-shell-layout';
 import { snapshotFromUploadFiles, remainingRelativeStylesheets } from '@/lib/html-bundle';
 import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
 import { understandClonedLander } from '@/lib/lander-agent-client';
@@ -1351,18 +1352,18 @@ export default function FrontEndFunnel() {
     const raw = htmlPreviewModal.html;
     if (!raw) return raw;
     try {
-      return bakeDynamicComments(raw).html;
+      return preservePageShellLayout(bakeDynamicComments(raw).html);
     } catch {
-      return raw;
+      return preservePageShellLayout(raw);
     }
   }, [htmlPreviewModal.html]);
   const editorInitialMobileHtml = useMemo(() => {
     const raw = htmlPreviewModal.mobileHtml;
     if (!raw) return raw;
     try {
-      return bakeDynamicComments(raw).html;
+      return preservePageShellLayout(bakeDynamicComments(raw).html);
     } catch {
-      return raw;
+      return preservePageShellLayout(raw);
     }
   }, [htmlPreviewModal.mobileHtml]);
 
@@ -3969,7 +3970,7 @@ export default function FrontEndFunnel() {
           swipeStatus: 'completed',
           swipeResult: `Rewrite OK (${replacements}/${totalTexts} replacements via ${AUDITOR_LABEL[chosen]})`,
           clonedData: {
-            html: final.html,
+            html: preservePageShellLayout(final.html),
             mobileHtml: page.clonedData?.mobileHtml,
             title: final.new_title || page.clonedData?.title || pageName,
             method_used: `openclaw-${chosen}`,
@@ -5305,7 +5306,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         }
 
         setCloneProgress(null);
-        let rewrittenHtml = rewriteData.html;
+        let rewrittenHtml = preservePageShellLayout(rewriteData.html);
         let visualNote = '';
         const projectForVisual = (projects || []).find((p) => p.id === currentPage?.productId);
         const visualName = (cloneConfig.productName || projectForVisual?.name || '').trim();
@@ -8040,7 +8041,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           const doc = iframe.contentDocument || iframe.contentWindow?.document;
                           if (doc) {
                             doc.open();
-                            let safeHtml = htmlToShow;
+                            let safeHtml = preservePageShellLayout(htmlToShow);
                             if (!safeHtml.includes('name="referrer"')) {
                               const refTag = '<meta name="referrer" content="no-referrer">';
                               safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;

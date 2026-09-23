@@ -199,6 +199,60 @@ function segmentsCrossBlockBoundary(
   return false
 }
 
+/** Copy may only change text nodes. Funnelish puts the same digits in
+ *  @font-face unicode ranges and in class names (el-877485) as in the
+ *  countdown, and picture tags contain `>` inside media="(width > 1024px)".
+ *  A raw String.replace writes the rewrite into that CSS and those tags. */
+function splitQuoteAware(html: string): Array<{ tag: boolean; text: string }> {
+  const parts: Array<{ tag: boolean; text: string }> = []
+  let i = 0
+  while (i < html.length) {
+    if (html[i] !== '<') {
+      const j = html.indexOf('<', i)
+      const end = j < 0 ? html.length : j
+      parts.push({ tag: false, text: html.slice(i, end) })
+      i = end
+      continue
+    }
+    let j = i + 1
+    let quote = ''
+    while (j < html.length) {
+      const c = html[j]
+      if (quote) {
+        if (c === quote) quote = ''
+      } else if (c === '"' || c === "'") quote = c
+      else if (c === '>') { j++; break }
+      j++
+    }
+    parts.push({ tag: true, text: html.slice(i, j) })
+    i = j
+  }
+  return parts
+}
+
+function replaceVisibleText(html: string, from: string, to: string): { html: string; replaced: boolean } {
+  if (!from || from === to || !html.includes(from)) return { html, replaced: false }
+  const held: string[] = []
+  let working = html.replace(/<(style|script|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, (m) => {
+    const n = held.length
+    held.push(m)
+    // Private-use chars only. A decimal marker is copy: "45" sits inside HOLD45.
+    return `\uE000${String.fromCharCode(0xE001 + n)}`
+  })
+  const parts = splitQuoteAware(working)
+  let replaced = false
+  for (const part of parts) {
+    if (part.tag || part.text.includes('\uE000') || !part.text.includes(from)) continue
+    part.text = part.text.replace(from, to)
+    replaced = true
+    break
+  }
+  if (!replaced) return { html, replaced: false }
+  working = parts.map((p) => p.text).join('')
+  working = working.replace(/\uE000([\uE001-\uF8FF])/g, (_m, ch) => held[ch.charCodeAt(0) - 0xE001] ?? '')
+  return { html: working, replaced: true }
+}
+
 function distributeTextProportionally(
   segments: string[], 
   textSegments: { index: number; content: string }[], 
@@ -876,15 +930,21 @@ serve(async (req) => {
             }
             
             if (!found && clonedHTML.includes(originalText)) {
-              clonedHTML = clonedHTML.replace(originalText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, originalText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             
             if (!found && rawText !== originalText && clonedHTML.includes(rawText)) {
-              clonedHTML = clonedHTML.replace(rawText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, rawText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             
             if (!found && originalText.length >= 5 && originalText.length < 500) {
@@ -896,7 +956,7 @@ serve(async (req) => {
                   const pattern = escapedWords.join(tagsBetween)
                   const regex = new RegExp(pattern, 'i')
                   const match = clonedHTML.match(regex)
-                  if (match) {
+                  if (match && match[0].length <= Math.max(800, originalText.length * 4)) {
                     const matchedStr = match[0]
                     const tagsInMatch = matchedStr.match(/<[^>]+>/g) || []
                     
@@ -1243,7 +1303,7 @@ html body [class*="h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="min-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="max-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="aspect-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
-html body [style*="height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="height:"]:not(main):not([class*="main_wrapper"]):not([class*="desktop_grid"]):not([style*="height:100%"]):not([style*="height: 100%"]):not([style*="100vh"]):has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [style*="max-height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [style*="aspect-ratio:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl){
   height:auto !important;min-height:0 !important;max-height:none !important;
@@ -1303,7 +1363,7 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
     var nodes=document.querySelectorAll(sel);
     for(var i=0;i<nodes.length;i++){
       var el=nodes[i];var tn=el.tagName;
-      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;
+      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;if(tn==='MAIN'||tn==='HTML'||tn==='BODY')continue;var shellSt=el.getAttribute('style')||'';var shellCl=typeof el.className==='string'?el.className:'';if(/main_wrapper|desktop_grid/.test(shellCl)||/height: *100%|100vh/i.test(shellSt))continue;
       if(!el.querySelector('p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl'))continue;
       if(el.__fbRelaxed)continue;el.__fbRelaxed=1;
       el.style.setProperty('height','auto','important');
@@ -2124,14 +2184,20 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             let found = false
             
             if (!found && clonedHTML.includes(originalText)) {
-              clonedHTML = clonedHTML.replace(originalText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, originalText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             if (!found && rawText !== originalText && clonedHTML.includes(rawText)) {
-              clonedHTML = clonedHTML.replace(rawText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, rawText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             if (!found && originalText.length >= 5 && originalText.length < 500) {
               try {
@@ -2141,7 +2207,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
                   const pattern = escapedWords.join('(?:\\s|&nbsp;|<[^>]{0,200}>)*')
                   const regex = new RegExp(pattern, 'i')
                   const match = clonedHTML.match(regex)
-                  if (match) {
+                  if (match && match[0].length <= Math.max(800, originalText.length * 4)) {
                     const matchedStr = match[0]
                     const tagsInMatch = matchedStr.match(/<[^>]+>/g) || []
                     if (tagsInMatch.length > 0) {
