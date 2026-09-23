@@ -172,6 +172,7 @@ export default async (req: Request) => {
     }
 
     if (newShotIds.length) {
+      try {
       const prevQ = await supabase
         .from('competitor_shots')
         .select('id, file_path, thumb_path, clean_path')
@@ -204,7 +205,14 @@ export default async (req: Request) => {
           .not('id', 'in', `(${newShotIds.join(',')})`);
         log(`replaced ${stale.length} previous shots`);
       }
+      } catch (e) {
+        // Shots are already saved. A cleanup error must not flip the job to
+        // failed — that is what showed "Splitting failed" next to a full set.
+        log(`old-shot cleanup skipped: ${(e as Error).message}`);
+      }
     }
+
+    if (!shotsCount) throw new Error('no shots were cut from this video');
 
     // Burned-in subtitles lock a shot out of builds, so clean them right away
     // instead of waiting for someone to press "Remove subs".

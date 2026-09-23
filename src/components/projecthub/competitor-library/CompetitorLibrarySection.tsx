@@ -729,7 +729,6 @@ function CreativeDetailPanel({
   const [text, setText] = useState(ad.body_text || "");
   const [transcript, setTranscript] = useState(ad.transcript || "");
   const [transcribing, setTranscribing] = useState(false);
-  const autoTried = useRef<number | null>(null);
   const [winner, setWinner] = useState(!!ad.is_winner);
   const [markingWinner, setMarkingWinner] = useState(false);
   // Phase 1 — "same script, new video": rewrite the winning transcript for the
@@ -769,6 +768,7 @@ function CreativeDetailPanel({
   };
   // Phase 2 — split competitor video into real-footage shots.
   const [segStatus, setSegStatus] = useState<string>("");
+  const [segError, setSegError] = useState("");
   const [shotCount, setShotCount] = useState(0);
   const [showShots, setShowShots] = useState(false);
   const segPoll = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -777,6 +777,7 @@ function CreativeDetailPanel({
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/segment`);
       const j = await r.json().catch(() => ({}));
       setSegStatus(j?.job?.status || "");
+      setSegError(String(j?.job?.error || ""));
       setShotCount(j?.shots || 0);
       if (j?.job?.status === "pending" || j?.job?.status === "processing") {
         if (!segPoll.current) segPoll.current = setInterval(loadSegStatus, 4000);
@@ -1092,14 +1093,6 @@ function CreativeDetailPanel({
     setText(ad.body_text || "");
     setTranscript(ad.transcript || "");
   }, [ad.id, ad.body_text, ad.transcript]);
-  useEffect(() => {
-    if (ad.media_type !== "video") return;
-    if ((ad.transcript || "").trim()) return;
-    if (autoTried.current === ad.id) return;
-    autoTried.current = ad.id;
-    void transcribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ad.id, ad.media_type, ad.transcript]);
   const libraryUrl = adLibraryUrlForCreative(ad, adsLibraryUrl || ad.ads_library_url);
   return (
     <>
@@ -1405,7 +1398,9 @@ function CreativeDetailPanel({
                 )}
               </div>
               {segStatus === "error" && (
-                <p className="text-[10px] text-destructive">Splitting failed — check the worker logs.</p>
+                <p className="text-[10px] text-destructive break-words">
+                  {segError ? `Splitting failed: ${segError}` : "Splitting failed — click Re-split to try again."}
+                </p>
               )}
             </div>
           )}
