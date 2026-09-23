@@ -829,16 +829,23 @@ function CreativeDetailPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ad.id]);
   const removeSubtitles = async () => {
-    setCleanStatus("pending"); setCleanErr(""); setCleanPath("");
+    const deghost = Boolean(cleanPath);
+    setCleanStatus("pending"); setCleanErr("");
+    if (!deghost) setCleanPath("");
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/clean-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: true }),
+        body: JSON.stringify(deghost ? { mode: "deghost" } : { mode: "clean" }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        toast({ title: "Removing subtitles…", description: "Runs on the server — may take a minute or two." });
+        toast({
+          title: deghost ? "Checking the clean mark…" : "Removing subtitles…",
+          description: deghost
+            ? "If the captions are still there, the video is unmarked. No new AI charge."
+            : "Runs on the server — may take a minute or two.",
+        });
         if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
       } else {
         setCleanStatus("");
@@ -1411,7 +1418,9 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Remove subtitles (whole video)</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Erases burned-in captions from the <b>entire</b> video while keeping the original audio, using the same AI cleaning the shots use. Needs a Replicate key.
+                {cleanPath
+                  ? "Checks the file already saved. If the original captions are still there, the clean mark is removed and nothing is sent back to the AI."
+                  : <>Erases burned-in captions from the <b>entire</b> video while keeping the original audio. The first pass uses AI. A result that still has the captions is not marked clean.</>}
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -1421,7 +1430,7 @@ function CreativeDetailPanel({
                   className="flex-1 gap-2 h-8">
                   {cleanStatus === "pending" || cleanStatus === "processing"
                     ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {cleanStatus === "pending" ? "Queued…" : "Cleaning…"}</>
-                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Clean again" : "Remove subtitles"}</>}
+                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Check clean mark" : "Remove subtitles"}</>}
                 </Button>
                 {cleanPath && (
                   <a
@@ -3415,6 +3424,7 @@ function ShotsLibraryView({
   // Compose a brand-new video from these shots + your own copy.
   const [showCreate, setShowCreate] = useState(false);
   const [recutting, setRecutting] = useState(false);
+  const [unmarking, setUnmarking] = useState(false);
 
   const load = async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -3452,6 +3462,27 @@ function ShotsLibraryView({
     setShots((p) => p.filter((x) => x.id !== s.id));
     try { await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/${s.id}`, { method: "DELETE" }); }
     catch { toast({ title: "Delete failed", variant: "destructive" }); }
+  };
+
+  const unmarkFalseCleans = async () => {
+    setUnmarking(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/shots/unmark-false-cleans`, { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: j.error || "Could not start", variant: "destructive" });
+        return;
+      }
+      toast({
+        title: "Checking clean marks",
+        description: "Clips that still have the original captions lose the clean mark. Nothing is sent back to the AI.",
+      });
+      window.setTimeout(() => { void load(true); }, 8000);
+    } catch {
+      toast({ title: "Could not start", variant: "destructive" });
+    } finally {
+      setUnmarking(false);
+    }
   };
 
   const recutFromCleaned = async () => {
@@ -3622,6 +3653,17 @@ function ShotsLibraryView({
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void unmarkFalseCleans()}
+            disabled={unmarking}
+            title="Clear the clean mark on clips whose captions are still the original ones. No AI call."
+            className="gap-1.5 h-8">
+            {unmarking
+              ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Checking…</>
+              : <><Eraser className="w-3.5 h-3.5" /> Unmark false cleans</>}
+          </Button>
           <Button
             size="sm"
             variant="outline"
