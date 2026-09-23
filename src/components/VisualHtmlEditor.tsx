@@ -2679,6 +2679,133 @@ function BgGradientEditor({
 
 /* ─────────── Component ─────────── */
 
+type LandingLibItem = {
+  id: number | string;
+  kind: 'image' | 'gif' | 'video';
+  storedUrl: string;
+  name?: string;
+};
+
+/** Media already downloaded from this project's competitor landings. */
+function CompetitorMediaLibrary({
+  projectId,
+  products,
+  onProject,
+  prefer,
+  hint,
+  onPick,
+}: {
+  projectId: string;
+  products?: Array<{ id: string; name: string }>;
+  onProject?: (id: string) => void;
+  prefer: 'image' | 'gif' | 'video';
+  hint?: string;
+  onPick: (url: string) => void;
+}) {
+  const [items, setItems] = useState<LandingLibItem[]>([]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [filter, setFilter] = useState<'image' | 'gif' | 'video'>(prefer);
+
+  useEffect(() => { setFilter(prefer); }, [prefer]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancel = false;
+    setStatus('loading');
+    fetch(`/api/projecthub/projects/${projectId}/landing-media`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => {
+        if (cancel) return;
+        const list = Array.isArray(rows)
+          ? rows.filter((x) => x && typeof x.storedUrl === 'string' && x.storedUrl)
+          : [];
+        setItems(list);
+        setStatus('ready');
+      })
+      .catch(() => { if (!cancel) setStatus('error'); });
+    return () => { cancel = true; };
+  }, [projectId]);
+
+  const kinds: Array<'image' | 'gif' | 'video'> = prefer === 'video' ? ['video'] : ['image', 'gif'];
+  const shown = items.filter((m) => m.kind === filter && kinds.includes(m.kind));
+
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+        Competitor landing media
+      </p>
+      {!projectId ? (
+        <div>
+          <p className="text-[10px] text-slate-500 mb-1">Link this page to a project to use its downloaded landing media.</p>
+          {products && products.length > 0 && onProject && (
+            <select
+              className="prop-input"
+              defaultValue=""
+              onChange={(e) => { if (e.target.value) onProject(e.target.value); }}
+            >
+              <option value="">Choose project…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
+        </div>
+      ) : status === 'loading' ? (
+        <p className="text-[10px] text-slate-400 py-3 text-center flex items-center justify-center gap-1">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading library…
+        </p>
+      ) : status === 'error' ? (
+        <p className="text-[10px] text-red-500">Could not load landing media.</p>
+      ) : items.filter((m) => kinds.includes(m.kind)).length === 0 ? (
+        <p className="text-[10px] text-slate-500">
+          No {prefer === 'video' ? 'videos' : 'images or GIFs'} from competitor landings in this project yet.
+        </p>
+      ) : (
+        <>
+          {kinds.length > 1 && (
+            <div className="flex gap-1 mb-1.5">
+              {kinds.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setFilter(k)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                    filter === k ? 'bg-white border-slate-300 text-slate-800' : 'border-transparent text-slate-500'
+                  }`}
+                >
+                  {k === 'image' ? 'Images' : 'GIFs'} ({items.filter((m) => m.kind === k).length})
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="grid grid-cols-3 gap-1.5 max-h-52 overflow-y-auto">
+            {shown.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                title={m.name || 'Use this file'}
+                onClick={() => onPick(m.storedUrl)}
+                className="relative aspect-square rounded-md overflow-hidden border border-slate-200 bg-white hover:border-violet-400 hover:ring-1 hover:ring-violet-300"
+              >
+                {m.kind === 'video' ? (
+                  <video src={m.storedUrl} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={m.storedUrl} alt="" className="w-full h-full object-cover" />
+                )}
+                {m.kind !== 'image' && (
+                  <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold uppercase bg-black/70 text-white px-1 rounded">
+                    {m.kind}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-slate-400 mt-1">{hint || 'Click a file to use it here.'}</p>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange, quizNav, checkoutMode }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
@@ -3719,6 +3846,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   // Pannello "Immagini nel blocco" come menu a tendina: con caroselli/gallery
   // da decine di immagini la lista è lunghissima, quindi parte chiuso.
   const [childImgsOpen, setChildImgsOpen] = useState(false);
+  const [carouselPick, setCarouselPick] = useState(0);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -5596,6 +5724,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {el.tagName !== 'img' && el.childImg && el.childImg.src && !(el.childImgs && el.childImgs.length > 1) && (
                   <div className="p-3">
                     <PropLabel icon={Image}>Image (in block)</PropLabel>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer={/\.gif(\?|#|$)/i.test(el.childImg.src) ? 'gif' : 'image'}
+                      onPick={(url) => setChildImgSrc(url)}
+                    />
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
                     <input type="url" defaultValue={el.childImg.src} key={el.childImg.src} className="prop-input"
                       onBlur={(e) => setChildImgSrc(e.target.value)}
@@ -5639,13 +5774,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       Carousel/gallery: replace each image individually.
                       {!childImgsOpen && ' Click to expand.'}
                     </p>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer="image"
+                      hint={`Click a file to replace image #${Math.min(carouselPick, el.childImgs.length - 1) + 1}. Click a row below to choose which one.`}
+                      onPick={(url) => setChildImgSrcAt(Math.min(carouselPick, el.childImgs!.length - 1), url)}
+                    />
                     <input ref={childImgsUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
                       onChange={(e) => { const f = e.target.files?.[0]; const idx = childImgsUploadIndexRef.current; if (f && idx >= 0) handleChildImgUploadAt(f, idx); e.target.value = ''; }} />
                     {childImgsOpen && <ShapeRow scope="all" />}
                     {childImgsOpen && (
                       <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5 mt-2">
                         {el.childImgs.map((ci, i) => (
-                          <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 bg-slate-50">
+                          <div key={i} className={`flex items-center gap-2 p-1.5 rounded-lg border bg-slate-50 ${carouselPick === i ? 'border-violet-300' : 'border-slate-200'}`}
+                            onClick={() => setCarouselPick(i)}>
                             <div className="w-10 h-10 rounded bg-white border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
                               {ci.src
                                 ? <img src={ci.src} alt="" className="w-full h-full object-cover" />
@@ -5677,6 +5821,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {el.tagName === 'img' && (
                   <div className="p-3">
                     <PropLabel icon={Image}>Image</PropLabel>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer={/\.gif(\?|#|$)/i.test(el.src || '') ? 'gif' : 'image'}
+                      onPick={(url) => setAttr('src', url)}
+                    />
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
                     <input type="url" defaultValue={el.src} className="prop-input"
                       onBlur={(e) => setAttr('src', e.target.value)}
@@ -5731,6 +5882,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {(el.tagName === 'video' || el.tagName === 'source') && (
                   <div className="p-3">
                     <PropLabel icon={Film}>Video</PropLabel>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer="video"
+                      onPick={(url) => setAttr('src', url)}
+                    />
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Video URL</label>
                     <input type="url" defaultValue={el.src} className="prop-input"
                       onBlur={(e) => setAttr('src', e.target.value)}
