@@ -24,7 +24,7 @@ import { injectInteractivityRescue } from '@/lib/spa-rescue';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 import { injectLiveCommentClock } from '@/lib/live-comment-clock';
 import { extractTimedComments } from '@/lib/bake-dynamic-comments';
-import { healClonedLander, readHealStamp } from '@/lib/lander-heal';
+import { healClonedLander, readHealStamp, bakeCheckoutChampSnapshot } from '@/lib/lander-heal';
 import { preservePageShellLayout } from '@/lib/page-shell-layout';
 import { snapshotFromUploadFiles, remainingRelativeStylesheets } from '@/lib/html-bundle';
 import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
@@ -123,9 +123,14 @@ function isRealHtmlBlob(blob: unknown): boolean {
 }
 
 function freshestHtmlTarget(
-  page: { swipedData?: unknown; clonedData?: unknown; swipeStatus?: string } | null | undefined,
+  page: { swipedData?: unknown; clonedData?: unknown; swipeStatus?: string; swipeResult?: string } | null | undefined,
 ): 'swipedData' | 'clonedData' {
   if (!page) return 'clonedData';
+  // After a reload the list only has htmlUrl stubs, so both blobs look empty
+  // and the eye used to open the original clone. The swipe result is stored
+  // on the row: a translation or rewrite lives in swiped HTML.
+  const result = String(page.swipeResult || '');
+  if (/translat|rewrite ok|replacements via/i.test(result)) return 'swipedData';
   const hasSwipe = isRealHtmlBlob(page.swipedData);
   const hasClone = isRealHtmlBlob(page.clonedData);
   if (!hasSwipe) return 'clonedData';
@@ -307,9 +312,10 @@ function clonedPreviewKeepScripts(html: string): boolean {
 }
 
 function runClonedPreviewPipeline(rawHtml: string): string {
-  const timed = extractTimedComments(rawHtml);
-  const keepLive = clonedPreviewKeepScripts(rawHtml) || timed.length > 0;
-  let html = prepareClonedHtmlForPreview(rawHtml, { keepScripts: keepLive });
+  const healed = bakeCheckoutChampSnapshot(rawHtml);
+  const timed = extractTimedComments(healed);
+  const keepLive = clonedPreviewKeepScripts(healed) || timed.length > 0;
+  let html = prepareClonedHtmlForPreview(healed, { keepScripts: keepLive });
   try {
     html = injectInteractivityRescue(html, { keepScripts: keepLive });
   } catch {
@@ -1134,6 +1140,8 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
     if (options?.keepScripts) {
       clean = injectLiveCommentClock(clean);
     }
+
+    clean = bakeCheckoutChampSnapshot(clean);
 
     return clean;
   } catch {

@@ -280,11 +280,84 @@ function injectOfflineLayoutCss(html) {
   return css + html;
 }
 
+const ROUTE_SHIM = `<script id="wasabi-cc-route">(function(){
+if(window.__wasabiCcRoute)return;
+window.__wasabiCcRoute=1;
+document.addEventListener('click',function(ev){
+  var t=ev.target;
+  if(!t||!t.closest)return;
+  var b=t.closest('button[action="route"],[onclick*="route("]');
+  if(!b)return;
+  ev.preventDefault();
+  var dest=document.querySelector('.fk-payment-option,form,[id*="order" i],[class*="checkout"],[class*="offer-box"]');
+  if(dest&&dest.scrollIntoView){
+    try{dest.scrollIntoView({behavior:'smooth',block:'start'});}catch(e){dest.scrollIntoView();}
+  }
+},true);
+})();</script>`;
+
+function bakeCheckoutChampSnapshot(html) {
+  if (!html || !/checkoutchamp|funnelkonnekt|fk-lazy|dom-pending|action=["']route["']/i.test(html)) {
+    return html;
+  }
+  let out = html;
+  out = out.replace(/<link\b([^>]*?)\/?>/gi, (full, attrs) => {
+    const onload = attrs.match(/\bonload\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const onloadVal = onload ? (onload[1] || onload[2] || '') : '';
+    if (!onloadVal) return full;
+    const isSheet = /\brel\s*=\s*["']?stylesheet["']?/i.test(attrs);
+    const isPreload = /\brel\s*=\s*["']?preload["']?/i.test(attrs) && /\bas\s*=\s*["']style["']/i.test(attrs);
+    if (isSheet && /this\.media\s*=/i.test(onloadVal)) {
+      let a = attrs
+        .replace(/\smedia\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')
+        .replace(/\sonload\s*=\s*(?:"[^"]*"|'[^']*')/gi, '');
+      if (!/\bmedia\s*=/i.test(a)) a += ' media="all"';
+      return `<link${a}>`;
+    }
+    if (isPreload && /this\.rel\s*=/i.test(onloadVal)) {
+      let a = attrs
+        .replace(/\srel\s*=\s*(?:"[^"]*"|'[^']*')/i, ' rel="stylesheet"')
+        .replace(/\sas\s*=\s*(?:"[^"]*"|'[^']*')/gi, '')
+        .replace(/\sonload\s*=\s*(?:"[^"]*"|'[^']*')/gi, '');
+      return `<link${a}>`;
+    }
+    return full;
+  });
+  out = out.replace(/<(img|source|iframe|video)\b([^>]*)>/gi, (full, tag, attrs) => {
+    const src = attrs.match(/\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)')/i);
+    const existing = src ? (src[1] != null ? src[1] : (src[2] || '')) : null;
+    const placeholder = existing == null || existing === '' || existing === '#' || /^data:image/i.test(existing);
+    if (!placeholder) return full;
+    const lazy = attrs.match(/\sdata-(?:src|lazy-src|original|image|lazy)\s*=\s*(?:"([^"]+)"|'([^']+)')/i);
+    const val = lazy ? (lazy[1] || lazy[2] || '') : '';
+    if (!val || val.indexOf('data:') === 0) return full;
+    if (src) {
+      const next = attrs.replace(/\ssrc\s*=\s*(?:"[^"]*"|'[^']*')/i, ' src="' + val.replace(/"/g, '&quot;') + '"');
+      return '<' + tag + next + '>';
+    }
+    return '<' + tag + attrs + ' src="' + val.replace(/"/g, '&quot;') + '">';
+  });
+  out = out.replace(/<body\b([^>]*)>/i, function (_full, attrs) {
+    const next = attrs.replace(/\bdom-pending\b/g, '').replace(/\s{2,}/g, ' ').replace(/\sclass=(["'])\s*\1/g, '');
+    return '<body' + next + '>';
+  });
+  out = out.replace(/<script\b[^>]*>(?:(?!<\/script>)[\s\S])*fkDynamicScript(?:(?!<\/script>)[\s\S])*<\/script>/gi, '');
+  out = out.replace(/<script\b[^>]*>(?:(?!<\/script>)[\s\S])*button\[action=route\](?:(?!<\/script>)[\s\S])*<\/script>/gi, '');
+  if (/action=["']route["']|onclick=["']route\(event\)["']/i.test(out) && !/id=["']wasabi-cc-route["']/.test(out)) {
+    out = /<\/body>/i.test(out) ? out.replace(/<\/body>/i, ROUTE_SHIM + '</body>') : out + ROUTE_SHIM;
+  }
+  return out;
+}
+
 function healClonedLander(html) {
   if (!html) return { html, applied: [], remaining: [] };
-  let out = repairVturbPlayer(html);
+  let out = bakeCheckoutChampSnapshot(html);
+  const baked = out !== html;
+  const beforeVturb = out;
+  out = repairVturbPlayer(out);
   const applied = [];
-  if (/vturb-smartplayer/i.test(html) && out !== html) applied.push('vturb-anchor');
+  if (baked) applied.push('cc-snapshot');
+  if (out !== beforeVturb) applied.push('vturb-anchor');
 
   if (isPopupQuizHtml(out)) {
     out = injectPopupQuizEngine(out);
