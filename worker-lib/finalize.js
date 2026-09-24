@@ -8,6 +8,7 @@
 // Output: stessa shape che ritornava la route Netlify.
 
 const { detectDynamicScripts } = require('./detect-dynamic-scripts');
+const { healClonedLander } = require('./lander-heal');
 
 function escRxLiteral(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -89,6 +90,47 @@ function replaceLiquidPlaceholders(html) {
 // proporzionalmente sui segmenti di testo preservando ESATTAMENTE i tag.
 // Ritorna { html, replaced } con replaced=true se almeno un'occorrenza e'
 // stata sostituita.
+function replaceAllVisibleText(html, from, to) {
+  if (!from || from === to || !html.includes(from)) return html;
+  const held = [];
+  let working = html.replace(/<(style|script|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, (m) => {
+    const n = held.length;
+    held.push(m);
+    return `\uE000${String.fromCharCode(0xE001 + n)}`;
+  });
+  const parts = [];
+  let i = 0;
+  while (i < working.length) {
+    if (working[i] !== '<') {
+      const j = working.indexOf('<', i);
+      const end = j < 0 ? working.length : j;
+      parts.push(working.slice(i, end));
+      i = end;
+      continue;
+    }
+    let j = i + 1;
+    let quote = '';
+    while (j < working.length) {
+      const c = working[j];
+      if (quote) {
+        if (c === quote) quote = '';
+      } else if (c === '"' || c === "'") quote = c;
+      else if (c === '>') { j++; break; }
+      j++;
+    }
+    parts.push(working.slice(i, j));
+    i = j;
+  }
+  // parts alternate, but tags and text are mixed; only rewrite segments that
+  // do not start with '<'.
+  for (let p = 0; p < parts.length; p++) {
+    if (parts[p].startsWith('<') || parts[p].includes('\uE000')) continue;
+    if (parts[p].includes(from)) parts[p] = parts[p].split(from).join(to);
+  }
+  working = parts.join('');
+  return working.replace(/\uE000([\uE001-\uF8FF])/g, (_m, ch) => held[ch.charCodeAt(0) - 0xE001] || '');
+}
+
 function fuzzyReplaceWithTagPreservation(html, originalText, newText) {
   if (!originalText || !newText || originalText === newText) return { html, replaced: false };
   // Cap length 1500 (era 600): coerente con il nuovo cap dei testi a 4000.
@@ -107,7 +149,7 @@ function fuzzyReplaceWithTagPreservation(html, originalText, newText) {
     const pattern = escapedWords.join(tagsBetween);
     const regex = new RegExp(pattern, 'i');
     const match = result.match(regex);
-    if (match) {
+    if (match && match[0].length <= Math.max(800, originalText.length * 4)) {
       const matchedStr = match[0];
       const tagsInMatch = matchedStr.match(/<[^>]+>/g) || [];
       if (tagsInMatch.length > 0) {
@@ -640,7 +682,7 @@ html body [class*="h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="min-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="max-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="aspect-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
-html body [style*="height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="height:"]:not(main):not([class*="main_wrapper"]):not([class*="desktop_grid"]):not([style*="height:100%"]):not([style*="height: 100%"]):not([style*="100vh"]):has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [style*="max-height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [style*="aspect-ratio:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl){
   height:auto !important;min-height:0 !important;max-height:none !important;
@@ -675,7 +717,7 @@ const FALLBACK_INIT_SCRIPT = `<script data-fallback="init">(function(){
     for(var i=0;i<nodes.length;i++){
       var el=nodes[i];
       var tn=el.tagName;
-      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;
+      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;if(tn==='MAIN'||tn==='HTML'||tn==='BODY')continue;var shellSt=el.getAttribute('style')||'';var shellCl=typeof el.className==='string'?el.className:'';if(/main_wrapper|desktop_grid/.test(shellCl)||/height: *100%|100vh/i.test(shellSt))continue;
       if(!el.querySelector('p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl'))continue;
       if(el.__fbRelaxed)continue; el.__fbRelaxed=1;
       el.style.setProperty('height','auto','important');
@@ -1000,12 +1042,12 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     let appliedThisPair = false;
     {
       const before = preparedHtml;
-      preparedHtml = preparedHtml.split(fromEsc).join(toEsc);
+      preparedHtml = replaceAllVisibleText(preparedHtml, fromEsc, toEsc);
       if (preparedHtml !== before) { serverReplacementsCount++; appliedThisPair = true; }
     }
     if (pair.from !== fromEsc) {
       const beforeRaw = preparedHtml;
-      preparedHtml = preparedHtml.split(pair.from).join(pair.to);
+      preparedHtml = replaceAllVisibleText(preparedHtml, pair.from, pair.to);
       if (preparedHtml !== beforeRaw) { serverReplacementsCount++; appliedThisPair = true; }
     }
     const fromJson = JSON.stringify(pair.from).slice(1, -1);
@@ -1252,6 +1294,7 @@ function finalizeSwipe({ html, sourceUrl, texts, rewrites, productName, applySpa
     '</body>',
     swipeScript,
   );
+  resultHtml = healClonedLander(resultHtml).html;
 
   const newTitle = serverSideTitlePairs[0]?.to
     || (texts.length > 0 ? replacementPairs.find((p) => !p.attr)?.to || '' : '');

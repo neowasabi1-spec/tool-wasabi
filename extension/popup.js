@@ -26,14 +26,34 @@ const els = {
   shotMobile: $('shotMobile'),
   funnelMode: $('funnelMode'),
   pageUrl: $('pageUrl'),
+  bulkMode: $('bulkMode'),
+  bulkBox: $('bulkBox'),
+  bulkHint: $('bulkHint'),
+  bulkKindPages: $('bulkKindPages'),
+  bulkKindCreatives: $('bulkKindCreatives'),
+  bulkScan: $('bulkScan'),
+  bulkUrls: $('bulkUrls'),
+  bulkCount: $('bulkCount'),
+  bulkResume: $('bulkResume'),
   save: $('save'),
   status: $('status'),
 };
 
 let activeTab = null;
+let knownSavedUrls = [];
+let knownCreativeFingerprints = [];
+let scannedCreatives = [];
 
 function sendMessage(msg) {
-  return new Promise((resolve) => chrome.runtime.sendMessage(msg, (r) => resolve(r)));
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(msg, (r) => {
+      if (chrome.runtime.lastError) {
+        resolve({ ok: false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(r);
+    });
+  });
 }
 
 function setStatus(html, cls) {
@@ -112,8 +132,20 @@ async function init() {
   syncDestination();
   revealForm();
 
-  // A funnel walk runs in the background; if one is in progress, show it.
+  if (els.bulkMode && /adspend/i.test((activeTab && activeTab.url) || '')) {
+    els.bulkMode.checked = true;
+    if (isAdSpendsAdsSection((activeTab && activeTab.url) || '', (activeTab && activeTab.title) || '')) {
+      if (els.bulkKindCreatives) els.bulkKindCreatives.checked = true;
+      if (els.bulkKindPages) els.bulkKindPages.checked = false;
+    }
+    syncBulkUi();
+    if (isCreativesBulk()) scanListingCreatives();
+    else scanListingUrls();
+  }
+
+  // A funnel walk / bulk import runs in the background; if one is in progress, show it.
   resumeFunnelWalkIfRunning();
+  resumeBulkIfRunning();
 }
 
 async function loadProjects() {
@@ -187,14 +219,23 @@ async function loadFolders() {
     if (!res.ok) return;
     const data = await res.json();
     if ((data.folders || []).length) {
+      const keep = els.folder.value;
+      let remembered = '';
+      try {
+        remembered = String((await chrome.storage.local.get('wasabi_last_page_type')).wasabi_last_page_type || '');
+      } catch { /* ignore */ }
       els.folder.innerHTML = '';
       for (const f of data.folders) {
         const opt = document.createElement('option');
         opt.value = f.id;
         opt.textContent = f.name;
-        if (f.id === 'landing') opt.selected = true;
         els.folder.appendChild(opt);
       }
+      const has = (v) => v && [...els.folder.options].some((o) => o.value === v);
+      if (has(keep)) els.folder.value = keep;
+      else if (has(remembered)) els.folder.value = remembered;
+      else if (/adspend/i.test((activeTab && activeTab.url) || '') && has('advertorial')) els.folder.value = 'advertorial';
+      else if (has('landing')) els.folder.value = 'landing';
     }
     for (const t of data.tags || []) {
       const opt = document.createElement('option');
@@ -210,9 +251,36 @@ async function loadFolders() {
         els.category.appendChild(opt);
       }
     }
+    knownSavedUrls = Array.isArray(data.savedUrls) ? data.savedUrls : [];
+    const fromApi = Array.isArray(data.savedCreativeFingerprints)
+      ? data.savedCreativeFingerprints
+      : [];
+    let fromLocal = [];
+    try {
+      fromLocal = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+    } catch { /* ignore */ }
+    knownCreativeFingerprints = Array.from(
+      new Set([...fromApi, ...fromLocal].map((x) => String(x).toLowerCase())),
+    );
   } catch (e) {
     console.warn('loadFolders failed', e);
   }
+}
+
+async function rememberCreativeFingerprints(urls) {
+  const extra = [];
+  for (const url of urls || []) {
+    if (!url) continue;
+    extra.push(creativeFingerprint(url));
+  }
+  if (!extra.length) return;
+  knownCreativeFingerprints = Array.from(new Set([...knownCreativeFingerprints, ...extra]));
+  try {
+    const cur = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+    const next = Array.from(new Set([...cur, ...extra]));
+    if (next.length > 20000) next.splice(0, next.length - 20000);
+    await chrome.storage.local.set({ wasabi_creative_fps: next });
+  } catch { /* ignore */ }
 }
 
 async function captureHtml(tabId) {
@@ -338,12 +406,30 @@ function commitNewType() {
   els.newType.classList.add('hidden');
 }
 
+function selectedTypeLabel() {
+  const typed = (els.newType && els.newType.value.trim()) || '';
+  if (typed) return typed;
+  const opt = els.folder && els.folder.options[els.folder.selectedIndex];
+  return (opt && opt.textContent) || els.folder.value || 'page';
+}
+
+function rememberPageType(value) {
+  const v = String(value || '').trim();
+  if (!v) return;
+  try { chrome.storage.local.set({ wasabi_last_page_type: v }); } catch { /* ignore */ }
+}
+
 function resolveSavePageType() {
   const typed = (els.newType && els.newType.value.trim()) || '';
   if (typed) {
-    return { pageType: slugifyType(typed) || 'landing', pageTypeLabel: typed };
+    const pageType = slugifyType(typed) || 'landing';
+    rememberPageType(pageType);
+    return { pageType, pageTypeLabel: typed };
   }
-  return { pageType: els.folder.value || 'landing', pageTypeLabel: undefined };
+  const pageType = els.folder.value || 'landing';
+  rememberPageType(pageType);
+  const opt = els.folder.options[els.folder.selectedIndex];
+  return { pageType, pageTypeLabel: (opt && opt.textContent) || undefined };
 }
 
 function domainOf(url) {
@@ -351,6 +437,17 @@ function domainOf(url) {
     return new URL(url).hostname.replace(/^www\./, '');
   } catch {
     return '';
+  }
+}
+
+function pageIdentity(raw) {
+  try {
+    const x = new URL(String(raw || '').trim());
+    const host = x.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    return `${x.protocol}//${host}${path.toLowerCase()}`;
+  } catch {
+    return String(raw || '').toLowerCase().replace(/\/+$/, '').split('?')[0];
   }
 }
 
@@ -375,6 +472,11 @@ async function onSave() {
     // popup being closed/reopened. The popup only shows live progress.
     if (els.funnelMode.checked) {
       await startBackgroundFunnelWalk(toProject ? projectId : null);
+      return;
+    }
+
+    if (els.bulkMode && els.bulkMode.checked) {
+      await startBackgroundBulk(toProject ? projectId : null);
       return;
     }
 
@@ -403,6 +505,7 @@ async function onSave() {
       screenshotMobilePath: screenshotPaths.mobile || null,
       pageType,
       pageTypeLabel,
+      pageTypeExplicit: true,
       category,
       tags,
       projectId: projectId || null,
@@ -424,8 +527,7 @@ async function onSave() {
   } catch (e) {
     setStatus(String((e && e.message) || e), 'err');
   } finally {
-    // Keep the button disabled while a background funnel walk is polling.
-    if (!funnelPollTimer) els.save.disabled = false;
+    if (!funnelPollTimer && !bulkPollTimer) els.save.disabled = false;
   }
 }
 
@@ -636,8 +738,714 @@ async function resumeFunnelWalkIfRunning() {
   } catch { /* ignore */ }
 }
 
+// ── Bulk import (AdSpends lists, pasted URLs) ────────────────────────────────
+let bulkPollTimer = null;
+
+const BULK_MAX = 400;
+
+function parseBulkUrlsText(text) {
+  const out = [];
+  const seen = new Set();
+  for (const line of String(text || '').split(/\s+/)) {
+    const raw = line.trim();
+    if (!raw) continue;
+    let href = raw;
+    try {
+      const u = new URL(href);
+      if (!/^https?:$/i.test(u.protocol)) continue;
+      href = u.href;
+    } catch {
+      continue;
+    }
+    const key = href.replace(/\/+$/, '').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(href);
+    if (out.length >= BULK_MAX) break;
+  }
+  return out;
+}
+
+function isCreativesBulk() {
+  return !!(els.bulkKindCreatives && els.bulkKindCreatives.checked);
+}
+
+function isAdSpendsAdsSection(url, title) {
+  const u = String(url || '').toLowerCase();
+  const t = String(title || '').toLowerCase();
+  if (!/adspend/.test(u)) return false;
+  if (/advertorial|landing|sales.?page|funnel|offer.?page/.test(u)) return false;
+  if (/\/adspy|\/ads\b|\/creative|\/spy|tab=ads|view=ads|section=ads|media=/.test(u)) return true;
+  if (/\bads\b/.test(t) && !/landing|advertorial|pages?/.test(t)) return true;
+  return false;
+}
+
+/** Portable djb2 — must match src/lib/classify-archive-ad.ts */
+function creativeFingerprint(url) {
+  let s = String(url || '');
+  try {
+    const u = new URL(s.trim());
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    s = `${u.protocol}//${host}${path}`.toLowerCase();
+  } catch {
+    s = s.split('?')[0].replace(/\/+$/, '').toLowerCase();
+  }
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) + h + s.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+function itemsFromBulkTextarea() {
+  const urls = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value);
+  const byUrl = new Map();
+  for (const item of scannedCreatives) {
+    if (item && item.mediaUrl) byUrl.set(String(item.mediaUrl).replace(/\/+$/, '').toLowerCase(), item);
+  }
+  return urls.map((url) => {
+    const hit = byUrl.get(url.replace(/\/+$/, '').toLowerCase());
+    return hit || {
+      mediaUrl: url,
+      mediaType: /\.(mp4|webm|mov|m4v)(\?|$)/i.test(url) ? 'video' : 'image',
+      name: 'AdSpends ad',
+      text: '',
+      headline: '',
+      width: 0,
+      height: 0,
+      pageUrl: (activeTab && activeTab.url) || '',
+      pageTitle: (activeTab && activeTab.title) || '',
+    };
+  });
+}
+
+function updateBulkCount() {
+  if (!els.bulkCount) return;
+  const creatives = isCreativesBulk();
+  const n = creatives
+    ? itemsFromBulkTextarea().length
+    : parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value).length;
+  const typeLabel = creatives ? 'Template → Ads (auto type)' : selectedTypeLabel();
+  els.bulkCount.textContent = n
+    ? `${n} ${creatives ? (n === 1 ? 'creative' : 'creatives') : (n === 1 ? 'page' : 'pages')} ready → ${typeLabel}`
+    : `Will save into ${typeLabel}`;
+  if (els.bulkMode && els.bulkMode.checked && els.save && !funnelPollTimer && !bulkPollTimer) {
+    if (creatives) els.save.textContent = n ? `Save ${n} creatives` : 'Save to Wasabi';
+    else els.save.textContent = n ? `Save ${n} as ${typeLabel}` : 'Save to Wasabi';
+  }
+}
+
+function syncBulkUi() {
+  const on = !!(els.bulkMode && els.bulkMode.checked);
+  if (els.bulkBox) els.bulkBox.classList.toggle('hidden', !on);
+  if (on && els.funnelMode) els.funnelMode.checked = false;
+  const creatives = isCreativesBulk();
+  if (els.bulkHint) {
+    els.bulkHint.innerHTML = creatives
+      ? 'Sulla sezione <strong>Ads</strong> di AdSpends clicca Scan: scorre la griglia e prende le creative <em>nuove</em> (già scaricate = skip, passa alle successive). Save → <strong>Template → Ads</strong> con tipo automatico. Max 400 nuove per run. Lascia aperta la finestra importer.'
+      : 'Dalla lista AdSpends clicca Scan: scorre le card visibili e raccoglie le landing (non è il database intero da 1000+). Poi Save: si apre una finestra importer — <strong>lasciala aperta</strong> fino alla fine. Già in archivio = skip. Max 400 per run.';
+  }
+  if (els.bulkScan) els.bulkScan.textContent = creatives ? 'Scan this page for ads' : 'Scan this page for URLs';
+  if (els.bulkUrls) {
+    els.bulkUrls.placeholder = creatives
+      ? 'https://cdn…/creative.jpg\none media URL per line'
+      : 'https://…\none URL per line';
+  }
+  if (els.bulkResume) {
+    els.bulkResume.textContent = creatives ? 'Resume remaining ads' : 'Resume remaining pages';
+  }
+  const hidePageBits = on && creatives;
+  if (els.shotDesktop) {
+    const shotRow = els.shotDesktop.closest && els.shotDesktop.closest('.field');
+    if (shotRow) shotRow.classList.toggle('hidden', hidePageBits);
+  }
+  if (els.funnelMode) {
+    const funnelRow = els.funnelMode.closest && els.funnelMode.closest('.field');
+    if (funnelRow) funnelRow.classList.toggle('hidden', hidePageBits);
+  }
+  if (els.typeField) els.typeField.classList.toggle('hidden', hidePageBits);
+  if (els.name) {
+    const row = els.name.closest && els.name.closest('.field');
+    if (row) row.classList.toggle('hidden', on);
+  }
+  if (!on && els.save && !funnelPollTimer) {
+    const toProject = els.destination && els.destination.value === 'project';
+    els.save.textContent = toProject ? 'Save to Competitor Landings' : 'Save to Wasabi';
+  }
+  updateBulkCount();
+}
+
+// Harvest landing URLs from the open listing. AdSpends (and similar) only
+// put a slice of cards in the DOM — we scroll the grid so more load, and we
+// also read the domain/path text under each card (often not a real <a href>).
+async function collectListingUrlsInPage() {
+  const MAX = 400;
+  const SKIP = /adspends|facebook\.com|fb\.com|instagram\.com|tiktok\.com|youtube\.com|youtu\.be|twitter\.com|x\.com|linkedin\.com|pinterest\.com|google\.|doubleclick|googletagmanager|gstatic\.com|cloudflare|jsdelivr|unpkg\.com|stripe\.com|paypal\.com|whatsapp|telegram|gravatar|chrome-extension|sentry\.io|segment\.com|hotjar|intercom/i;
+  const unwrap = (href) => {
+    try {
+      const u = new URL(href, location.href);
+      for (const k of ['url', 'u', 'target', 'redirect', 'dest', 'landing', 'href', 'src']) {
+        const v = u.searchParams.get(k);
+        if (v && /^https?:\/\//i.test(v)) return v;
+      }
+      return u.href;
+    } catch {
+      return '';
+    }
+  };
+  const here = (location.hostname || '').replace(/^www\./, '').toLowerCase();
+  const found = [];
+  const seen = new Set();
+  const add = (raw) => {
+    let href = String(raw || '').trim();
+    if (!href) return;
+    if (!/^https?:\/\//i.test(href) && /^[a-z0-9][a-z0-9.-]+\.[a-z]{2,}\//i.test(href)) {
+      href = 'https://' + href;
+    }
+    href = unwrap(href);
+    if (!/^https?:\/\//i.test(href)) return;
+    let host = '';
+    let path = '';
+    try {
+      const u = new URL(href);
+      host = u.hostname.replace(/^www\./, '').toLowerCase();
+      path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    } catch { return; }
+    if (!host || host === here || SKIP.test(host) || SKIP.test(href)) return;
+    if (path === '/') return;
+    if (/\.(png|jpe?g|gif|webp|svg|mp4|webm|pdf|css|js)(\?|$)/i.test(href)) return;
+    const key = (host + path).toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    found.push(href);
+  };
+
+  const harvest = () => {
+    document.querySelectorAll('a[href], iframe[src], [data-url], [data-href], [data-landing], [data-landing-url]').forEach((el) => {
+      add(el.getAttribute('href') || el.getAttribute('src') || el.getAttribute('data-url') || el.getAttribute('data-href') || el.getAttribute('data-landing') || el.getAttribute('data-landing-url'));
+    });
+    const text = (document.body && document.body.innerText) || '';
+    const re = /\b(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s"'<>]*)/gi;
+    let m;
+    while ((m = re.exec(text))) add(m[0].replace(/[).,;:]+$/, ''));
+  };
+
+  const scrollables = Array.from(document.querySelectorAll('div, main, section'))
+    .filter((el) => {
+      const s = getComputedStyle(el);
+      const oy = s.overflowY;
+      return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 180;
+    })
+    .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+  const scroller = scrollables[0] || document.scrollingElement || document.documentElement;
+
+  harvest();
+  let stagnant = 0;
+  for (let i = 0; i < 70 && found.length < MAX; i++) {
+    const before = found.length;
+    const top = scroller.scrollTop;
+    scroller.scrollTop = Math.min(scroller.scrollHeight, top + Math.max(scroller.clientHeight * 0.9, 700));
+    await new Promise((r) => setTimeout(r, 500));
+    harvest();
+    if (found.length === before && scroller.scrollTop <= top + 4) {
+      stagnant += 1;
+      if (stagnant >= 4) break;
+    } else {
+      stagnant = 0;
+    }
+  }
+  try { scroller.scrollTop = 0; } catch { /* ignore */ }
+  return found.slice(0, MAX);
+}
+
+async function collectListingCreativesInPage(skipFingerprints) {
+  const MAX = 400;
+  const MIN = 72;
+  const SKIP = /googleusercontent|gstatic\.com|gravatar|hotjar|intercom|doubleclick|googletagmanager|adspends\.com\/(?:_next|static|assets|logo)|chrome-extension/i;
+  const found = [];
+  const seen = new Set();
+  const skip = new Set((skipFingerprints || []).map((x) => String(x).toLowerCase()));
+  let skippedKnown = 0;
+  const fingerprint = (url) => {
+    let s = String(url || '');
+    try {
+      const u = new URL(s.trim());
+      const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+      const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+      s = `${u.protocol}//${host}${path}`.toLowerCase();
+    } catch {
+      s = s.split('?')[0].replace(/\/+$/, '').toLowerCase();
+    }
+    let h = 5381;
+    for (let i = 0; i < s.length; i++) {
+      h = (h << 5) + h + s.charCodeAt(i);
+      h = h >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+  };
+
+  const abs = (raw) => {
+    const s = String(raw || '').trim();
+    if (!s || s.startsWith('data:') || s.startsWith('blob:')) return '';
+    try {
+      return new URL(s, location.href).href;
+    } catch {
+      return '';
+    }
+  };
+  const keyOf = (href) => {
+    try {
+      const u = new URL(href);
+      return (u.hostname.replace(/^www\./i, '') + u.pathname.replace(/\/+$/, '')).toLowerCase();
+    } catch {
+      return href.split('?')[0].toLowerCase();
+    }
+  };
+  const fromBg = (el) => {
+    try {
+      const bg = getComputedStyle(el).backgroundImage || '';
+      const m = bg.match(/url\(["']?(https?:[^"')]+)["']?\)/i);
+      return m ? m[1] : '';
+    } catch {
+      return '';
+    }
+  };
+  const pickMedia = (el) => {
+    if (!el || el.closest && el.closest('#wasabi-creative-host')) return null;
+    const tag = (el.tagName || '').toUpperCase();
+    if (tag === 'VIDEO') {
+      const src = abs(el.currentSrc || el.src || (el.querySelector && (el.querySelector('source[src]') || {}).src) || '');
+      const w = el.videoWidth || el.clientWidth || 0;
+      const h = el.videoHeight || el.clientHeight || 0;
+      if (src && /^https?:/i.test(src) && !SKIP.test(src)) {
+        return { url: src, mediaType: 'video', w, h };
+      }
+      const poster = abs(el.poster || '');
+      if (poster && /^https?:/i.test(poster) && !SKIP.test(poster)) {
+        return { url: poster, mediaType: 'image', w, h };
+      }
+      return null;
+    }
+    if (tag === 'IMG' || tag === 'SOURCE') {
+      const src = abs(el.currentSrc || el.src || el.getAttribute('data-src') || (el.getAttribute('srcset') || '').split(/\s/)[0] || '');
+      if (!src || !/^https?:/i.test(src) || SKIP.test(src)) return null;
+      const w = el.naturalWidth || el.clientWidth || 0;
+      const h = el.naturalHeight || el.clientHeight || 0;
+      if (w && h && w < MIN && h < MIN) return null;
+      const videoish = /\.(mp4|webm|mov|m4v)(\?|$)/i.test(src);
+      return { url: src, mediaType: videoish ? 'video' : 'image', w, h };
+    }
+    const bg = fromBg(el);
+    if (bg && !SKIP.test(bg)) {
+      const r = el.getBoundingClientRect();
+      if (r.width >= MIN && r.height >= MIN) {
+        return { url: bg, mediaType: 'image', w: Math.round(r.width), h: Math.round(r.height) };
+      }
+    }
+    return null;
+  };
+  const cardOf = (el) => {
+    return (
+      el.closest('[class*="card"], [class*="Card"], [class*="ad-item"], [class*="AdCard"], [class*="creative"], article, [role="listitem"], li') ||
+      el.parentElement
+    );
+  };
+
+  const harvest = () => {
+    const cards = new Set();
+    document.querySelectorAll('video, img, source, [style*="background-image"]').forEach((el) => {
+      const card = cardOf(el);
+      if (card) cards.add(card);
+    });
+    const list = cards.size ? Array.from(cards) : Array.from(document.querySelectorAll('video, img'));
+    for (const card of list) {
+      const videos = card.querySelectorAll ? Array.from(card.querySelectorAll('video')) : (card.tagName === 'VIDEO' ? [card] : []);
+      const imgs = card.querySelectorAll ? Array.from(card.querySelectorAll('img, source')) : (card.tagName === 'IMG' ? [card] : []);
+      const candidates = [];
+      videos.forEach((v) => {
+        const m = pickMedia(v);
+        if (m) candidates.push(m);
+      });
+      imgs.forEach((im) => {
+        const m = pickMedia(im);
+        if (m) candidates.push(m);
+      });
+      if (!candidates.length && card !== document.body) {
+        const m = pickMedia(card);
+        if (m) candidates.push(m);
+      }
+      if (!candidates.length) continue;
+      candidates.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+      const video = candidates.find((c) => c.mediaType === 'video');
+      const best = video || candidates[0];
+      const key = keyOf(best.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      if (skip.has(fingerprint(best.url))) {
+        skippedKnown += 1;
+        continue;
+      }
+      const text = String((card.innerText || '').replace(/\s+/g, ' ').trim()).slice(0, 800);
+      const largeImgs = candidates.filter((c) => c.mediaType === 'image' && (c.w * c.h) >= MIN * MIN * 4);
+      found.push({
+        mediaUrl: best.url,
+        mediaType: best.mediaType,
+        width: best.w || 0,
+        height: best.h || 0,
+        name: (text.split(/[.!?\n]/)[0] || text || 'AdSpends ad').slice(0, 80),
+        text,
+        headline: '',
+        carousel: largeImgs.length >= 3,
+        pageUrl: location.href,
+        pageTitle: document.title || '',
+      });
+      if (found.length >= MAX) break;
+    }
+  };
+
+  const scrollables = Array.from(document.querySelectorAll('div, main, section'))
+    .filter((el) => {
+      const s = getComputedStyle(el);
+      const oy = s.overflowY;
+      return (oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 80 && el.clientHeight > 180;
+    })
+    .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight));
+  const scroller = scrollables[0] || document.scrollingElement || document.documentElement;
+
+  harvest();
+  let stagnant = 0;
+  for (let i = 0; i < 180 && found.length < MAX; i++) {
+    const before = found.length;
+    const top = scroller.scrollTop;
+    scroller.scrollTop = Math.min(scroller.scrollHeight, top + Math.max(scroller.clientHeight * 0.9, 700));
+    await new Promise((r) => setTimeout(r, 400));
+    harvest();
+    if (found.length === before && scroller.scrollTop <= top + 4) {
+      stagnant += 1;
+      if (stagnant >= 8) break;
+    } else {
+      stagnant = 0;
+    }
+  }
+  try { scroller.scrollTop = 0; } catch { /* ignore */ }
+  return { items: found.slice(0, MAX), skippedKnown };
+}
+
+async function scanListingUrls() {
+  if (!activeTab || !activeTab.id) {
+    setStatus('Open the AdSpends list (or any page with landing links) first.', 'err');
+    return;
+  }
+  setStatus('<span class="spinner"></span>Scanning list — scrolling to load more cards…');
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      func: collectListingUrlsInPage,
+    });
+    const urls = (results && results[0] && results[0].result) || [];
+    if (!urls.length) {
+      setStatus('No landing URLs found on this page. Paste them below, one per line.', 'err');
+      return;
+    }
+    const existing = parseBulkUrlsText(els.bulkUrls.value);
+    const merged = parseBulkUrlsText([...existing, ...urls].join('\n'));
+    els.bulkUrls.value = merged.join('\n');
+    updateBulkCount();
+    const known = new Set(knownSavedUrls.map(pageIdentity).filter(Boolean));
+    const already = merged.filter((u) => known.has(pageIdentity(u))).length;
+    const fresh = merged.length - already;
+    setStatus(
+      already
+        ? `Loaded ${merged.length} from this list (max ${BULK_MAX}/run) · ${already} already saved · ${fresh} new. Not the whole AdSpends DB — only cards Scan can scroll to.`
+        : `Loaded ${merged.length} landing URL${merged.length === 1 ? '' : 's'} from the cards on this list (max ${BULK_MAX} per run). Not the whole AdSpends catalog.`,
+      'ok',
+    );
+  } catch (e) {
+    setStatus(String((e && e.message) || e), 'err');
+  }
+}
+
+async function scanListingCreatives() {
+  if (!activeTab || !activeTab.id) {
+    setStatus('Open the AdSpends Ads grid first.', 'err');
+    return;
+  }
+  setStatus('<span class="spinner"></span>Scanning ads — skipping ones already in the archive…');
+  try {
+    await loadFolders();
+    const known = new Set((knownCreativeFingerprints || []).map((x) => String(x).toLowerCase()));
+    const queuedFresh = scannedCreatives.filter(
+      (it) => it && it.mediaUrl && !known.has(creativeFingerprint(it.mediaUrl)),
+    );
+    if (queuedFresh.length >= BULK_MAX) {
+      scannedCreatives = queuedFresh.slice(0, BULK_MAX);
+      els.bulkUrls.value = scannedCreatives.map((it) => it.mediaUrl).join('\n');
+      updateBulkCount();
+      setStatus(
+        `${BULK_MAX} new creatives already queued. Save them first, then Scan again — the next run skips these and takes the following ones.`,
+        'ok',
+      );
+      return;
+    }
+    const skip = Array.from(known);
+    for (const it of queuedFresh) skip.push(creativeFingerprint(it.mediaUrl));
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      func: collectListingCreativesInPage,
+      args: [skip],
+    });
+    const raw = (results && results[0] && results[0].result) || {};
+    const items = Array.isArray(raw) ? raw : (raw.items || []);
+    const skippedKnown = Number(raw.skippedKnown) || 0;
+    const byKey = new Map();
+    for (const it of [...queuedFresh, ...items]) {
+      if (!it || !it.mediaUrl) continue;
+      if (known.has(creativeFingerprint(it.mediaUrl))) continue;
+      byKey.set(String(it.mediaUrl).replace(/\/+$/, '').toLowerCase(), it);
+    }
+    scannedCreatives = Array.from(byKey.values()).slice(0, BULK_MAX);
+    els.bulkUrls.value = scannedCreatives.map((it) => it.mediaUrl).join('\n');
+    updateBulkCount();
+    if (!scannedCreatives.length) {
+      setStatus(
+        skippedKnown
+          ? `All ${skippedKnown} ads Scan could reach are already in Template → Ads. Scroll further on AdSpends and Scan again, or change filters.`
+          : 'No creatives found on this grid. Open the Ads tab (not Pages) and try Scan again.',
+        skippedKnown ? 'ok' : 'err',
+      );
+      return;
+    }
+    setStatus(
+      skippedKnown
+        ? `Queued ${scannedCreatives.length} new creatives · skipped ${skippedKnown} already in the archive. Save, then Scan again for the next batch (max ${BULK_MAX}/run).`
+        : `Queued ${scannedCreatives.length} new creative${scannedCreatives.length === 1 ? '' : 's'} (max ${BULK_MAX} per run). Save files them into Template → Ads.`,
+      'ok',
+    );
+  } catch (e) {
+    setStatus(String((e && e.message) || e), 'err');
+  }
+}
+
+function stopBulkPoll() {
+  if (bulkPollTimer) { clearInterval(bulkPollTimer); bulkPollTimer = null; }
+}
+
+function bulkProgressLine(st) {
+  const total = Number(st.total) || (st.urls || []).length || 0;
+  const saved = Number(st.savedCount) || 0;
+  const skipped = Number(st.skippedCount) || 0;
+  const failed = Number(st.failedCount) || 0;
+  const left = Math.max(0, total - (Number(st.index) || 0));
+  return `${saved} saved · ${skipped} already in archive · ${failed} failed · ${left} left`;
+}
+
+async function refreshBulkStatusOnce() {
+  const r = await sendMessage({ type: 'BULK_STATUS' });
+  const st = r && r.state;
+  if (els.bulkResume) els.bulkResume.classList.add('hidden');
+  if (!st) {
+    stopBulkPoll();
+    if (els.save) els.save.disabled = false;
+    syncBulkUi();
+    return;
+  }
+  const inProgress = !st.done && (st.running || r.running);
+  if (inProgress) {
+    if (els.save) {
+      els.save.disabled = true;
+      els.save.textContent = 'Importing…';
+    }
+    setStatus(`<span class="spinner"></span>${st.status || 'Importing…'}<br>${bulkProgressLine(st)}`);
+    return;
+  }
+  if (!st.done && ((st.urls && st.urls.length) || (st.items && st.items.length)) && (Number(st.index) || 0) < (Number(st.total) || (st.urls || st.items || []).length)) {
+    stopBulkPoll();
+    if (els.save) els.save.disabled = false;
+    if (els.bulkResume) els.bulkResume.classList.remove('hidden');
+    setStatus(`${st.status || `Interrupted at ${st.savedCount || 0}/${st.total || '?'}.`} ${bulkProgressLine(st)}`, 'err');
+    syncBulkUi();
+    return;
+  }
+  if (st.done) {
+    stopBulkPoll();
+    if (els.save) els.save.disabled = false;
+    const cls = st.error && !st.savedCount ? 'err' : 'ok';
+    const link = st.projectId
+      ? ` &nbsp;<a href="${TOOL}/projects/${st.projectId}" target="_blank">open project</a>`
+      : ` &nbsp;<a href="${TOOL}" target="_blank">open archive</a>`;
+    setStatus(`${st.status || 'Done'} · ${bulkProgressLine(st)}${st.savedCount ? link : ''}`, cls);
+    if (st.kind === 'creatives') {
+      await rememberCreativeFingerprints(st.urls || (st.items || []).map((it) => it && it.mediaUrl));
+      scannedCreatives = [];
+      if (els.bulkUrls) els.bulkUrls.value = '';
+    }
+    await sendMessage({ type: 'BULK_RESET' });
+    if (st.kind === 'creatives') await loadFolders();
+    syncBulkUi();
+  } else {
+    if (els.save) {
+      els.save.disabled = true;
+      els.save.textContent = 'Importing…';
+    }
+    setStatus(`<span class="spinner"></span>${st.status || 'Importing…'}`);
+  }
+}
+
+function startBulkPoll() {
+  stopBulkPoll();
+  if (els.save) els.save.disabled = true;
+  refreshBulkStatusOnce();
+  bulkPollTimer = setInterval(refreshBulkStatusOnce, 1200);
+}
+
+async function startBackgroundBulk(projectId) {
+  const creatives = isCreativesBulk();
+  if (creatives) {
+    const items = itemsFromBulkTextarea();
+    if (!items.length) {
+      setStatus('Scan the Ads grid or paste media URLs first.', 'err');
+      return;
+    }
+    const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
+    const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
+    setStatus(`<span class="spinner"></span>Starting ${items.length} creatives… keep the importer window open until it says Done.`);
+    if (els.save) {
+      els.save.disabled = true;
+      els.save.textContent = 'Importing…';
+    }
+    const r = await sendMessage({
+      type: 'BULK_START',
+      kind: 'creatives',
+      items,
+      category,
+      tags,
+      pageUrl: (activeTab && activeTab.url) || '',
+      pageTitle: (activeTab && activeTab.title) || '',
+    });
+    if (!r || !r.ok) {
+      setStatus((r && r.error) || 'Could not start bulk import.', 'err');
+      if (els.save) els.save.disabled = false;
+      syncBulkUi();
+      return;
+    }
+    startBulkPoll();
+    return;
+  }
+  const urls = parseBulkUrlsText(els.bulkUrls && els.bulkUrls.value);
+  if (!urls.length) {
+    setStatus('Scan the list or paste URLs first.', 'err');
+    return;
+  }
+  const tags = els.tags.value.split(',').map((t) => t.trim()).filter(Boolean);
+  const category = (els.newCategory.value.trim() || els.category.value || '').slice(0, 60);
+  const { pageType, pageTypeLabel } = resolveSavePageType();
+  setStatus(`<span class="spinner"></span>Starting ${urls.length} pages… keep the importer window open until it says Done.`);
+  if (els.save) {
+    els.save.disabled = true;
+    els.save.textContent = 'Importing…';
+  }
+  const r = await sendMessage({
+    type: 'BULK_START',
+    urls,
+    pageType,
+    pageTypeLabel,
+    category,
+    tags,
+    projectId: projectId || null,
+    savedUrls: knownSavedUrls,
+    wantDesktop: els.shotDesktop.checked,
+    wantMobile: els.shotMobile.checked,
+  });
+  if (!r || !r.ok) {
+    setStatus((r && r.error) || 'Could not start bulk import.', 'err');
+    if (els.save) els.save.disabled = false;
+    syncBulkUi();
+    return;
+  }
+  startBulkPoll();
+}
+
+async function resumeBulkIfRunning() {
+  try {
+    const r = await sendMessage({ type: 'BULK_STATUS' });
+    const st = r && r.state;
+    if (!st) return;
+    if (st.done) {
+      await sendMessage({ type: 'BULK_RESET' });
+      return;
+    }
+    if (st.running || r.running) {
+      if (els.bulkMode) els.bulkMode.checked = true;
+      if (st.kind === 'creatives' && els.bulkKindCreatives) {
+        els.bulkKindCreatives.checked = true;
+        if (els.bulkKindPages) els.bulkKindPages.checked = false;
+      }
+      syncBulkUi();
+      startBulkPoll();
+      return;
+    }
+    if (st.urls && st.urls.length && (Number(st.index) || 0) < st.urls.length) {
+      if (els.bulkMode) els.bulkMode.checked = true;
+      if (st.kind === 'creatives' && els.bulkKindCreatives) {
+        els.bulkKindCreatives.checked = true;
+        if (els.bulkKindPages) els.bulkKindPages.checked = false;
+      }
+      syncBulkUi();
+      if (els.bulkResume) els.bulkResume.classList.remove('hidden');
+      setStatus(`${st.status || 'Import paused.'} ${bulkProgressLine(st)}`, 'err');
+    }
+  } catch { /* ignore */ }
+}
+
+async function resumeBackgroundBulk() {
+  if (els.bulkMode) els.bulkMode.checked = true;
+  syncBulkUi();
+  if (els.save) {
+    els.save.disabled = true;
+    els.save.textContent = 'Importing…';
+  }
+  const r = await sendMessage({ type: 'BULK_RESUME' });
+  if (!r || !r.ok) {
+    setStatus((r && r.error) || 'Could not resume bulk import.', 'err');
+    if (els.save) els.save.disabled = false;
+    return;
+  }
+  startBulkPoll();
+}
+
 els.save.addEventListener('click', onSave);
 els.openTool.addEventListener('click', () => chrome.tabs.create({ url: TOOL }));
+if (els.folder) {
+  els.folder.addEventListener('change', () => {
+    rememberPageType(els.folder.value);
+    updateBulkCount();
+  });
+}
+if (els.bulkMode) {
+  els.bulkMode.addEventListener('change', () => {
+    if (els.bulkMode.checked && els.funnelMode) els.funnelMode.checked = false;
+    syncBulkUi();
+  });
+}
+if (els.funnelMode) {
+  els.funnelMode.addEventListener('change', () => {
+    if (els.funnelMode.checked && els.bulkMode) {
+      els.bulkMode.checked = false;
+      syncBulkUi();
+    }
+  });
+}
+if (els.bulkScan) els.bulkScan.addEventListener('click', (e) => {
+  e.preventDefault();
+  if (isCreativesBulk()) scanListingCreatives();
+  else scanListingUrls();
+});
+if (els.bulkKindPages) els.bulkKindPages.addEventListener('change', () => { scannedCreatives = []; syncBulkUi(); });
+if (els.bulkKindCreatives) els.bulkKindCreatives.addEventListener('change', () => { syncBulkUi(); });
+if (els.bulkResume) els.bulkResume.addEventListener('click', (e) => { e.preventDefault(); resumeBackgroundBulk(); });
+if (els.bulkUrls) els.bulkUrls.addEventListener('input', updateBulkCount);
 if (els.addTypeBtn) {
   els.addTypeBtn.addEventListener('click', (e) => {
     e.preventDefault();

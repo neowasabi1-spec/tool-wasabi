@@ -74,6 +74,7 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const path = url.searchParams.get('path');
   const wantDownload = url.searchParams.get('download') === '1';
+  const wantStream = url.searchParams.get('stream') === '1';
 
   if (!path) {
     return NextResponse.json({ error: 'Missing path' }, { status: 400 });
@@ -95,15 +96,19 @@ export async function GET(req: NextRequest) {
   // size cap. Buffering the file through this serverless function truncates
   // anything over ~6MB (Lambda response limit) — long videos died mid-download
   // and the browser reported it as a network error ("connessione assente").
-  try {
-    const { data: signed } = await supabaseAdmin.storage
-      .from(BUCKET)
-      .createSignedUrl(path, 3600, wantDownload ? { download: friendly } : undefined);
-    if (signed?.signedUrl) {
-      return NextResponse.redirect(signed.signedUrl, 302);
+  // `stream=1` skips the redirect so external generators (ChatGPT Image 2)
+  // can fetch the bytes from this origin instead of a private signed URL.
+  if (!wantStream) {
+    try {
+      const { data: signed } = await supabaseAdmin.storage
+        .from(BUCKET)
+        .createSignedUrl(path, 3600, wantDownload ? { download: friendly } : undefined);
+      if (signed?.signedUrl) {
+        return NextResponse.redirect(signed.signedUrl, 302);
+      }
+    } catch {
+      /* fall through to the streaming fallback below */
     }
-  } catch {
-    /* fall through to the streaming fallback below */
   }
 
   const { data, error } = await supabaseAdmin.storage.from(BUCKET).download(path);

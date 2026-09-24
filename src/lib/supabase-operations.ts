@@ -289,8 +289,8 @@ export async function fetchFunnelPages(): Promise<FunnelPage[]> {
       `/api/funnel-html?pageId=${encodeURIComponent(row.id)}&kind=${kind}&variant=desktop`;
     return {
       ...row,
-      cloned_data: row.cloned_data ?? { htmlUrl: pointer('cloned'), htmlSkipped: true },
-      swiped_data: row.swiped_data ?? { htmlUrl: pointer('swiped'), htmlSkipped: true },
+      cloned_data: row.cloned_data ?? { htmlUrl: pointer('cloned') },
+      swiped_data: row.swiped_data ?? { htmlUrl: pointer('swiped') },
     } as FunnelPage;
   });
 }
@@ -456,11 +456,12 @@ function sanitizeFunnelPagePayload<T extends Partial<FunnelPageInsert | FunnelPa
 // them is missing we drop it and retry, so the rest of the row still saves.
 //   angle         → supabase-migration-funnel-pages-angle.sql
 //   checkout_mode → supabase-migration-funnel-pages-checkout-mode.sql
-const OPTIONAL_FUNNEL_PAGE_COLUMNS = ['angle', 'checkout_mode'] as const;
+const OPTIONAL_FUNNEL_PAGE_COLUMNS = ['angle', 'checkout_mode', 'sort_order'] as const;
 
 const OPTIONAL_COLUMN_MIGRATION: Record<string, string> = {
   angle: 'supabase-migration-funnel-pages-angle.sql',
   checkout_mode: 'supabase-migration-funnel-pages-checkout-mode.sql',
+  sort_order: 'supabase-migration-funnel-pages-sort-order.sql',
 };
 
 /** The optional column this error is complaining about, if any. */
@@ -493,6 +494,22 @@ function isMissingColumnError(err: unknown, column: string): boolean {
     (msg.includes('column') && msg.includes(column.toLowerCase()) && msg.includes('does not exist')) ||
     (msg.includes(`'${column.toLowerCase()}'`) && msg.includes('column'))
   );
+}
+
+// Archive template picker stores `arc:<funnel_id>::<url>` on the page. Until
+// supabase-migration-funnel-pages-template-id-text.sql runs, `template_id`
+// is still UUID REFERENCES swipe_templates — Postgres rejects the key
+// (22P02 / 23503) and the whole UPDATE fails, snapping the cell back to
+// "Pick template". Drop the column and retry so the rest of the row saves.
+function isTemplateIdUuidError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = String((err as { code?: unknown }).code || '');
+  const msg = String((err as { message?: unknown }).message || '').toLowerCase();
+  if (code === '22P02' && msg.includes('uuid')) return true;
+  if (msg.includes('invalid input syntax for type uuid')) return true;
+  if (code === '23503' && msg.includes('template_id')) return true;
+  if (msg.includes('funnel_pages_template_id_fkey')) return true;
+  return false;
 }
 
 export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPage> {
@@ -544,6 +561,20 @@ export async function createFunnelPage(page: FunnelPageInsert): Promise<FunnelPa
     if (!error && data) {
       return withRequestedPageType(data, requested);
     }
+  }
+
+  if (error && 'template_id' in insertPayload && isTemplateIdUuidError(error)) {
+    console.warn(
+      '[funnel_pages] `template_id` is still UUID — run supabase-migration-funnel-pages-template-id-text.sql to persist archive templates',
+    );
+    insertPayload = withoutColumn(insertPayload, 'template_id');
+    const retry = await supabase
+      .from('funnel_pages')
+      .insert(insertPayload)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
   }
 
   if (error) {
@@ -603,6 +634,21 @@ export async function updateFunnelPage(id: string, updates: FunnelPageUpdate): P
     if (!error && data) {
       return withRequestedPageType(data, requested);
     }
+  }
+
+  if (error && 'template_id' in updatePayload && isTemplateIdUuidError(error)) {
+    console.warn(
+      '[funnel_pages] `template_id` is still UUID — run supabase-migration-funnel-pages-template-id-text.sql to persist archive templates',
+    );
+    updatePayload = withoutColumn(updatePayload, 'template_id');
+    const retry = await supabase
+      .from('funnel_pages')
+      .update(updatePayload)
+      .eq('id', id)
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
   }
 
   if (error) {

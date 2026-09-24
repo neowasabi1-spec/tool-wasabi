@@ -36,12 +36,12 @@ export function resolveAdType(
   return { value: slug, label, isCustom: true };
 }
 
-export async function listArchiveAdTypes(userId: string): Promise<ArchiveAdType[]> {
+/** Shared team library: every master/user sees the same Ads type folders. */
+export async function listArchiveAdTypes(_userId?: string): Promise<ArchiveAdType[]> {
   try {
     const { data, error } = await supabaseAdmin
       .from('archive_ad_types')
       .select('value, label')
-      .eq('owner_user_id', userId)
       .order('created_at', { ascending: true });
     if (error) {
       if (!isMissingAdTypesTable(error.message)) {
@@ -89,14 +89,13 @@ export async function upsertArchiveAdType(
   return true;
 }
 
-export async function deleteArchiveAdType(userId: string, value: string): Promise<void> {
+export async function deleteArchiveAdType(_userId: string, value: string): Promise<void> {
   const slug = slugifyPageTypeLabel(value);
   if (!slug) return;
   try {
     await supabaseAdmin
       .from('archive_ad_types')
       .delete()
-      .eq('owner_user_id', userId)
       .eq('value', slug);
   } catch {
     /* ignore */

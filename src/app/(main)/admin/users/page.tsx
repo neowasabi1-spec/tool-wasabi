@@ -499,7 +499,7 @@ function SectionsPicker({
   }
   return (
     <div className="grid grid-cols-2 gap-1.5">
-      {DASHBOARD_SECTIONS.map(s => {
+      {DASHBOARD_SECTIONS.filter(s => !s.alwaysGranted).map(s => {
         const checked = selected.has(s.id);
         return (
           <button

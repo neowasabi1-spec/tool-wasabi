@@ -18,7 +18,7 @@ import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-media';
 import { isOnNiche } from '@/lib/competitor-relevance';
-import { hostOf, judgeAdvertisers, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
+import { hostOf, judgeAdvertisers, sameOfferEvidence, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 import { htmlToReadableText } from '@/lib/page-text';
 
@@ -315,13 +315,12 @@ export async function saveCompetitorLandings(
     saved++;
     existing.add(url);
     existing.add(pageUrl);
-    if (!collectMedia) continue; // affiliate: another brand's photos never enter the offer library
+    if (!collectMedia) continue;
     try {
       await extractLandingMediaFromHtml(supabaseAdmin, {
         projectId,
         html,
         pageUrl,
-        limit: 16,
       });
     } catch (e) {
       console.warn('[saveCompetitorLandings] landing media:', (e as Error).message);
@@ -372,7 +371,7 @@ export async function ingestDataset(opts: {
   /** Discovery-only fallback when the model cannot be asked: keyword include/exclude. */
   includeTerms?: string[];
   excludeTerms?: string[];
-  /** False in affiliate runs: competitor landings are saved, their photos are not pulled into the library. */
+  /** False only when the caller asks to skip photos. Affiliate landings are the same offer, so their photos are kept. */
   collectMedia?: boolean;
   /** Wall-clock budget for the whole ingestion (default fits a 300s function). */
   budgetMs?: number;
@@ -419,20 +418,38 @@ export async function ingestDataset(opts: {
       // the judge must read the landing page, not just the ad copy.
       await enrichCardsWithLandings(cards, mappedItems, htmlCache, Math.min(150_000, Math.round(budget * 0.15)));
       const verdicts = await judgeAdvertisers(opts.product, cards);
-      // Model verdict when it answered for this advertiser; keyword check only
-      // for the ones it did not (a failed batch), never a blanket reject.
+      const affiliate = opts.product.affiliate === true;
+      // Model verdict when it answered. Affiliate never falls through to a
+      // category keyword match — an unanswered card is dropped. Other modes
+      // still use keywords for the batch the model did not answer.
       keep = (m) => {
         const v = verdicts.get(advertiserKey(m));
         if (v) return v.competitor;
+        if (affiliate) return false;
         return includeTerms.length ? byKeywords(m) : true;
       };
       const yes = [...verdicts.values()].filter((v) => v.competitor).length;
       console.log(`[ingestDataset] ${platform}: model kept ${yes}/${verdicts.size} advertisers for "${opts.product.name}"`);
     } catch (e) {
       console.warn('[ingestDataset] competitor judge failed, keyword fallback:', (e as Error).message);
+      if (opts.product?.affiliate) {
+        keep = (m) => !!sameOfferEvidence(opts.product as ProductProfile, {
+          id: advertiserKey(m),
+          name: m.pageName || '',
+          samples: [m.headline, m.hook, m.bodyText].filter((s): s is string => !!s),
+          landingHost: hostOf(m.landingUrl),
+        });
+      }
     }
   }
-  if (!keep && discovery && includeTerms.length > 0) {
+  if (!keep && discovery && opts.product?.affiliate) {
+    keep = (m) => !!sameOfferEvidence(opts.product as ProductProfile, {
+      id: advertiserKey(m),
+      name: m.pageName || '',
+      samples: [m.headline, m.hook, m.bodyText].filter((s): s is string => !!s),
+      landingHost: hostOf(m.landingUrl),
+    });
+  } else if (!keep && discovery && includeTerms.length > 0) {
     keep = byKeywords;
   }
 
@@ -508,6 +525,7 @@ export async function ingestDataset(opts: {
         dl?.contentType || (mapped.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
 
       let bodyText = mapped.bodyText;
+      let spoken = '';
       if (
         mapped.mediaType === 'video' &&
         dl?.buffer &&
@@ -515,8 +533,7 @@ export async function ingestDataset(opts: {
         Date.now() - startedAt < TRANSCRIBE_BUDGET_MS
       ) {
         const remaining = TRANSCRIBE_BUDGET_MS - (Date.now() - startedAt);
-        const transcript = await transcribeVideo(dl.buffer, contentType, remaining).catch(() => '');
-        if (transcript) bodyText = `${bodyText ? bodyText + '\n\n' : ''}${transcript}`.slice(0, 4000);
+        spoken = await transcribeVideo(dl.buffer, contentType, remaining).catch(() => '');
       }
 
       const res = await insertCompetitorAd({
@@ -525,6 +542,7 @@ export async function ingestDataset(opts: {
         buffer: dl?.buffer || null,
         contentType,
         remoteUrl: mapped.mediaUrl,
+        origin: siteBaseUrl() || undefined,
         externalId: mapped.externalId,
         source: 'apify',
         adStartedAt: mapped.adStartedAt || undefined,
@@ -539,6 +557,7 @@ export async function ingestDataset(opts: {
           headline: mapped.headline,
           hook: mapped.hook,
           body_text: bodyText,
+          transcript: spoken,
           landing_url: mapped.landingUrl || '',
         },
       });

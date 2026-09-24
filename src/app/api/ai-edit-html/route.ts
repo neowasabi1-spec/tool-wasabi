@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { normalizeCheckoutMode, withCheckoutRules, type CheckoutMode } from '@/lib/checkout-modes';
 import { repairWasabiCheckout } from '@/lib/wasabi-checkout-contract';
+import { applyTextSwap, parseTextSwapInstruction } from '@/lib/ai-html-text-swap';
 
 export const maxDuration = 300;
 export const dynamic = 'force-dynamic';
@@ -342,6 +343,17 @@ export async function POST(request: NextRequest) {
             htmlLength: html.length,
             checkoutMode: checkoutMode || 'standard',
           });
+
+          const swap = parseTextSwapInstruction(prompt);
+          if (swap) {
+            const applied = applyTextSwap(html, swap.from, swap.to);
+            if (applied.count === 0) {
+              throw new Error(`"${swap.from}" was not found on the page`);
+            }
+            send({ type: 'result', html: applied.html, applied: { from: swap.from, to: swap.to, count: applied.count } });
+            send({ type: 'done' });
+            return;
+          }
 
           let resultHtml: string;
 

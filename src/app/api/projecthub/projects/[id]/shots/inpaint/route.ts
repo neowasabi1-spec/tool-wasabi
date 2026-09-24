@@ -62,7 +62,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const ids = targets.map((s) => s.id as number);
   const { error: updErr } = await supabaseAdmin
     .from('competitor_shots')
-    .update({ inpaint_status: 'pending', inpaint_error: null })
+    .update({ inpaint_status: 'pending', inpaint_error: null, has_text: true })
     .in('id', ids);
   if (updErr) return NextResponse.json({ error: updErr.message }, { status: 500 });
 

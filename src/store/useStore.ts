@@ -73,6 +73,40 @@ function writeLocalCheckoutMode(pageId: string, mode: CheckoutMode): void {
   }
 }
 
+const FUNNEL_STEP_ORDER_LS_KEY = 'wasabi_funnel_step_order';
+
+function readLocalStepOrder(): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(FUNNEL_STEP_ORDER_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string' && id.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalStepOrder(ids: string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(FUNNEL_STEP_ORDER_LS_KEY, JSON.stringify(ids));
+  } catch {
+    /* quota / private mode — the sort_order column still has it */
+  }
+}
+
+function persistFunnelStepOrder(ids: string[]): void {
+  writeLocalStepOrder(ids);
+  void authFetch('/api/funnel-pages/reorder', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  }).catch((e) => {
+    console.warn('[funnel] step order persist failed:', e instanceof Error ? e.message : e);
+  });
+}
+
 /** Mirror to the server sidecar. Fire-and-forget: never blocks or throws. */
 function mirrorCheckoutModeToServer(
   pageId: string,
@@ -88,6 +122,40 @@ function mirrorCheckoutModeToServer(
     }).catch(() => {});
   } catch {
     /* ignore */
+  }
+}
+
+// Archive template picker writes `arc:<funnel_id>::<url>` into templateId.
+// Until template_id is TEXT (not UUID FK to swipe_templates), the DB write
+// is rejected and merge-from-DB / revert would snap the cell back to
+// "Pick template". Mirror to localStorage the same way as checkout_mode.
+const TEMPLATE_ID_LS_KEY = 'funnel-page-template-ids';
+
+function readLocalTemplateIds(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(TEMPLATE_ID_LS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [id, v] of Object.entries(parsed)) {
+      if (typeof v === 'string' && v) out[id] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalTemplateId(pageId: string, templateId: string | null | undefined): void {
+  if (typeof window === 'undefined' || !pageId) return;
+  try {
+    const all = readLocalTemplateIds();
+    if (templateId) all[pageId] = templateId;
+    else delete all[pageId];
+    window.localStorage.setItem(TEMPLATE_ID_LS_KEY, JSON.stringify(all));
+  } catch {
+    /* quota / private mode */
   }
 }
 
@@ -204,6 +272,7 @@ interface AppFunnelPage {
     // locale vince (anche se il write Supabase Ã¨ fallito o la pagina Ã¨
     // piccola e l'HTML nel JSONB Ã¨ rimasto vecchio).
     editedAt?: number;
+    swipeMap?: import('../lib/swipe-asset-map').SwipeAssetMap;
   };
   swipedData?: {
     html: string;
@@ -235,6 +304,11 @@ interface AppFunnelPage {
     price: string | null;
     benefits: string[];
   };
+  /** Master-only: who created this Clone/Swipe step. */
+  ownerUserId?: string | null;
+  ownerEmail?: string | null;
+  /** Position in the Front End Funnel table. Lower comes first. */
+  sortOrder?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -506,7 +580,7 @@ function mergeJsonbWithLocalHtml<T extends Record<string, unknown> | null | unde
   for (const key of ['html', 'mobileHtml', 'htmlMobile', 'rawHtml', 'renderedHtml', 'content']) {
     const dbVal = (fromDb as Record<string, unknown>)[key];
     const localVal = (fromLocal as Record<string, unknown>)[key];
-    if (typeof localVal === 'string' && localVal && typeof dbVal !== 'string') {
+    if (typeof localVal === 'string' && localVal && (typeof dbVal !== 'string' || dbVal.length < localVal.length)) {
       out[key] = localVal;
     }
   }
@@ -543,9 +617,44 @@ function dbFunnelPageToApp(p: FunnelPage): AppFunnelPage {
     analysisStatus: p.analysis_status || undefined,
     analysisResult: p.analysis_result || undefined,
     extractedData: p.extracted_data as AppFunnelPage['extractedData'],
+    ownerUserId:
+      typeof (p as { owner_user_id?: unknown }).owner_user_id === 'string'
+        ? (p as { owner_user_id: string }).owner_user_id
+        : null,
+    ownerEmail:
+      typeof (p as { owner_email?: unknown }).owner_email === 'string'
+        ? (p as { owner_email: string }).owner_email
+        : null,
+    sortOrder: (() => {
+      const raw = (p as { sort_order?: unknown }).sort_order;
+      const n = typeof raw === 'number' ? raw : typeof raw === 'string' && raw !== '' ? Number(raw) : NaN;
+      return Number.isFinite(n) ? n : undefined;
+    })(),
     createdAt: new Date(p.created_at),
     updatedAt: new Date(p.updated_at),
   };
+}
+
+/** DB sort_order when any row has one; otherwise the last order set in this browser. */
+function orderFunnelPages(pages: AppFunnelPage[]): AppFunnelPage[] {
+  const hasSort = pages.some((p) => typeof p.sortOrder === 'number');
+  if (hasSort) {
+    return [...pages].sort((a, b) => {
+      const ao = typeof a.sortOrder === 'number' ? a.sortOrder : Number.MAX_SAFE_INTEGER;
+      const bo = typeof b.sortOrder === 'number' ? b.sortOrder : Number.MAX_SAFE_INTEGER;
+      if (ao !== bo) return ao - bo;
+      return a.createdAt.getTime() - b.createdAt.getTime();
+    });
+  }
+  const stored = readLocalStepOrder();
+  if (!stored.length) return pages;
+  const rank = new Map(stored.map((id, i) => [id, i]));
+  return [...pages].sort((a, b) => {
+    const ar = rank.has(a.id) ? rank.get(a.id)! : Number.MAX_SAFE_INTEGER;
+    const br = rank.has(b.id) ? rank.get(b.id)! : Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
 }
 
 function dbPostPurchaseToApp(p: PostPurchasePage): AppPostPurchasePage {
@@ -604,6 +713,8 @@ interface Store {
   addFunnelPage: (page: Omit<AppFunnelPage, 'id' | 'createdAt' | 'updatedAt'>) => Promise<void>;
   updateFunnelPage: (id: string, page: Partial<AppFunnelPage>) => Promise<void>;
   deleteFunnelPage: (id: string) => Promise<void>;
+  /** Put these page ids in this order (1 = first step). Unknown ids stay at the end. */
+  reorderFunnelPages: (ids: string[]) => void;
   launchSwipe: (id: string) => Promise<void>;
 
   // Post Purchase Pages
@@ -707,11 +818,15 @@ export const useStore = create<Store>()((set, get) => ({
       let appFunnelPages: AppFunnelPage[] = [];
       try {
         const funnelPages = await supabaseOps.fetchFunnelPages();
-        appFunnelPages = funnelPages.map(dbFunnelPageToApp);
+        appFunnelPages = orderFunnelPages(funnelPages.map(dbFunnelPageToApp));
         const localModes = readLocalCheckoutModes();
+        const localTemplates = readLocalTemplateIds();
         for (const p of appFunnelPages) {
           if (p.checkoutMode === undefined && localModes[p.id]) {
             p.checkoutMode = localModes[p.id];
+          }
+          if (!p.templateId && localTemplates[p.id]) {
+            p.templateId = localTemplates[p.id];
           }
         }
         set({ funnelPages: appFunnelPages });
@@ -1017,7 +1132,7 @@ export const useStore = create<Store>()((set, get) => ({
       const created = await supabaseOps.createFunnelPage({
         name: page.name,
         page_type: page.pageType,
-        template_id: page.templateId,
+        ...(page.templateId !== undefined ? { template_id: page.templateId || null } : {}),
         project_id: page.productId || null,
         product_id: null,
         url_to_swipe: page.urlToSwipe,
@@ -1040,6 +1155,9 @@ export const useStore = create<Store>()((set, get) => ({
       if (createdApp.checkoutMode === undefined && page.checkoutMode !== undefined) {
         createdApp.checkoutMode = normalizeCheckoutMode(page.checkoutMode);
       }
+      if (!createdApp.templateId && page.templateId) {
+        createdApp.templateId = page.templateId;
+      }
       if (createdApp.checkoutMode !== undefined) {
         writeLocalCheckoutMode(createdApp.id, createdApp.checkoutMode);
         mirrorCheckoutModeToServer(createdApp.id, createdApp.checkoutMode, [
@@ -1047,9 +1165,13 @@ export const useStore = create<Store>()((set, get) => ({
           createdApp.id,
         ]);
       }
+      if (createdApp.templateId) {
+        writeLocalTemplateId(createdApp.id, createdApp.templateId);
+      }
       set((state) => ({
         funnelPages: [...state.funnelPages, createdApp],
       }));
+      writeLocalStepOrder(get().funnelPages.map((p) => p.id));
     } catch (error) {
       console.error('Error adding funnel page:', error);
       throw error;
@@ -1081,6 +1203,9 @@ export const useStore = create<Store>()((set, get) => ({
         mode,
         get().funnelPages.map((p) => p.id),
       );
+    }
+    if (page.templateId !== undefined) {
+      writeLocalTemplateId(id, page.templateId || null);
     }
 
     try {
@@ -1131,7 +1256,7 @@ export const useStore = create<Store>()((set, get) => ({
       const updated = await supabaseOps.updateFunnelPage(id, {
         name: page.name,
         page_type: page.pageType,
-        template_id: page.templateId,
+        ...(page.templateId !== undefined ? { template_id: page.templateId || null } : {}),
         ...(page.productId !== undefined
           ? { project_id: page.productId || null }
           : {}),
@@ -1192,6 +1317,11 @@ export const useStore = create<Store>()((set, get) => ({
             // selector back to "Standard". Keep what we have unless the DB
             // actually told us something.
             checkoutMode: fromDb.checkoutMode ?? p.checkoutMode,
+            // Archive keys (`arc:…`) are not UUID FKs, so the DB write is
+            // omitted/retried and fromDb.templateId comes back null. Keep
+            // the picker value the user just chose.
+            templateId: fromDb.templateId || p.templateId,
+            sortOrder: fromDb.sortOrder ?? p.sortOrder,
           };
         }),
       }));
@@ -1201,10 +1331,13 @@ export const useStore = create<Store>()((set, get) => ({
       // here would put the dropdown out of sync with what actually survives a
       // reload. Every other field goes back to its previous value as before.
       if (prev) {
-        const restored =
-          page.checkoutMode !== undefined
-            ? { ...prev, checkoutMode: normalizeCheckoutMode(page.checkoutMode) }
-            : prev;
+        let restored = prev;
+        if (page.checkoutMode !== undefined) {
+          restored = { ...restored, checkoutMode: normalizeCheckoutMode(page.checkoutMode) };
+        }
+        if (page.templateId !== undefined) {
+          restored = { ...restored, templateId: page.templateId || undefined };
+        }
         set((state) => ({
           funnelPages: state.funnelPages.map((p) =>
             p.id === id ? restored : p
@@ -1222,10 +1355,30 @@ export const useStore = create<Store>()((set, get) => ({
       set((state) => ({
         funnelPages: state.funnelPages.filter((p) => p.id !== id),
       }));
+      writeLocalStepOrder(get().funnelPages.map((p) => p.id));
     } catch (error) {
       console.error('Error deleting funnel page:', error);
       throw error;
     }
+  },
+
+  reorderFunnelPages: (ids) => {
+    const current = get().funnelPages;
+    const byId = new Map(current.map((p) => [p.id, p]));
+    const seen = new Set<string>();
+    const next: AppFunnelPage[] = [];
+    for (const id of ids) {
+      const page = byId.get(id);
+      if (!page || seen.has(id)) continue;
+      seen.add(id);
+      next.push(page);
+    }
+    for (const page of current) {
+      if (!seen.has(page.id)) next.push(page);
+    }
+    const ordered = next.map((page, index) => ({ ...page, sortOrder: index }));
+    set({ funnelPages: ordered });
+    persistFunnelStepOrder(ordered.map((p) => p.id));
   },
 
   launchSwipe: async (id) => {
@@ -1469,7 +1622,10 @@ export const useStore = create<Store>()((set, get) => ({
       // Supabase query so the rest of the app keeps working â€” RLS will
       // still scope rows to the caller, so this is a strict superset.
       try {
-        const res = await authFetch('/api/valchiria/funnels', { cache: 'no-store' });
+        const res = await authFetch('/api/valchiria/funnels', {
+          cache: 'no-store',
+          signal: AbortSignal.timeout(25_000),
+        });
         const raw = await res.text();
         let json: { success?: boolean; funnels?: unknown; error?: string } | null = null;
         try {
@@ -1489,9 +1645,9 @@ export const useStore = create<Store>()((set, get) => ({
         // Capture the REAL reason so the fallback can either succeed
         // (replacing it) or hand it back to the UI for display.
         apiReason = json?.error
-          ? `API /api/valchiria/funnels â†’ HTTP ${res.status}: ${json.error}`
-          : `API /api/valchiria/funnels â†’ HTTP ${res.status}${
-              raw ? ` â€” ${raw.slice(0, 180).replace(/\s+/g, ' ').trim()}` : ''
+          ? `API /api/valchiria/funnels -> HTTP ${res.status}: ${json.error}`
+          : `API /api/valchiria/funnels -> HTTP ${res.status}${
+              raw ? ` — ${raw.slice(0, 180).replace(/\s+/g, ' ').trim()}` : ''
             }`;
         console.warn('[loadArchivedFunnels]', apiReason);
       } catch (apiErr) {
@@ -1500,31 +1656,18 @@ export const useStore = create<Store>()((set, get) => ({
         }`;
         console.warn('[loadArchivedFunnels]', apiReason);
       }
-      // Direct Supabase fallback â€” RLS scopes rows; for the master this
-      // returns everything via `is_master(auth.uid())`.
-      try {
-        const data = await supabaseOps.fetchArchivedFunnels();
-        set({
-          archivedFunnels: data,
-          archivedFunnelsLoaded: true,
-          archivedFunnelsLoading: false,
-          archivedFunnelsError: null,
-        });
-      } catch (fallbackErr) {
-        const fallbackReason =
-          fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-        const kept = get().archivedFunnels || [];
-        if (kept.length > 0) {
-          set({ archivedFunnelsLoading: false });
-          return;
-        }
-        set({
-          archivedFunnels: kept,
-          archivedFunnelsLoaded: false,
-          archivedFunnelsLoading: false,
-          archivedFunnelsError: `${apiReason || 'API failed'}. Fallback also failed: ${fallbackReason}`,
-        });
+      const kept = get().archivedFunnels || [];
+      const keptHasSteps = kept.some((f) => Array.isArray(f.steps) && f.steps.length > 0);
+      if (keptHasSteps) {
+        set({ archivedFunnelsLoading: false });
+        return;
       }
+      set({
+        archivedFunnels: kept,
+        archivedFunnelsLoaded: false,
+        archivedFunnelsLoading: false,
+        archivedFunnelsError: apiReason || 'Could not load page templates',
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('Error loading archived funnels:', error);

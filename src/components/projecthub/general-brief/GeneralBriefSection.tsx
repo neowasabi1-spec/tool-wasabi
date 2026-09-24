@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, type MouseEvent } from "react";
 import { useLiveReload } from "@/lib/live-refresh";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
@@ -13,10 +13,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import {
   Upload, FileText, Image, Download, X, Pencil, Check, FolderOpen, Plus, Trash2,
-  LayoutTemplate, Save, Loader2, ExternalLink, DollarSign,
+  LayoutTemplate, Save, Loader2, ExternalLink, DollarSign, AlignLeft,
 } from "lucide-react";
 import { getUploadUrl } from "@/lib/projecthub-storage";
 import { useStore } from "@/store/useStore";
@@ -165,11 +166,79 @@ function FileRow({ file, onDelete }: { file: ProjectFile; onDelete: (id: number)
   );
 }
 
+function MockupTile({
+  file,
+  projectId,
+  onOpen,
+  onDeleted,
+}: {
+  file: ProjectFile;
+  projectId: string;
+  onOpen: () => void;
+  onDeleted: (id: number) => void;
+}) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const handleDelete = async (e: MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/files/${file.id}`, {
+        method: "DELETE",
+      });
+      if (r.ok || r.status === 204) {
+        onDeleted(file.id);
+        toast({ title: "Image deleted" });
+      } else {
+        toast({ title: "Could not delete image", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Delete error", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="group relative w-full aspect-square rounded-lg overflow-hidden border border-border bg-muted">
+        <button
+          type="button"
+          onClick={onOpen}
+          className="block w-full h-full hover:border-primary/40"
+        >
+          <img
+            src={getUploadUrl(file.file_path)}
+            alt={file.original_name}
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          />
+        </button>
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={busy}
+          title="Delete image"
+          className="absolute top-1.5 right-1.5 z-10 p-1.5 rounded-md bg-black/70 text-white hover:bg-red-600 disabled:opacity-50 shadow-sm"
+        >
+          {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+        </button>
+      </div>
+      <p className="text-[11px] text-muted-foreground truncate text-center" title={file.original_name}>
+        {file.original_name}
+      </p>
+    </div>
+  );
+}
+
 // ─── GENERAL BRIEF TAB CONTENT ───
-function GeneralBriefTabContent({ projectId, files, projectName }: {
+function GeneralBriefTabContent({ projectId, files, projectName, projectDescription }: {
   projectId: string;
   files: ProjectFile[];
   projectName: string;
+  projectDescription: string;
 }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -177,6 +246,12 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(projectName);
   const [savingName, setSavingName] = useState(false);
+  const [descDraft, setDescDraft] = useState(projectDescription);
+  const [savingDesc, setSavingDesc] = useState(false);
+
+  useEffect(() => {
+    setDescDraft(projectDescription);
+  }, [projectDescription]);
 
   const byType = (t: string) => files.filter(f => f.file_type === t);
 
@@ -202,6 +277,35 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
       toast({ title: "Network error", variant: "destructive" });
     } finally { setSavingName(false); }
   };
+
+  const saveDescription = async () => {
+    const trimmed = descDraft.trim();
+    if (trimmed === (projectDescription || "").trim()) return;
+    setSavingDesc(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: trimmed }),
+      });
+      if (r.ok) {
+        queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
+        queryClient.invalidateQueries({ queryKey: getListProjectsQueryKey() });
+        useStore.setState((state) => ({
+          projects: state.projects.map((p) =>
+            p.id === projectId ? { ...p, description: trimmed } : p
+          ),
+        }));
+        toast({ title: "Product description saved" });
+      } else {
+        toast({ title: "Error saving", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Network error", variant: "destructive" });
+    } finally { setSavingDesc(false); }
+  };
+
+  const descDirty = descDraft.trim() !== (projectDescription || "").trim();
 
   const deleteFile = (id: number) => {
     queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
@@ -235,6 +339,37 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
             </button>
           </div>
         )}
+      </div>
+
+      {/* Product description — enough for Clone/Swipe when there is no brief / MR file */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <AlignLeft className="w-3.5 h-3.5 text-primary" /> Product description
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              What the product is, who it is for, and why it exists. Clone/Swipe uses this even without a brief or market-research document.
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={saveDescription}
+            disabled={savingDesc || !descDirty}
+            className="bg-primary text-white gap-1.5 shrink-0"
+          >
+            <Check className="w-3.5 h-3.5" /> {savingDesc ? "Saving..." : "Save"}
+          </Button>
+        </div>
+        <Textarea
+          value={descDraft}
+          onChange={(e) => setDescDraft(e.target.value)}
+          onBlur={() => { if (descDirty && !savingDesc) void saveDescription(); }}
+          placeholder="e.g. Daily greens powder for women 35+. Mix with water in the morning. Main claims: energy, bloating, skin. Sold as a 30-day tub with 2x / 3x packs."
+          rows={5}
+          disabled={savingDesc}
+          className="text-sm resize-y min-h-[120px]"
+        />
       </div>
 
       {/* Market Research */}
@@ -276,16 +411,13 @@ function GeneralBriefTabContent({ projectId, files, projectName }: {
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
             {byType("ugc").map(f => (
-              <div key={f.id} className="space-y-1.5">
-                <button onClick={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
-                  className="group block w-full aspect-square rounded-lg overflow-hidden border border-border bg-muted hover:border-primary/40 transition-all">
-                  <img src={getUploadUrl(f.file_path)} alt={f.original_name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                </button>
-                <p className="text-[11px] text-muted-foreground truncate text-center" title={f.original_name}>
-                  {f.original_name}
-                </p>
-              </div>
+              <MockupTile
+                key={f.id}
+                file={f}
+                projectId={projectId}
+                onOpen={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
+                onDeleted={deleteFile}
+              />
             ))}
           </div>
         )}
@@ -321,11 +453,6 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemp
   const mockupFiles = files.filter(f => f.file_type === `img_${section.id}`);
 
   const deleteFile = () => {
-    queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
-  };
-
-  const deleteMockup = async (fileId: number) => {
-    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/files/${fileId}`, { method: "DELETE" });
     queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
   };
 
@@ -452,16 +579,13 @@ function ProductBriefTabContent({ section, stepIdx, projectId, files, onPickTemp
         ) : (
           <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
             {mockupFiles.map(f => (
-              <div key={f.id} className="group relative aspect-square rounded-lg overflow-hidden border border-border bg-muted">
-                <button className="w-full h-full" onClick={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}>
-                  <img src={getUploadUrl(f.file_path)} alt={f.original_name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
-                </button>
-                <button onClick={() => deleteMockup(f.id)}
-                  className="absolute top-1 right-1 p-1 rounded-full bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-600">
-                  <Trash2 className="w-2.5 h-2.5" />
-                </button>
-              </div>
+              <MockupTile
+                key={f.id}
+                file={f}
+                projectId={projectId}
+                onOpen={() => setLightbox({ src: getUploadUrl(f.file_path), alt: f.original_name })}
+                onDeleted={deleteFile}
+              />
             ))}
           </div>
         )}
@@ -500,10 +624,11 @@ function applyPickedTemplate(
   };
 }
 
-export function GeneralBriefSection({ projectId, files, projectName, onGoToFunnel }: {
+export function GeneralBriefSection({ projectId, files, projectName, projectDescription, onGoToFunnel }: {
   projectId: string;
   files: ProjectFile[];
   projectName: string;
+  projectDescription?: string;
   onGoToFunnel?: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -844,7 +969,12 @@ export function GeneralBriefSection({ projectId, files, projectName, onGoToFunne
 
       {/* ── TAB CONTENT ── */}
       {activeTab === "general" && (
-        <GeneralBriefTabContent projectId={projectId} files={files} projectName={projectName} />
+        <GeneralBriefTabContent
+          projectId={projectId}
+          files={files}
+          projectName={projectName}
+          projectDescription={projectDescription || ""}
+        />
       )}
       {pbSections.map((section, idx) =>
         activeTab === section.id ? (

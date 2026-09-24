@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { LayoutTemplate, Loader2, Search, X } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import {
+  labelFromArchiveTemplateKey,
   listTemplatesForStepType,
   pickerValueForTemplate,
   type ArchiveTemplatePage,
@@ -149,11 +150,13 @@ export function TemplatePickerDialog({
 export function TemplatePickerCell({
   pageType,
   templateId,
+  templateLabel,
   typeLabel,
   onPick,
 }: {
   pageType: string;
   templateId?: string;
+  templateLabel?: string;
   typeLabel: string;
   onPick: (page: ArchiveTemplatePage | null) => void;
 }) {
@@ -185,9 +188,10 @@ export function TemplatePickerCell({
           title={
             selected
               ? selected.name
-              : pages.length === 0
-                ? `No ${typeLabel} templates`
-                : `Pick a ${typeLabel} template`
+              : templateLabel || (templateId ? labelFromArchiveTemplateKey(templateId) : undefined) ||
+                (pages.length === 0
+                  ? `No ${typeLabel} templates`
+                  : `Pick a ${typeLabel} template`)
           }
           className="flex items-center gap-1.5 min-w-0 flex-1 rounded border border-gray-200 bg-white px-1 py-0.5 text-left hover:border-indigo-300 hover:bg-indigo-50/40"
         >
@@ -205,9 +209,13 @@ export function TemplatePickerCell({
           <span className="min-w-0 truncate text-[11px] text-gray-700">
             {selected
               ? selected.name
-              : pages.length === 0
-                ? `No ${typeLabel}`
-                : 'Pick template'}
+              : templateLabel
+                ? templateLabel
+                : templateId
+                  ? labelFromArchiveTemplateKey(templateId)
+                  : pages.length === 0
+                    ? `No ${typeLabel}`
+                    : 'Pick template'}
           </span>
         </button>
         {templateId && (

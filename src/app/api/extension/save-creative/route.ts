@@ -281,7 +281,7 @@ export async function POST(req: NextRequest) {
       /* transcript stays on-demand via the "Extract text" button */
     }
   }
-  const bodyText = [body.body_text, transcript].filter(Boolean).join('\n\n').trim();
+  const bodyText = (body.body_text || '').trim();
 
   const result = await insertCompetitorAd({
     projectId,
@@ -290,11 +290,13 @@ export async function POST(req: NextRequest) {
     contentType,
     preUploadedPath: storagePath || undefined,
     remoteUrl: mediaUrl,
+    origin: new URL(req.url).origin,
     meta: {
       name: body.name || body.pageTitle || brandName,
       headline: body.headline,
       hook: body.hook,
       body_text: bodyText,
+      transcript,
       landing_url: body.landing_url,
     },
     landingUrl: body.landing_url,

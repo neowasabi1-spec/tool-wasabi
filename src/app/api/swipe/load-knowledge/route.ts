@@ -18,8 +18,10 @@ export const maxDuration = 30;
  *    categorie rilevanti per uno swipe di landing: swipe, copy, clone,
  *    landing, general. Restituite ordinate per is_favorite desc,
  *    use_count desc, cosi' i preferiti / piu' usati arrivano prima.
- *  • projects.brief + projects.market_research del progetto attivo
- *    (se passato un ?projectId).
+ *  • projects.description + projects.brief + projects.market_research
+ *    del progetto attivo (se passato un ?projectId). description is the
+ *    free-text "what is this product" field — used as a brief fallback
+ *    when no brief file was uploaded.
  *
  * NB: questo endpoint NON e' protetto da auth applicativa avanzata —
  * e' chiamato solo dai client del tool e ritorna soltanto dati che
@@ -53,31 +55,42 @@ export async function GET(request: Request) {
   // Fix: leggi entrambi, prefer brief_files.content, fallback brief.
   // Idem per market_research: leggiamo anche il content estratto da
   // SectionData se la colonna market_research e' JSONB.
-  let project: { id: string; name: string; brief: string | null; market_research: unknown; notes: string | null } | null = null;
+  let project: {
+    id: string;
+    name: string;
+    description: string | null;
+    brief: string | null;
+    market_research: unknown;
+    notes: string | null;
+  } | null = null;
   if (projectId) {
     try {
       const { data, error } = await supabase
         .from('projects')
-        .select('id, name, brief, brief_files, market_research, notes')
+        .select('id, name, description, brief, brief_files, market_research, notes')
         .eq('id', projectId)
         .maybeSingle();
       if (error) throw error;
       if (data) {
         const row = data as {
           id: string; name: string;
+          description?: string | null;
           brief: string | null;
           brief_files?: unknown;
           market_research: unknown;
           notes: string | null;
         };
+        const descText = (row.description || '').trim();
         const briefFromFiles = extractSectionContent(row.brief_files).trim();
         const briefFromText = (row.brief || '').trim();
-        const briefFinal = briefFromFiles || briefFromText || null;
+        // Product description is enough when no brief/MR files were uploaded.
+        const briefFinal = briefFromFiles || briefFromText || descText || null;
         const mrFromContent = extractSectionContent(row.market_research).trim();
         const mrFinal: unknown = mrFromContent ? mrFromContent : row.market_research;
         project = {
           id: row.id,
           name: row.name,
+          description: descText || null,
           brief: briefFinal,
           market_research: mrFinal,
           notes: row.notes,

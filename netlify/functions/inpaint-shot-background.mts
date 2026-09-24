@@ -281,6 +281,40 @@ export function analyzeLeftoverText(
   };
 }
 
+/**
+ * True when the "cleaned" clip still shows the original caption letters.
+ * A model file that came back unchanged used to be stored as clean: the
+ * diff-based check sees nothing repainted and reports success.
+ */
+export function stillHasCaptions(orig: Buffer, clean: Buffer, w: number, h: number): boolean {
+  const px = w * h;
+  const fsz = px * 3;
+  const frames = Math.min(Math.floor(orig.length / fsz), Math.floor(clean.length / fsz));
+  if (!frames || !px) return false;
+  const top = Math.floor(h * 0.22);
+  const bot = Math.floor(h * 0.52);
+  let caption = 0;
+  let survived = 0;
+  for (let f = 0; f < frames; f += 2) {
+    const base = f * fsz;
+    for (let y = 0; y < h; y++) {
+      if (y >= top && y < bot) continue;
+      for (let x = 0; x < w; x += 2) {
+        const i = base + (y * w + x) * 3;
+        const r = orig[i];
+        const g = orig[i + 1];
+        const b = orig[i + 2];
+        if (Math.max(r, g, b) < 185) continue;
+        if (r + g + b < 520 && Math.max(r, g, b) - Math.min(r, g, b) < 90) continue;
+        caption++;
+        const d = Math.abs(r - clean[i]) + Math.abs(g - clean[i + 1]) + Math.abs(b - clean[i + 2]);
+        if (d < 90) survived++;
+      }
+    }
+  }
+  return caption >= 80 && survived / caption > 0.45;
+}
+
 /** True only when the caption is actually gone. Unknown / unmeasurable ≠ clean. */
 function leftoverWorked(lo: Leftover): boolean {
   if (lo.maskPx < 200 || !lo.colour) return false;
@@ -533,6 +567,44 @@ async function compositeThroughMask(opts: {
     return true;
   } catch (e) {
     log(`${tag}: mask composite failed (${(e as Error).message}) — not shipping a smeared frame`);
+    return false;
+  }
+}
+
+/**
+ * Pull a 50/50 leftover letter back to the background already paid for.
+ * ghost ≈ (original letter + reconstruction) / 2, so background ≈ 2*ghost − letter.
+ * Only caption-band pixels that are still a mix are touched. No model call.
+ */
+async function deghostFile(opts: {
+  srcFile: string; cleanFile: string; outFile: string;
+  W: number; H: number; log: (...a: unknown[]) => void; tag: string;
+}): Promise<boolean> {
+  const { srcFile, cleanFile, outFile, W, H, log, tag } = opts;
+  const topH = Math.max(8, Math.round(H * 0.22));
+  const botY = Math.round(H * 0.52);
+  const botH = Math.max(8, H - botY);
+  const fit = `scale=${W}:${H}:flags=lanczos,setsar=1,setpts=PTS-STARTPTS`;
+  try {
+    await run(FFMPEG, [
+      '-y', '-i', srcFile, '-i', cleanFile,
+      '-filter_complex',
+      `[0:v]${fit}[src];[1:v]${fit}[cl];` +
+      `[cl][src]blend=all_expr='clip(2*A-B\\,0\\,255)'[un];` +
+      `[src]format=gray,lut=y='if(gt(val\\,175),255,0)'[bright];` +
+      `[src][cl]blend=all_mode=difference,format=gray,lut=y='if(between(val\\,36\\,110),255,0)'[mid];` +
+      `[src]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill,` +
+      `drawbox=x=0:y=0:w=iw:h=${topH}:color=white:t=fill,` +
+      `drawbox=x=0:y=${botY}:w=iw:h=${botH}:color=white:t=fill,format=gray[zones];` +
+      `[bright][mid]blend=all_mode=multiply[bm];` +
+      `[bm][zones]blend=all_mode=multiply,dilation,dilation[mk];` +
+      `[cl][un][mk]maskedmerge[v]`,
+      '-map', '[v]', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-crf', '18',
+      '-preset', 'veryfast', '-movflags', '+faststart', '-an', outFile,
+    ]);
+    return fs.existsSync(outFile) && fs.statSync(outFile).size > 0;
+  } catch (e) {
+    log(`${tag}: local deghost failed (${(e as Error).message}) — keeping the cleaned file`);
     return false;
   }
 }
@@ -1702,6 +1774,7 @@ async function cleanWholeAd(
   projectId: string,
   log: (...a: unknown[]) => void,
   force = false,
+  deghostOnly = false,
 ): Promise<Response> {
   const fail = async (msg: string) => {
     log('error:', msg);
@@ -1720,7 +1793,7 @@ async function cleanWholeAd(
     .eq('id', adId)
     .eq('project_id', projectId)
     .eq('clean_status', 'pending')
-    .select('id, file_path, media_type')
+    .select('id, file_path, media_type, clean_full_path')
     .maybeSingle();
   if (claimErr && /clean_status|clean_full_path/i.test(claimErr.message)) {
     log('MISSING MIGRATION: run supabase-migration-ad-clean.sql');
@@ -1757,27 +1830,73 @@ async function cleanWholeAd(
     const MASK_PROGRESS_V = 12;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
-    if (!force) {
+    try {
+      const { data } = await supabase.storage.from(BUCKET).download(progressKey);
+      if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
+    } catch { /* no previous progress */ }
+    const ledgerOk = !!(
+      prog && prog.src === (claimed.file_path as string) && prog.nseg === nseg &&
+      prog.v === MASK_PROGRESS_V && Array.isArray(prog.wins)
+    );
+    if (!ledgerOk) prog = null;
+    // A local ghost fix never sends paid windows back to the model.
+    if (deghostOnly && prog && prog.wins.some((x) => x.s === 'clean' && x.key)) {
+      log(`deghost only — reusing ${prog.wins.filter((x) => x.s === 'clean').length}/${nseg} paid windows, no model calls`);
+      for (const x of prog.wins) {
+        if (x.s === 'todo') x.s = 'original';
+      }
+    } else if (deghostOnly) {
+      const prevKey = (claimed as { clean_full_path?: string | null }).clean_full_path || '';
+      if (!prevKey) return fail('No cleaned video to fix locally — the first Remove subtitles is the paid pass');
+      log('deghost only — no window ledger, fixing the existing cleaned file locally');
+      const prevFile = path.join(workDir, 'prev-clean.mp4');
+      await downloadSource(supabase, prevKey, prevFile);
+      const prevRgb = await rgbFrames(prevFile, W, H, dur, fps, workDir);
+      const srcRgbFull = await rgbFrames(srcFile, W, H, dur, fps, workDir);
+      if (stillHasCaptions(srcRgbFull.buf, prevRgb.buf, srcRgbFull.w, srcRgbFull.h)) {
+        log('false clean — captions still present, clearing the mark, no model call');
+        await supabase.from('competitor_ads')
+          .update({
+            clean_status: 'error',
+            clean_full_path: null,
+            clean_error: 'Marked clean but the captions are still on the frames. Not sent back to the model.',
+          })
+          .eq('id', adId);
+        return new Response('false-clean', { status: 200 });
+      }
+      const deghosted = path.join(workDir, 'deghosted.mp4');
+      const ok = await deghostFile({
+        srcFile, cleanFile: prevFile, outFile: deghosted, W, H, log, tag: 'full',
+      });
+      const silent = ok ? deghosted : prevFile;
+      const withAudio = path.join(workDir, 'clean-audio.mp4');
+      let finalFile = silent;
       try {
-        const { data } = await supabase.storage.from(BUCKET).download(progressKey);
-        if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
-      } catch { /* no previous progress */ }
-    } else {
-      try {
-        const { data } = await supabase.storage.from(BUCKET).download(progressKey);
-        if (data) prog = JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) as Progress;
-      } catch { /* no previous progress */ }
-      if (prog && prog.src === (claimed.file_path as string) && prog.nseg === nseg && prog.v === MASK_PROGRESS_V && Array.isArray(prog.wins)) {
-        // Paid MiniMax windows stay. Only redo ones that never cleaned.
-        prog.runs = 0;
-        for (const x of prog.wins) {
-          if (x.s !== 'clean') { x.s = 'todo'; x.tries = 0; delete x.key; }
-        }
-      } else {
-        prog = null;
+        await run(FFMPEG, [
+          '-y', '-i', silent, '-i', srcFile,
+          '-map', '0:v:0', '-map', '1:a:0?',
+          '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k',
+          '-movflags', '+faststart', '-shortest', withAudio,
+        ]);
+        if (fs.existsSync(withAudio) && fs.statSync(withAudio).size > 0) finalFile = withAudio;
+      } catch (e) {
+        log(`audio mux failed, keeping silent clean video: ${(e as Error).message}`);
+      }
+      const cleanKey = `${projectId}/ads-clean/${adId}_${Date.now()}.mp4`;
+      await uploadFile(supabase, cleanKey, finalFile, 'video/mp4');
+      await supabase.from('competitor_ads')
+        .update({ clean_status: 'done', clean_full_path: cleanKey, clean_error: null })
+        .eq('id', adId);
+      log(`deghost done — ${cleanKey}`);
+      return new Response('done', { status: 200 });
+    } else if (force && prog) {
+      // Paid MiniMax windows stay. Only windows that never cleaned go back.
+      prog.runs = 0;
+      for (const x of prog.wins) {
+        if (x.s !== 'clean') { x.s = 'todo'; x.tries = 0; delete x.key; }
       }
     }
-    if (force || !prog || prog.src !== (claimed.file_path as string) || prog.nseg !== nseg || prog.v !== MASK_PROGRESS_V || !Array.isArray(prog.wins)) {
+    if (!prog) {
       prog = {
         src: claimed.file_path as string,
         nseg,
@@ -1786,10 +1905,10 @@ async function cleanWholeAd(
         wins: Array.from({ length: nseg }, () => ({ s: 'todo' as const, tries: 0 })),
       };
     }
-    // Continuations reuse paid-for clean windows. A user click (force) starts
-    // from scratch so a previous fake-clean stitch cannot be shown again.
+    // Continuations reuse paid windows. A local deghost must not turn them
+    // back into model work. A paid retry only re-queues windows that never cleaned.
     const MAX_RUNS = 20;
-    if (!force && !prog.wins.some((x) => x.s === 'todo')) {
+    if (!deghostOnly && !force && !prog.wins.some((x) => x.s === 'todo')) {
       prog.runs = 0;
       for (const x of prog.wins) {
         if (x.s === 'failed' || x.s === 'original') { x.s = 'todo'; x.tries = 0; }
@@ -1812,36 +1931,38 @@ async function cleanWholeAd(
 
     // Original frames are the base. Find captions, reconstruct those pixels,
     // paste them back. Never replace the window with a model's re-encoded clip.
-    const fbModel = await resolveMaskModel(token, log);
+    const fbModel = deghostOnly ? null : await resolveMaskModel(token, log);
     const ocrCache: OcrCache = {};
 
     const tryMiniMax = async (
       mask: string,
-      band: { y0: number; y1: number } | null,
+      _band: { y0: number; y1: number } | null,
       label: string,
-    ): Promise<string | null> => {
-      if (!fbModel) return null;
+    ): Promise<{ file: string | null; dirty: boolean }> => {
+      if (!fbModel) return { file: null, dirty: false };
       try {
         const file = await textMaskReconstruct({
           supabase, token, model: fbModel, srcKey: segKeyFor, srcFile: segFileFor,
           maskFile: mask, maskKey: `${projectId}/ads-clean/${adId}_${label}_${Date.now()}.mp4`,
           W, H, fps, dur: lenFor, workDir, deadline, tag: label, log,
         });
-        if (!file) return null;
+        if (!file) return { file: null, dirty: false };
         if (srcRgbFor) {
           try {
             const outRgb = await rgbFrames(file, W, H, lenFor, fps, workDir);
-            const lo = analyzeLeftoverText(srcRgbFor.buf, outRgb.buf, srcRgbFor.w, srcRgbFor.h, band);
-            log(`${label}: leftover ${lo.bad.length}/${lo.frames} frames (px=${lo.maskPx}) — keeping reconstruction`);
+            if (stillHasCaptions(srcRgbFor.buf, outRgb.buf, srcRgbFor.w, srcRgbFor.h)) {
+              log(`${label}: captions are still on the frames — not marking clean and not paying for a second pass`);
+              return { file: null, dirty: true };
+            }
           } catch (e) {
-            log(`${label}: leftover check skipped (${(e as Error).message})`);
+            log(`${label}: caption check skipped (${(e as Error).message})`);
           }
         }
         log(`${label}: reconstructed letter pixels onto original frames`);
-        return file;
+        return { file, dirty: false };
       } catch (e) {
         log(`${label} failed (${(e as Error).message})`);
-        return null;
+        return { file: null, dirty: false };
       }
     };
 
@@ -1891,20 +2012,24 @@ async function cleanWholeAd(
 
       let rebuiltFile: string | null = null;
       let ocrMask: string | null = null;
+      let alreadyPaid = false;
 
-      // Colour mask first; if that leaves ghosts, OCR in the SAME run so
-      // windows are not shipped with translucent leftover letters.
+      // Colour mask first. If that file still has the original letters, stop.
+      // A second OCR call would bill the model again for the same window.
       if (maskFile) {
-        rebuiltFile = await tryMiniMax(maskFile, cmBand, `w${i}`);
+        const attempt = await tryMiniMax(maskFile, cmBand, `w${i}`);
+        alreadyPaid = attempt.dirty;
+        if (!attempt.dirty) rebuiltFile = attempt.file;
       }
-      if (!rebuiltFile) {
+      if (!rebuiltFile && !alreadyPaid) {
         const ocr = await ocrLetterMask({
           token, srcFile: segFile, W, H, fps, dur: len, workDir, deadline,
           tag: `w${i}`, cache: ocrCache, log,
         });
         if (ocr) {
           ocrMask = ocr.maskFile;
-          rebuiltFile = await tryMiniMax(ocr.maskFile, ocr.band, `wocr${i}`);
+          const attempt = await tryMiniMax(ocr.maskFile, ocr.band, `wocr${i}`);
+          if (!attempt.dirty) rebuiltFile = attempt.file;
         }
       }
 
@@ -1963,19 +2088,50 @@ async function cleanWholeAd(
     }
 
     const localFiles: string[] = [];
+    let cleanWins = 0;
+    let dirtyWins = 0;
     for (let i = 0; i < nseg; i++) {
       const w = prog.wins[i];
       const t0 = i * segDur;
       const len = i === nseg - 1 ? Math.max(0.1, dur - t0) : segDur;
       let f: string;
       if (w.s === 'clean' && w.key) {
-        f = path.join(workDir, `win_${i}.mp4`);
-        await downloadSource(supabase, w.key, f);
+        cleanWins++;
+        const raw = path.join(workDir, `win_${i}.mp4`);
+        await downloadSource(supabase, w.key, raw);
+        const seg = path.join(workDir, `srcseg_${i}.mp4`);
+        await cutClip(srcFile, t0, t0 + len, seg);
+        const rawRgb = await rgbFrames(raw, W, H, len, fps, workDir);
+        const segRgb = await rgbFrames(seg, W, H, len, fps, workDir);
+        if (stillHasCaptions(segRgb.buf, rawRgb.buf, segRgb.w, segRgb.h)) {
+          dirtyWins++;
+          w.s = 'failed';
+          f = seg;
+        } else {
+          const deg = path.join(workDir, `deg_${i}.mp4`);
+          const ok = await deghostFile({
+            srcFile: seg, cleanFile: raw, outFile: deg, W, H, log, tag: `w${i}`,
+          });
+          f = ok ? deg : raw;
+        }
       } else {
         f = path.join(workDir, `seg_${i}.mp4`);
         if (!fs.existsSync(f)) await cutClip(srcFile, t0, t0 + len, f);
       }
       localFiles.push(f);
+    }
+
+    if (cleanWins > 0 && dirtyWins / cleanWins >= 0.5) {
+      log(`false clean — ${dirtyWins}/${cleanWins} stored windows still have the original captions. Clearing the mark, no model call`);
+      await saveProgress();
+      await supabase.from('competitor_ads')
+        .update({
+          clean_status: 'error',
+          clean_full_path: null,
+          clean_error: 'Marked clean but the captions are still on the frames. Not sent back to the model.',
+        })
+        .eq('id', adId);
+      return new Response('false-clean', { status: 200 });
     }
 
     // Concatenate the windows, re-encoding to a uniform H.264 so the demuxer
@@ -2025,19 +2181,152 @@ async function cleanWholeAd(
   }
 }
 
+const FALSE_CLEAN_NOTE = 'Marked clean but the captions are still on the frames. Not sent back to the model.';
+
+/** Compare stored "clean" files to the original. Clear the mark when the
+ *  captions never moved. No Replicate call. Continues in batches. */
+async function auditFalseCleans(
+  supabase: ReturnType<typeof getSupabase>,
+  projectId: string,
+  log: (...a: unknown[]) => void,
+): Promise<Response> {
+  const cursorKey = `${projectId}/ads-clean/_false_clean_cursor.json`;
+  let cursor = { shotId: 0, adId: 0 };
+  try {
+    const { data } = await supabase.storage.from(BUCKET).download(cursorKey);
+    if (data) cursor = { ...cursor, ...JSON.parse(Buffer.from(await data.arrayBuffer()).toString('utf8')) };
+  } catch { /* first run */ }
+
+  const workDir = makeWorkDir('waudit-');
+  let revoked = 0;
+  let kept = 0;
+  try {
+    const shots = await supabase
+      .from('competitor_shots')
+      .select('id, file_path, clean_path')
+      .eq('project_id', projectId)
+      .not('clean_path', 'is', null)
+      .gt('id', cursor.shotId)
+      .order('id', { ascending: true })
+      .limit(6);
+    for (const shot of shots.data || []) {
+      cursor.shotId = shot.id as number;
+      const src = path.join(workDir, `s_${shot.id}.mp4`);
+      const clean = path.join(workDir, `c_${shot.id}.mp4`);
+      try {
+        await downloadSource(supabase, shot.file_path as string, src);
+        await downloadSource(supabase, shot.clean_path as string, clean);
+        const info = await ffprobeInfo(src);
+        const dur = await probeDuration(src);
+        const fps = info.fps && info.fps > 0 ? info.fps : 30;
+        const a = await rgbFrames(src, info.width || 720, info.height || 1280, dur, fps, workDir);
+        const b = await rgbFrames(clean, info.width || 720, info.height || 1280, dur, fps, workDir);
+        if (stillHasCaptions(a.buf, b.buf, a.w, a.h)) {
+          await supabase.from('competitor_shots').update({
+            clean_path: null,
+            has_text: true,
+            inpaint_status: 'error',
+            inpaint_error: FALSE_CLEAN_NOTE,
+          }).eq('id', shot.id);
+          revoked++;
+          log(`shot#${shot.id} unmarked`);
+        } else {
+          kept++;
+        }
+      } catch (e) {
+        log(`shot#${shot.id} skipped (${(e as Error).message})`);
+        kept++;
+      }
+    }
+
+    const ads = await supabase
+      .from('competitor_ads')
+      .select('id, file_path, clean_full_path')
+      .eq('project_id', projectId)
+      .eq('clean_status', 'done')
+      .not('clean_full_path', 'is', null)
+      .gt('id', cursor.adId)
+      .order('id', { ascending: true })
+      .limit(3);
+    for (const ad of ads.data || []) {
+      cursor.adId = ad.id as number;
+      const src = path.join(workDir, `a_${ad.id}.mp4`);
+      const clean = path.join(workDir, `ac_${ad.id}.mp4`);
+      try {
+        await downloadSource(supabase, ad.file_path as string, src);
+        await downloadSource(supabase, ad.clean_full_path as string, clean);
+        const info = await ffprobeInfo(src);
+        const dur = await probeDuration(src);
+        const fps = info.fps && info.fps > 0 ? info.fps : 30;
+        const a = await rgbFrames(src, info.width || 720, info.height || 1280, dur, fps, workDir);
+        const b = await rgbFrames(clean, info.width || 720, info.height || 1280, dur, fps, workDir);
+        if (stillHasCaptions(a.buf, b.buf, a.w, a.h)) {
+          await supabase.from('competitor_ads').update({
+            clean_status: 'error',
+            clean_full_path: null,
+            clean_error: FALSE_CLEAN_NOTE,
+          }).eq('id', ad.id);
+          revoked++;
+          log(`ad#${ad.id} unmarked`);
+        } else {
+          kept++;
+        }
+      } catch (e) {
+        log(`ad#${ad.id} skipped (${(e as Error).message})`);
+        kept++;
+      }
+    }
+
+    const moreShots = (shots.data || []).length === 6;
+    const moreAds = (ads.data || []).length === 3;
+    const cursorFile = path.join(workDir, 'cursor.json');
+    fs.writeFileSync(cursorFile, JSON.stringify(cursor));
+    await uploadFile(supabase, cursorKey, cursorFile, 'application/json');
+
+    if (moreShots || moreAds) {
+      const origin = process.env.URL || process.env.DEPLOY_PRIME_URL || '';
+      if (origin) {
+        try {
+          await fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ audit: true, projectId }),
+          });
+        } catch (e) {
+          log(`audit retrigger failed: ${(e as Error).message}`);
+        }
+      }
+      log(`audit batch revoked ${revoked}, kept ${kept} — continuing`);
+      return new Response('continuing', { status: 200 });
+    }
+    log(`audit finished — revoked ${revoked}, kept ${kept}`);
+    return new Response('done', { status: 200 });
+  } finally {
+    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
 export default async (req: Request) => {
   let body: {
     shotId?: number; projectId?: string; compareModel?: string;
     tuning?: Record<string, number>;
     adId?: number; // whole-video cleaning (Creative Detail "remove subtitles")
-    force?: boolean; // user retry: wipe ledger + previous fake-clean path
+    force?: boolean; // paid retry: redo windows that never cleaned; keep paid ones
+    deghost?: boolean; // free local pass over an already-cleaned video, no model
+    audit?: boolean; // free: clear clean marks that still show the original captions
   };
   try {
     body = await req.json();
   } catch {
     return new Response('bad json', { status: 400 });
   }
-  const { shotId, projectId, compareModel, tuning, adId, force } = body;
+  const { shotId, projectId, compareModel, tuning, adId, force, deghost } = body;
+
+  if (body.audit && projectId && !shotId && !adId) {
+    const supabase = getSupabase();
+    const log = (...a: unknown[]) => console.log('[inpaint-bg]', 'audit', ...a);
+    return auditFalseCleans(supabase, projectId, log);
+  }
 
   // Whole-video cleaning path: same engine, different target + audio kept.
   if (adId && !shotId) {
@@ -2045,13 +2334,13 @@ export default async (req: Request) => {
     const supabase = getSupabase();
     const token = process.env.REPLICATE_API_TOKEN;
     const log = (...a: unknown[]) => console.log('[inpaint-bg]', `ad#${adId}`, ...a);
-    if (!token) {
+    if (!token && deghost !== true) {
       await supabase.from('competitor_ads')
         .update({ clean_status: 'error', clean_error: 'REPLICATE_API_TOKEN is not set in Netlify env vars' })
         .eq('id', adId);
       return new Response('no token', { status: 200 });
     }
-    return cleanWholeAd(supabase, token, adId, projectId, log, force === true);
+    return cleanWholeAd(supabase, token || '', adId, projectId, log, force === true && deghost !== true, deghost === true);
   }
 
   if (!shotId || !projectId) return new Response('missing fields', { status: 400 });
@@ -2473,7 +2762,12 @@ export default async (req: Request) => {
     if (unusable) {
       const { error } = await supabase
         .from('competitor_shots')
-        .update({ clean_path: null, inpaint_status: 'done', inpaint_error: note?.slice(0, 500) ?? null })
+        .update({
+          clean_path: null,
+          has_text: true,
+          inpaint_status: 'error',
+          inpaint_error: (note || 'captions are still on the frames — not stored as cleaned').slice(0, 500),
+        })
         .eq('id', shotId);
       if (error) return fail(`could not mark the shot unusable: ${error.message}`);
       log('done — left out of the pool');

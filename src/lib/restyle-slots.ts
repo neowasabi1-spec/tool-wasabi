@@ -67,7 +67,7 @@ const FILE_PROXY_RE = /\/api\/projecthub\/file-proxy|\/storage\/v1\/object\/publ
 const PAINTED_TAG_RE = /data-restyled|\/api\/projecthub\/file-proxy|\/storage\/v1\/object\/public\/project-files/i;
 
 const JUNK =
-  /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip|star[s]?|rating|check(?:mark)?|tick|spunta/i;
+  /favicon|sprite|pixel|1x1|tracking|doubleclick|visa|mastercard|amex|paypal|klarna|apple-?pay|credit[-_ ]?cards?|cards[-_@]|pay[-_ ]?badge|loader|spinner|spacer|logo\.svg|google-analytics|facebook\.com\/tr|hotjar|trustpilot|woff2?|placeholder|blank\.|lqip|star[s]?|rating|check(?:mark)?|tick|spunta/i;
 
 /**
  * Only what the tag itself says about the file (name, class, size). The copy
@@ -79,6 +79,8 @@ function isUiChrome(src: string, alt: string, cls: string, w: number, h: number)
   if (isDecorativeMedia(src, alt, cls)) return true;
   if (JUNK.test(src) || JUNK.test(alt) || JUNK.test(cls)) return true;
   if (w > 0 && h > 0 && w < 20 && h < 20) return true;
+  // Credit-card / payment strips (e.g. 427×56) sit under CTAs — not packshots.
+  if (w >= 180 && h > 0 && h <= 90 && w / h >= 3.2) return true;
   return false;
 }
 
@@ -88,6 +90,7 @@ function isChromePaintTag(tag: string): boolean {
   const cls = tag.match(/\bclass\s*=\s*["']([^"']+)/i)?.[1] || '';
   const src = tag.match(/\bsrc\s*=\s*["']([^"']+)/i)?.[1] || '';
   if (JUNK.test(cls) || JUNK.test(src) || isDecorativeMedia(src, cls)) return true;
+  if (w >= 180 && h > 0 && h <= 90 && w / h >= 3.2) return true;
   return w > 0 && h > 0 && w < 20 && h < 20;
 }
 

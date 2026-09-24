@@ -8,6 +8,7 @@
 import { supabaseAdmin } from './supabase-admin';
 
 const LIST_COLS = [
+  'id, name, page_type, template_id, product_id, project_id, url_to_swipe, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, owner_user_id, sort_order, created_at, updated_at',
   'id, name, page_type, template_id, product_id, project_id, url_to_swipe, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, owner_user_id, created_at, updated_at',
   'id, name, page_type, template_id, product_id, project_id, url_to_swipe, prompt, swipe_status, swipe_result, feedback, analysis_status, analysis_result, created_at, updated_at',
   'id, name, page_type, template_id, product_id, url_to_swipe, prompt, swipe_status, swipe_result, created_at, updated_at',
@@ -17,9 +18,13 @@ function stubHtmlPointers(row: Record<string, unknown>): Record<string, unknown>
   const id = String(row.id || '');
   const pointer = (kind: string) =>
     id ? `/api/funnel-html?pageId=${encodeURIComponent(id)}&kind=${kind}&variant=desktop` : undefined;
-  row.cloned_data = { htmlUrl: pointer('cloned'), htmlSkipped: true };
-  row.swiped_data = { htmlUrl: pointer('swiped'), htmlSkipped: true };
-  row.extracted_data = { htmlUrl: pointer('extracted'), htmlSkipped: true };
+  // Pointer only — do NOT set htmlSkipped. That flag means "JSONB was
+  // stripped after a real persist". Using it on every list stub made the
+  // Clone/Swipe eye toast "HTML was > 50KB…" for pages that only had a
+  // clone (the stub swiped_data looked like a skipped swipe).
+  row.cloned_data = { htmlUrl: pointer('cloned') };
+  row.swiped_data = { htmlUrl: pointer('swiped') };
+  row.extracted_data = { htmlUrl: pointer('extracted') };
   return row;
 }
 

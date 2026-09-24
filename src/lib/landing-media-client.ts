@@ -69,6 +69,7 @@ async function orderAgainstFirstLanding(
 }
 
 const inflight = new Map<string, Promise<LandingFillResult>>();
+const filledThisSession = new Set<string>();
 
 export function landingFillError(r: LandingFillResult): string | undefined {
   if (r.items.length) return undefined;
@@ -95,7 +96,9 @@ async function fillLandingLibraryOnce(
     uploadFailed: 0,
   };
 
-  if (!opts?.force) {
+  if (opts?.force) filledThisSession.delete(projectId);
+
+  if (!opts?.force && filledThisSession.has(projectId)) {
     const existing = await listItems(projectId);
     if (existing.length) {
       return { ...empty, items: await orderAgainstFirstLanding(projectId, existing) };
@@ -109,7 +112,7 @@ async function fillLandingLibraryOnce(
   }
 
   let items: LandingMediaItem[] = [];
-  for (const landing of landings.slice(0, 12)) {
+  for (const landing of landings.slice(0, 40)) {
     if (isJunkLandingHost(landing.url || '')) continue;
     if (!landing.html_url) continue;
     const htmlRes = await fetch(landing.html_url);
@@ -133,17 +136,20 @@ async function fillLandingLibraryOnce(
     if (next.length) items = sortLandingMediaAsOnPage(next, html);
   }
 
-  if (items.length) return { ...empty, items };
+  if (items.length) {
+    filledThisSession.add(projectId);
+    return { ...empty, items };
+  }
 
   // Browser download fallback — works when the CDN allows CORS from this origin.
-  for (const landing of landings.slice(0, 8)) {
+  for (const landing of landings.slice(0, 40)) {
     if (isJunkLandingHost(landing.url || '')) continue;
     if (!landing.html_url) continue;
     const htmlRes = await fetch(landing.html_url);
     if (!htmlRes.ok) continue;
     const html = await htmlRes.text();
     const assets = collectLandingAssetUrls(html, landing.url || '');
-    for (const asset of assets.slice(0, 12)) {
+    for (const asset of assets) {
       try {
         const img = await fetch(asset.url, { mode: 'cors' });
         if (!img.ok) continue;
@@ -173,6 +179,7 @@ async function fillLandingLibraryOnce(
   }
 
   if (!items.length) items = await listItems(projectId);
+  if (items.length || empty.pages) filledThisSession.add(projectId);
   return { ...empty, items, error: items.length ? undefined : landingFillError(empty) };
 }
 

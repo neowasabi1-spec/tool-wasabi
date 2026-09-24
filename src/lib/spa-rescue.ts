@@ -13,6 +13,12 @@
 // route handler or library code.
 
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
+import { isChatQuizHtml } from './chat-quiz-engine';
+import { injectPopupQuizEngine, isPopupQuizHtml } from './popup-quiz-engine';
+import { healClonedLander } from './lander-heal';
+import { detectDynamicScripts, detectCommerceMarkers } from './detect-dynamic-scripts';
+import { injectLiveCommentClock } from './live-comment-clock';
+import { extractTimedComments } from './bake-dynamic-comments';
 
 /**
  * Detect when an HTML payload is a JS-rendered SPA shell with essentially
@@ -35,6 +41,63 @@ export function isSpaShell(html: string): boolean {
     .replace(/\s+/g, ' ')
     .trim();
   return visibleText.length < 200;
+}
+
+/** Designed landing (CheckoutChamp / GrapesJS / CF): CSS + real DOM, not a JS shell. */
+export function htmlHasRealLayout(html: string): boolean {
+  if (!html || html.length < 3000) return false;
+  const hasCss = /<style[\s>]|<link[^>]+rel=["']stylesheet["']/i.test(html);
+  if (!hasCss) return false;
+  const divs = (html.match(/<div\b/gi) || []).length;
+  return divs >= 8 && !isSpaShell(html);
+}
+
+/** Jina markdown fallback: copy only, no CSS, no layout. Never use this as a clone. */
+export function looksLikeTextDump(html: string): boolean {
+  if (!html) return true;
+  if (/<style[\s>]|<link[^>]+rel=["']stylesheet["']/i.test(html)) return false;
+  const divs = (html.match(/<div\b/gi) || []).length;
+  return divs < 8;
+}
+
+const EMPTY_APP_ROOT =
+  /<div[^>]*\bid=["'](?:root|app|__next|__nuxt|svelte)["'][^>]*>\s*(?:<!--[\s\S]*?-->)?\s*<\/div>/i;
+
+/** React / Next / Vite / Vue bundles that re-hydrate and wipe a cloned snapshot. */
+export function isFrameworkRuntime(html: string): boolean {
+  if (!html) return false;
+  return (
+    /\/_next\/static\//i.test(html) ||
+    /id=["']__NEXT_DATA__["']/i.test(html) ||
+    /<script[^>]+type=["']module["'][^>]*src=/i.test(html) ||
+    /\/assets\/index-[a-zA-Z0-9._-]+\.(?:js|mjs)/i.test(html) ||
+    /webpackChunk|webpackJsonp|react-dom\/client|createRoot\s*\(/i.test(html)
+  );
+}
+
+/**
+ * True when a static fetch is NOT enough: the landing (copy, images, video,
+ * quiz options) is built by JavaScript. Those pages must be opened in a
+ * real browser (Playwright / Jina) so we can freeze the post-JS DOM.
+ *
+ * Static HTML landers with hidden steps / FAQ are NOT this — they already
+ * have the markup in the payload.
+ */
+export function pageNeedsJsRender(html: string): boolean {
+  if (!html || html.length < 80) return true;
+  // CheckoutChamp / GrapesJS / CF already shipped CSS + copy. Do NOT
+  // send those to Jina markdown — that is how a VSL becomes a wall of <p>.
+  if (htmlHasRealLayout(html)) return false;
+  if (needsVslHydration(html)) return true;
+  if (isSpaShell(html)) return true;
+  if (EMPTY_APP_ROOT.test(html)) return true;
+  const nextData = html.match(
+    /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i,
+  )?.[1];
+  if (typeof nextData === 'string' && nextData.replace(/\s/g, '').length < 500) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -90,7 +153,17 @@ export function hydrateVslSnapshot(html: string): string {
   if (!poster && cdnBase && videoId) poster = `${cdnBase}/${videoId}/thumbnail.jpg`;
   if (!src && m3u8) src = m3u8;
   if (!poster && src) poster = src.replace(/master\.m3u8.*$/i, 'thumbnail.jpg');
-  if (!src && !poster) return html;
+  if (!src && !poster) {
+    const conv = html.match(/scripts\.converteai\.net\/([0-9a-f-]{36})\/players\/([a-z0-9]+)/i);
+    if (conv && /vturb-smartplayer/i.test(html) && !/images\.converteai\.net\/[^"']+\/(?:thumbnail|cover)\./i.test(html)) {
+      const thumb = `https://images.converteai.net/${conv[1]}/players/${conv[2]}/thumbnail.jpg`;
+      return html.replace(
+        /(<div\b[^>]*class=["'][^"']*vturb-player-placeholder[^"']*["'][^>]*>)(\s*)(<\/div>)?/i,
+        `$1<img class="thumbnail-image" src="${thumb}" alt="" style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:cover;display:block">$3`,
+      );
+    }
+    return html;
+  }
 
   const esc = (u: string) => u.replace(/"/g, '&quot;');
   const videoTag =
@@ -129,10 +202,14 @@ export function hydrateVslSnapshot(html: string): string {
  * `apiKey` (or set JINA_API_KEY env var) to lift Jina's free-tier rate
  * limits and unlock faster browser-mode renders.
  */
-export async function rescueViaJina(url: string): Promise<string | null> {
+export async function rescueViaJina(
+  url: string,
+  opts?: { allowMarkdown?: boolean },
+): Promise<string | null> {
   const apiKey = process.env.JINA_API_KEY?.trim() || '';
   const html = await tryJinaBrowserHtml(url, apiKey);
-  if (html) return html;
+  if (html && !looksLikeTextDump(html)) return html;
+  if (opts?.allowMarkdown === false) return null;
   const md = await tryJinaMarkdown(url, apiKey);
   if (md) return md;
   return null;
@@ -223,10 +300,13 @@ async function tryJinaBrowserHtml(url: string, apiKey: string): Promise<string |
 export function stabilizeClonedHtml(
   html: string,
   originUrl: string,
-  opts: { keepScripts?: boolean } = {},
+  opts: { keepScripts?: boolean; skipAbsolutize?: boolean } = {},
 ): string {
-  let out = absolutizeUrlsInHtml(html, originUrl);
-  out = injectBaseHref(out, originUrl);
+  let out = html;
+  if (!opts.skipAbsolutize && originUrl && /^https?:\/\//i.test(originUrl)) {
+    out = absolutizeUrlsInHtml(out, originUrl);
+    out = injectBaseHref(out, originUrl);
+  }
   // Bake poster/m3u8 into #vsl BEFORE script strip — the mount config lives
   // in inline JS and would otherwise vanish from snapshot preview.
   out = hydrateVslSnapshot(out);
@@ -234,6 +314,7 @@ export function stabilizeClonedHtml(
   out = unlockPageScroll(out);
   out = resetAccordionState(out);
   out = injectInteractivityRescue(out, opts);
+  out = healClonedLander(out).html;
   // Aggiunge `referrerpolicy="no-referrer"` a <img>/<video>/<source> e
   // `<meta name="referrer" content="no-referrer">` in <head>. Senza
   // questo, alcuni CDN (Cloudflare hotlink protection, Bunny, Replit
@@ -431,6 +512,10 @@ export function stripNonCarouselScripts(html: string): string {
   //     `new Swiper(`, `Swiper.create(`, `.slick(`, `.flickity(`,
   //     `.glide(`, `new Splide(`, `.owlCarousel(`.
   //
+  // Checkout pages (CheckoutChamp-style checkout.php, bundle radios,
+  // member popups) keep their offer/checkout JS. Stripping it leaves
+  // dead bundle cards and popups that never open.
+  //
   // PERCHE' NON manteniamo loader come FunnelKit `fkDynamicScript`:
   // il loader fa `var s=document.createElement('script'); s.src =
   // getAbsolutePath(window.location.href)+'/index.js?f=...';`. Nel
@@ -444,18 +529,30 @@ export function stripNonCarouselScripts(html: string): string {
   // Tutto il resto (analytics, tracking pixel, popup exit-intent,
   // GA/FB pixel, A/B testing, geolocation tracker, FunnelKit loader)
   // viene strippato.
-  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia)\b/i;
-  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\()/;
+  const commerce = detectCommerceMarkers(html).length > 0;
+  const KEEP_SRC = /\b(?:swiper|slick|flickity|glide|splide|owl-carousel|owl\.carousel|jquery|bootstrap|popper|vsl-player|hls\.js|hls\.light|vturb|converteai|smartplayer|wistia|vidalytics)\b/i;
+  const KEEP_COMMERCE_SRC = /checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design|\/checkout\.js(?:\?|$)|dynamic-tax\.js|digistore24|checkout-ds24/i;
+  const DROP_SRC = /pixel|gtag|fbevents|googletagmanager|hotjar|clarity|analytics|facebook\.net|connect\.facebook/i;
+  const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\(|fireCommentsForVideoTime|handleVideoTick|vidalytics_embed|getVidalyticsPlayer)/;
+  const TRACKING_INLINE = /googletagmanager|gtag\s*\(|fbq\s*\(|fbevents|hotjar|clarity\.ms|dataLayer\.push/i;
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
     (full, attrs: string, body: string) => {
-      // External script: look at src=
       const srcMatch = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
       if (srcMatch) {
-        return KEEP_SRC.test(srcMatch[1]) ? full : '';
+        if (KEEP_SRC.test(srcMatch[1])) return full;
+        if (commerce && KEEP_COMMERCE_SRC.test(srcMatch[1]) && !DROP_SRC.test(srcMatch[1])) return full;
+        return '';
       }
-      // Inline script: look at body
-      return KEEP_INLINE.test(body) ? full : '';
+      if (KEEP_INLINE.test(body)) return full;
+      // Original SlimSoda-style popup quiz is replayed by injectPopupQuizEngine.
+      // Keep our engine; drop the competitor IIFE even on Shopify/commerce pages.
+      if (/ssqOverlay|#ssqBody|ssq-overlay|var\s+QS\s*=/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) {
+        return '';
+      }
+      if (/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) return full;
+      if (commerce && body.trim() && !TRACKING_INLINE.test(body)) return full;
+      return '';
     },
   ).replace(/<script\b[^>]*\/>/gi, '');
 }
@@ -480,11 +577,40 @@ export function injectInteractivityRescue(
   //    `type` in `<token>-text/javascript` e carica un rocket-loader.min.js
   //    a URL relativo che fa 404 sulla clone) cosi' quegli script
   //    girano nativamente sull'origine clonata.
-  if (opts.keepScripts) {
+  // Chat-quiz landers ship Landerlab/jQuery that blanks a srcdoc iframe
+  // (host checks, conversion pixels, document rewrites). We always strip
+  // that runtime and replay the messenger with injectChatQuizEngine.
+  const timed = extractTimedComments(html);
+  const commerce = detectCommerceMarkers(html).length > 0;
+  const liveChat =
+    opts.keepScripts === true ||
+    timed.length > 0 ||
+    commerce ||
+    (opts.keepScripts !== false && detectDynamicScripts(html).functional);
+
+  if (isChatQuizHtml(html)) {
+    html = stripAllScripts(html);
+    return healClonedLander(html).html;
+  }
+  if (isPopupQuizHtml(html)) {
+    html = injectPopupQuizEngine(html);
+    if (isFrameworkRuntime(html) && !pageNeedsJsRender(html)) {
+      html = stripNonCarouselScripts(html);
+      html = injectPopupQuizEngine(html);
+    } else if (!liveChat) {
+      html = stripNonCarouselScripts(html);
+      html = injectPopupQuizEngine(html);
+    }
+  } else if (isFrameworkRuntime(html) && !pageNeedsJsRender(html)) {
+    // Playwright/Jina already froze the DOM. Leaving Next/Vite/React in
+    // the snapshot makes them re-hydrate in our iframe and blank the page.
+    html = stripNonCarouselScripts(html);
+  } else if (liveChat) {
     html = neutralizeRocketLoader(html).html;
   } else {
     html = stripNonCarouselScripts(html);
   }
+  html = injectLiveCommentClock(html, timed);
 
   // 2) NEUTRALIZZA <details onclick="return false" open>. Pattern usato
   //    da FunnelKit (Rosabella, AICashClone, ecc.) per inibire il toggle
@@ -865,6 +991,9 @@ function once(){
   setTimeout(initCarousels,600);setTimeout(initCarousels,1600);
   document.addEventListener('click',function(ev){
     var t=ev.target;if(!(t instanceof Element))return;
+    if(t.closest&&(t.closest('.chat-button')||t.closest('[data-next-chat]')||t.closest('#chatbox-app')||t.closest('#chatbox-content')))return;
+    if(t.closest&&t.closest('#mbAccept,#mbNo,#mbOpen,#member,#member-overlay,#member-primary,#pay-now-btn,.mb-cta,.mb-no,.pay-now,[data-package-option],[data-checkout],.member-popup'))return;
+    if(t.closest&&t.closest('#ssqOverlay,.ssq-overlay,.ssq-inline,.ssq-opt,.ssq-cta,.ssq-continue,.ssq-back,a.cta-btn,a[href*="/click"]'))return;
     // 0a) <details>: il browser fa gia' il toggle nativo. injectInteractivityRescue
     //     ha rimosso 'onclick="return false"' e 'open' dall'HTML, quindi il
     //     click su <summary> apre/chiude il details via meccanismo nativo
@@ -1009,13 +1138,58 @@ function once(){
 }
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',once)}else{once()}
 })();</script>`;
+  // SlimSoda / CheckoutChamp: GET MY DISCOUNT (#mbAccept) e No thanks
+  // (#mbNo) vivono in checkout.js, ma quel file esce subito se manca
+  // #checkoutForm e in Preview puo' essere stato stripato. Riagganciamo
+  // i bottoni in vanilla, indipendenti dal form.
+  const offerRescue = `<script id="wasabi-checkout-offer-rescue">(function(){
+function wire(){
+  var open=document.getElementById('mbOpen');
+  var box=document.getElementById('member');
+  var decline=document.getElementById('mbNo')||document.querySelector('button.mb-no');
+  var accept=document.getElementById('mbAccept')||document.querySelector('button.mb-cta');
+  var selected=document.getElementById('dtc_yearly_offer');
+  if(!box||(!open&&!accept&&!decline))return;
+  if(document.documentElement.getAttribute('data-wasabi-offer')==='1')return;
+  document.documentElement.setAttribute('data-wasabi-offer','1');
+  if(open)open.addEventListener('click',function(ev){
+    ev.preventDefault();
+    box.hidden=false;
+    open.hidden=true;
+    try{box.scrollIntoView({behavior:'smooth',block:'nearest'});}catch(e){}
+  });
+  if(accept)accept.addEventListener('click',function(ev){
+    ev.preventDefault();
+    if(selected)selected.value='1';
+    box.hidden=true;
+    if(open){
+      open.hidden=false;
+      open.textContent='★ NEW-MEMBER OFFER SELECTED — Complete checkout';
+      try{open.setAttribute('aria-label','New-member offer selected. Complete checkout to continue.');}catch(e){}
+    }
+  });
+  if(decline)decline.addEventListener('click',function(ev){
+    ev.preventDefault();
+    if(selected)selected.value='0';
+    box.hidden=true;
+    if(open){
+      open.hidden=false;
+      open.textContent='★ NEW-MEMBER OFFER — Become a member';
+      try{open.removeAttribute('aria-label');}catch(e){}
+    }
+  });
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',wire);
+else wire();
+})();</script>`;
   // Idempotenza: rimuovi eventuali iniezioni precedenti (lo snapshot
   // clonato puo' gia' contenerle da una pipeline precedente). Due copie
   // dello stesso handler in fase di capture si annullerebbero (doppio
   // toggle = nessun toggle).
   let out = html
     .replace(/<style id="wasabi-accordion-rescue-style">[\s\S]*?<\/style>/gi, '')
-    .replace(/<script id="wasabi-accordion-rescue">[\s\S]*?<\/script>/gi, '');
+    .replace(/<script id="wasabi-accordion-rescue">[\s\S]*?<\/script>/gi, '')
+    .replace(/<script id="wasabi-checkout-offer-rescue">[\s\S]*?<\/script>/gi, '');
   if (/<\/head>/i.test(out)) {
     out = out.replace(/<\/head>/i, `${styleTag}</head>`);
   } else if (/<head\b[^>]*>/i.test(out)) {
@@ -1024,9 +1198,11 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
     out = `<head>${styleTag}</head>${out}`;
   }
   if (/<\/body>/i.test(out)) {
-    return out.replace(/<\/body>/i, `${script}</body>`);
+    out = out.replace(/<\/body>/i, `${script}${offerRescue}</body>`);
+  } else {
+    out += script + offerRescue;
   }
-  return out + script;
+  return healClonedLander(out).html;
 }
 
 /**

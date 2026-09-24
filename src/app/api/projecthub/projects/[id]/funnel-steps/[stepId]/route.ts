@@ -74,12 +74,14 @@ export async function PATCH(
     return NextResponse.json({ error: 'no writable fields' }, { status: 400 });
   }
 
+  // ?return=id skips echoing multi-MB result_content back to the browser.
+  const returnId = req.nextUrl.searchParams.get('return') === 'id';
   const { data, error } = await supabaseAdmin
     .from('funnel_steps')
     .update(patch)
     .eq('id', params.stepId)
     .eq('project_id', params.id)
-    .select('*')
+    .select(returnId ? 'id' : '*')
     .single();
 
   if (error) {

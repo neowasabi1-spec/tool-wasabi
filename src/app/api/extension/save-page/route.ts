@@ -6,8 +6,11 @@ import { canAccessProject } from '@/lib/auth/project-access';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { inferPageType, isUpsellType, isDownsellType } from '@/lib/server/page-type-classifier';
 import { resolvePageType, upsertArchivePageType } from '@/lib/archive-page-types';
-import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl } from '@/lib/archive-placement';
+import { canonPageUrl, dedupeStepsByUrl, stepSourceUrl, pageIdentity } from '@/lib/archive-placement';
 import { extractLandingMediaFromHtml } from '@/lib/landing-media';
+import { inferPageTags } from '@/lib/page-niche-tags';
+import { inferPageGeo } from '@/lib/page-geo';
+import { findSavedArchivePage } from '@/lib/archive-saved-urls';
 
 async function saveLandingMedia(
   projectId: string | null,
@@ -22,7 +25,6 @@ async function saveLandingMedia(
       html,
       pageUrl,
       ownerUserId,
-      limit: 16,
     });
   } catch (e) {
     console.warn('[save-page] landing media extract:', (e as Error).message);
@@ -63,6 +65,8 @@ interface SaveBody {
   category?: string;
   tags?: string[];
   projectId?: string | null; // when set, link the page to a project's Competitor Landings
+  pageTypeExplicit?: boolean;
+  skipDuplicateScan?: boolean;
   // Funnel-walk mode: instead of one single-step row per page, all the steps of
   // a walked funnel go into ONE `archived_funnels` row (the "folder"). The first
   // step creates the folder and returns its `funnelId`; every next step passes
@@ -146,9 +150,19 @@ export async function POST(req: NextRequest) {
         return 'Saved page';
       }
     })();
-  const tags = Array.isArray(body.tags)
-    ? body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 30)
+  const extraTags = Array.isArray(body.tags)
+    ? body.tags.map((t) => String(t).trim()).filter(Boolean)
     : [];
+  let knownTags: string[] = [];
+  try {
+    const { data: cats } = await supabaseAdmin
+      .from('archive_categories')
+      .select('name')
+      .eq('owner_user_id', userId);
+    knownTags = (cats || []).map((c) => String(c.name || '').trim()).filter(Boolean);
+  } catch {
+    /* table may not exist */
+  }
 
   const requestedType = String(body.pageType || body.folderId || '').trim();
   const resolvedType = resolvePageType(requestedType || 'landing', body.pageTypeLabel);
@@ -160,7 +174,9 @@ export async function POST(req: NextRequest) {
   // thank-you pages all landed in the "Landing Page" folder. When the type
   // is missing/default we infer the real one from URL + title + HTML.
   // An explicit non-landing choice from the user is always respected.
-  const typeWasExplicit = Boolean(requestedType) && requestedType !== 'landing';
+  const typeWasExplicit =
+    body.pageTypeExplicit === true ||
+    (!body.funnelGroup && Boolean(requestedType) && requestedType !== 'landing');
 
   if (resolvedType.isCustom) {
     try {
@@ -179,12 +195,48 @@ export async function POST(req: NextRequest) {
     if (allowed) projectId = requestedProjectId;
   }
 
+  const alreadySaved = body.skipDuplicateScan
+    ? null
+    : await findSavedArchivePage(userId, url, projectId);
+  if (alreadySaved && !body.funnelGroup) {
+    return NextResponse.json({
+      success: true,
+      duplicate: true,
+      pageId: alreadySaved.pageId,
+      projectId,
+      htmlUrl: alreadySaved.htmlUrl || `/api/funnel-html?pageId=${encodeURIComponent(alreadySaved.pageId)}&kind=cloned&variant=desktop`,
+      editorUrl: `/edit/${alreadySaved.pageId}`,
+      name: alreadySaved.name,
+    });
+  }
+
   // Absolutize relative URLs so the saved snapshot renders standalone.
   let html = body.html;
   try {
     html = absolutizeUrlsInHtml(html, url);
   } catch {
     /* keep raw html on failure */
+  }
+
+  let tags = extraTags.slice();
+  let geo = '';
+  let lang = '';
+  try {
+    tags = inferPageTags({
+      title: `${name} ${title}`,
+      html,
+      extra: extraTags,
+      known: knownTags,
+    });
+  } catch (e) {
+    console.warn('[save-page] infer tags:', (e as Error).message);
+  }
+  try {
+    const g = inferPageGeo({ url, html, title: `${name} ${title}` });
+    geo = g.geo;
+    lang = g.lang;
+  } catch (e) {
+    console.warn('[save-page] infer geo:', (e as Error).message);
   }
 
   const clonedData: Record<string, unknown> = {
@@ -195,6 +247,8 @@ export async function POST(req: NextRequest) {
     cloned_at: new Date().toISOString(),
     category,
     tags,
+    geo,
+    lang,
   };
 
   // ── Funnel-walk mode: one folder row, many steps ──────────────────────────
@@ -281,9 +335,13 @@ export async function POST(req: NextRequest) {
       if (row && row.owner_user_id === userId) {
         const rawSteps = Array.isArray(row.steps) ? (row.steps as Record<string, unknown>[]) : [];
         const steps = dedupeStepsByUrl(rawSteps);
-        const incoming = canonPageUrl(url);
+        const incoming = pageIdentity(url) || canonPageUrl(url);
         const already = incoming
-          ? steps.find((s) => canonPageUrl(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } })) === incoming)
+          ? steps.find((s) => {
+              const got = pageIdentity(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } }))
+                || canonPageUrl(stepSourceUrl(s as { url_to_swipe?: unknown; cloned_data?: { source_url?: unknown } }));
+              return got === incoming;
+            })
           : undefined;
         if (already) {
           if (steps.length !== rawSteps.length) {
@@ -402,18 +460,40 @@ export async function POST(req: NextRequest) {
   });
 
   // 1) Create the archive row (single step of the chosen type).
-  const { data: created, error: insertErr } = await supabaseAdmin
+  const insertRow = {
+    name,
+    total_steps: 1,
+    steps: [buildStep()],
+    section: 'page',
+    owner_user_id: userId,
+    list_page_type: effectiveType,
+    list_source_url: url,
+    list_tags: tags,
+    list_geo: geo || null,
+    list_category: category || name,
+    ...(projectId ? { project_id: projectId } : {}),
+  };
+  let { data: created, error: insertErr } = await supabaseAdmin
     .from('archived_funnels')
-    .insert({
-      name,
-      total_steps: 1,
-      steps: [buildStep()],
-      section: 'page',
-      owner_user_id: userId,
-      ...(projectId ? { project_id: projectId } : {}),
-    })
+    .insert(insertRow)
     .select('id')
     .single();
+  if (insertErr && /list_page_type|schema cache|column/i.test(insertErr.message || '')) {
+    const retry = await supabaseAdmin
+      .from('archived_funnels')
+      .insert({
+        name,
+        total_steps: 1,
+        steps: [buildStep()],
+        section: 'page',
+        owner_user_id: userId,
+        ...(projectId ? { project_id: projectId } : {}),
+      })
+      .select('id')
+      .single();
+    created = retry.data;
+    insertErr = retry.error;
+  }
 
   if (insertErr || !created) {
     return NextResponse.json(
@@ -475,10 +555,21 @@ export async function POST(req: NextRequest) {
   clonedData.screenshotDesktopUrl = desktopUrl;
   clonedData.screenshotMobileUrl = mobileUrl;
   clonedData.htmlUrl = htmlUrl;
-  await supabaseAdmin
-    .from('archived_funnels')
-    .update({ steps: [buildStep()] })
-    .eq('id', pageId);
+  const listPatch = {
+    steps: [buildStep()],
+    list_page_type: effectiveType,
+    list_source_url: url,
+    list_shot: desktopUrl,
+    list_shot_mobile: mobileUrl,
+    list_html_url: htmlUrl,
+    list_tags: tags,
+    list_geo: geo || null,
+    list_category: category || name,
+  };
+  const upd = await supabaseAdmin.from('archived_funnels').update(listPatch).eq('id', pageId);
+  if (upd.error && /list_page_type|schema cache|column/i.test(upd.error.message || '')) {
+    await supabaseAdmin.from('archived_funnels').update({ steps: [buildStep()] }).eq('id', pageId);
+  }
 
   const editorUrl = `/edit/${pageId}?src=${encodeURIComponent(url)}&title=${encodeURIComponent(name)}`;
 

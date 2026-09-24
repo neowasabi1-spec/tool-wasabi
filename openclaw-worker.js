@@ -1889,6 +1889,8 @@ async function processMessage(msg) {
               language: job.language,
               knowledge: job.knowledge || undefined,
               extraTexts: extraTexts.length > 0 ? extraTexts : undefined,
+              swipeMap: job.swipeMap || undefined,
+              mappedTexts: job.swipeMap && job.swipeMap.texts ? job.swipeMap.texts : undefined,
             });
           } catch (e) {
             throw new Error(`build-prompts (in-process) fallito: ${e.message}`);

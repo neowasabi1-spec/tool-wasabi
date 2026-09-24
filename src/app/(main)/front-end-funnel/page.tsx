@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { confirmDialog } from '@/components/ui/confirm';
 import Header from '@/components/Header';
 import { useStore } from '@/store/useStore';
+import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { fetchAffiliateSavedFunnels } from '@/lib/supabase-operations';
 import { supabase } from '@/lib/supabase';
 import { extractSectionContent, type SectionData } from '@/lib/project-sections';
@@ -20,6 +21,14 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { injectInteractivityRescue } from '@/lib/spa-rescue';
+import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
+import { injectLiveCommentClock } from '@/lib/live-comment-clock';
+import { extractTimedComments } from '@/lib/bake-dynamic-comments';
+import { healClonedLander, readHealStamp, bakeCheckoutChampSnapshot } from '@/lib/lander-heal';
+import { preservePageShellLayout } from '@/lib/page-shell-layout';
+import { snapshotFromUploadFiles, remainingRelativeStylesheets } from '@/lib/html-bundle';
+import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
+import { understandClonedLander } from '@/lib/lander-agent-client';
 import { mapHtmlOutsideScripts, rewriteQuotedJsStrings } from '@/lib/shield-scripts';
 import { SWIPE_MODEL_OPTIONS, SWIPE_MODEL_DEFAULT, normalizeSwipeModel } from '@/lib/swipe-models';
 import SwipeDebugModal, {
@@ -64,6 +73,7 @@ import {
   MessageSquare,
   Target,
   Copy,
+  User,
   Globe,
   Sparkles,
   Download,
@@ -73,6 +83,7 @@ import {
   Smartphone,
   Monitor,
   Upload,
+  Folder,
   FileSpreadsheet,
   Rocket,
   Link2,
@@ -90,28 +101,49 @@ import {
   type ExtractedText,
 } from '@/lib/translate-html-client';
 
-// Returns 'swipedData' or 'clonedData' — whichever blob was produced/edited
-// MOST RECENTLY. Swipe All / Rewrite can write the new HTML into clonedData
-// while a STALE swipedData from an earlier run still lingers; selecting
-// swiped purely by existence then surfaced the OLD (often original-brand)
-// version in preview / edit / download / deploy. Compare timestamps so every
-// consumer always operates on the latest version the user produced.
+// List boot stubs every row with `{ htmlUrl, htmlSkipped: true }` for BOTH
+// cloned and swiped so preview can fetch `/api/funnel-html` later. That stub
+// is not a real swipe. Identical clone also sets swipeStatus=completed, so
+// treating "completed + swipedData exists" as a swipe made the eye look up
+// kind=swiped (404 / empty IDB) and toast the 50KB/IndexedDB error while the
+// actual clone HTML sat in clonedData.
+function isRealHtmlBlob(blob: unknown): boolean {
+  if (!blob || typeof blob !== 'object') return false;
+  const o = blob as Record<string, unknown>;
+  if (typeof o.html === 'string' && o.html.length > 40) return true;
+  if (typeof o.mobileHtml === 'string' && o.mobileHtml.length > 40) return true;
+  if (typeof o.htmlLength === 'number' && o.htmlLength > 0) return true;
+  if (typeof o.jobId === 'string' && o.jobId) return true;
+  if (typeof o.method_used === 'string' && o.method_used) return true;
+  if (typeof o.methodUsed === 'string' && o.methodUsed) return true;
+  if (o.swipedAt || o.cloned_at || o.clonedAt || o.editedAt) return true;
+  if (typeof o.newTitle === 'string' && o.newTitle) return true;
+  if (typeof o.newLength === 'number' && o.newLength > 0) return true;
+  return false;
+}
+
 function freshestHtmlTarget(
-  page: { swipedData?: unknown; clonedData?: unknown; swipeStatus?: string } | null | undefined,
+  page: { swipedData?: unknown; clonedData?: unknown; swipeStatus?: string; swipeResult?: string } | null | undefined,
 ): 'swipedData' | 'clonedData' {
   if (!page) return 'clonedData';
-  if ((page.swipeStatus === 'completed' || page.swipeStatus === 'in_progress') && page.swipedData) {
-    return 'swipedData';
-  }
+  // After a reload the list only has htmlUrl stubs, so both blobs look empty
+  // and the eye used to open the original clone. The swipe result is stored
+  // on the row: a translation or rewrite lives in swiped HTML.
+  const result = String(page.swipeResult || '');
+  if (/translat|rewrite ok|replacements via/i.test(result)) return 'swipedData';
+  const hasSwipe = isRealHtmlBlob(page.swipedData);
+  const hasClone = isRealHtmlBlob(page.clonedData);
+  if (!hasSwipe) return 'clonedData';
+  if (!hasClone) return 'swipedData';
   const toMs = (v: unknown) => (v ? (new Date(v as string).getTime() || 0) : 0);
   const ts = (b: unknown) => {
     const o = (b || {}) as { editedAt?: unknown; swipedAt?: unknown; cloned_at?: unknown; clonedAt?: unknown };
     return Math.max(toMs(o.editedAt), toMs(o.swipedAt), toMs(o.cloned_at), toMs(o.clonedAt));
   };
-  if (page.swipedData && !page.clonedData) return 'swipedData';
-  if (page.clonedData && !page.swipedData) return 'clonedData';
-  if (!page.swipedData && !page.clonedData) return 'clonedData';
-  return ts(page.swipedData) >= ts(page.clonedData) ? 'swipedData' : 'clonedData';
+  const swipeMs = ts(page.swipedData);
+  const cloneMs = ts(page.clonedData);
+  if (swipeMs !== cloneMs) return swipeMs > cloneMs ? 'swipedData' : 'clonedData';
+  return 'clonedData';
 }
 
 /** Checkout flavour actually in force for a row.
@@ -215,6 +247,25 @@ const capDoc = (s: unknown, n = ENQUEUE_DOC_CAP): string | undefined => {
 };
 // Restiamo ben sotto i ~6MB di Netlify lasciando margine per l'overhead JSON.
 const ENQUEUE_BODY_BUDGET = 5_000_000;
+// Supabase Edge (and Netlify in front of it) answer 413 when the extract
+// body — mostly the cloned HTML with inlined images — is too big. Park the
+// heavy data-URIs, send the copy, put the images back on the rewritten HTML.
+const DATA_URI_RE = /data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]{400,}/gi;
+function parkHeavyDataUris(html: string): { html: string; restore: (out: string) => string } {
+  const held: string[] = [];
+  const slim = html.replace(DATA_URI_RE, (m) => {
+    const token = `https://wasabi.invalid/hold/${held.length}`;
+    held.push(m.replace(/\s+/g, ''));
+    return token;
+  });
+  return {
+    html: slim,
+    restore: (out: string) => held.reduce(
+      (acc, uri, i) => acc.split(`https://wasabi.invalid/hold/${i}`).join(uri),
+      out,
+    ),
+  };
+}
 // Serializza il messaggio swipe_landing_local garantendo che stia sotto il
 // budget: se sfora, prima toglie l'html in cache (il worker rifà il fetch),
 // poi sfoltisce la libreria prompts. Evita il 500 "Internal Error. ID:" di
@@ -272,12 +323,20 @@ function fitEnqueueMessage(msg: Record<string, unknown>): string {
  *   5. Aggiunge un banner ".__preview-static-banner" in fondo che
  *      indica che e' uno snapshot.
  */
-function prepareClonedHtmlForPreview(rawHtml: string): string {
+function prepareClonedHtmlForPreview(
+  rawHtml: string,
+  opts: { keepScripts?: boolean } = {},
+): string {
   let html = rawHtml;
 
   html = html.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '');
-  html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-  html = html.replace(/<script\b[^>]*\/>/gi, '');
+  // Live-chat / VSL pages build the comment feed in inline JS. Stripping
+  // every script here emptied #clist and killed timed entry. Keep those
+  // engines; still drop noscript fallbacks and (below) blocked embeds.
+  if (!opts.keepScripts) {
+    html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+    html = html.replace(/<script\b[^>]*\/>/gi, '');
+  }
   html = html.replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '');
 
   // Sostituisce iframe verso host che bloccano framing con placeholder.
@@ -305,6 +364,27 @@ function prepareClonedHtmlForPreview(rawHtml: string): string {
   );
 
   return html;
+}
+
+function clonedPreviewKeepScripts(html: string): boolean {
+  try {
+    return detectDynamicScripts(html).functional;
+  } catch {
+    return false;
+  }
+}
+
+function runClonedPreviewPipeline(rawHtml: string): string {
+  const healed = bakeCheckoutChampSnapshot(rawHtml);
+  const timed = extractTimedComments(healed);
+  const keepLive = clonedPreviewKeepScripts(healed) || timed.length > 0;
+  let html = prepareClonedHtmlForPreview(healed, { keepScripts: keepLive });
+  try {
+    html = injectInteractivityRescue(html, { keepScripts: keepLive });
+  } catch {
+    /* keep html as prepared */
+  }
+  return injectLiveCommentClock(html, timed);
 }
 
 async function parseJsonResponseOrThrow<T = unknown>(
@@ -505,7 +585,11 @@ const AUDITOR_TARGET_AGENT: Record<Auditor, string | null> = {
 // Kept verbatim with the server version so the rewrite shape stays
 // identical (id-by-position).
 // ────────────────────────────────────────────────────────────────────────
-function extractTextsForRewriteClient(html: string): Array<{ original: string; tag: string; position: number }> {
+function extractTextsForRewriteClient(
+  html: string,
+  mapped?: Array<{ original: string; tag: string; position: number }>,
+): Array<{ original: string; tag: string; position: number }> {
+  if (mapped && mapped.length >= 3) return mapped;
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -636,15 +720,16 @@ async function rewriteWithOpenClawFromBrowser(args: {
   productDescription: string;
   customPrompt?: string;
   targetAgent?: string | null;
+  mappedTexts?: Array<{ original: string; tag: string; position: number }>;
   onProgress?: (batchesDone: number, batchesTotal: number) => void;
 }): Promise<{ html: string; replacements: number; totalTexts: number; originalLength: number; newLength: number; provider: string }> {
-  const { html, productName, productDescription, customPrompt, targetAgent, onProgress } = args;
+  const { html, productName, productDescription, customPrompt, targetAgent, mappedTexts, onProgress } = args;
   const { supabase } = await import('@/lib/supabase');
 
   // 1. Extract texts CLIENT-SIDE (was hitting /api/quiz-rewrite/extract
   //    which kept returning Netlify "Internal Error. ID: ..." on big
   //    pages — see comment on extractTextsForRewriteClient above).
-  const texts = extractTextsForRewriteClient(html);
+  const texts = extractTextsForRewriteClient(html, mappedTexts);
   const systemPrompt = REWRITE_SYSTEM_PROMPT;
 
   if (texts.length === 0) throw new Error('No texts found to rewrite');
@@ -810,6 +895,28 @@ async function fetchWithRetry(
   }
   // Defensive: shouldn't reach here given the loop guard above.
   throw lastErr instanceof Error ? lastErr : new Error(`${label}: retry loop exhausted`);
+}
+
+function finalizeClonedHtml(html: string): string {
+  if (!html) return html;
+  try {
+    return healClonedLander(html).html;
+  } catch {
+    return html;
+  }
+}
+
+function cloneHealNote(html: string, map?: SwipeAssetMap | null): string {
+  try {
+    const { applied } = readHealStamp(html);
+    const bits: string[] = [];
+    if (applied.length) bits.push(`auto-fixed ${applied.join(', ')}`);
+    const mapped = summarizeSwipeMap(map || undefined).replace(/^; /, '');
+    if (mapped) bits.push(mapped);
+    return bits.length ? `; ${bits.join('; ')}` : '';
+  } catch {
+    return '';
+  }
 }
 
 function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepScripts?: boolean }): string {
@@ -1093,6 +1200,12 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
       clean = clean.replace(/<!--__WASABI_SCRIPT_(\d+)__-->/g, (_m, i: string) => scriptSlots[Number(i)] ?? '');
     }
 
+    if (options?.keepScripts) {
+      clean = injectLiveCommentClock(clean);
+    }
+
+    clean = bakeCheckoutChampSnapshot(clean);
+
     return clean;
   } catch {
     return html;
@@ -1227,6 +1340,8 @@ function DebouncedInput({
 
 export default function FrontEndFunnel() {
   const searchParams = useSearchParams();
+  const { permissions } = useCurrentUser();
+  const isMaster = permissions?.role === 'master';
   const {
     projects,
     templates,
@@ -1234,11 +1349,38 @@ export default function FrontEndFunnel() {
     addFunnelPage,
     updateFunnelPage,
     deleteFunnelPage,
+    reorderFunnelPages,
     customPageTypes,
     addCustomPageType,
     saveCurrentFunnelAsArchive,
     loadArchivedFunnels,
   } = useStore();
+  const [dragStepId, setDragStepId] = useState<string | null>(null);
+  const [dropStepIndex, setDropStepIndex] = useState<number | null>(null);
+
+  const moveStep = (pageId: string, direction: -1 | 1) => {
+    const ids = (funnelPages || []).map((p) => p.id);
+    const from = ids.indexOf(pageId);
+    const to = from + direction;
+    if (from < 0 || to < 0 || to >= ids.length) return;
+    const next = ids.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    reorderFunnelPages(next);
+  };
+
+  const dropStepAt = (draggedId: string | null, targetIndex: number) => {
+    setDragStepId(null);
+    setDropStepIndex(null);
+    if (!draggedId) return;
+    const ids = (funnelPages || []).map((p) => p.id);
+    const from = ids.indexOf(draggedId);
+    if (from < 0 || from === targetIndex) return;
+    const next = ids.slice();
+    const [moved] = next.splice(from, 1);
+    next.splice(targetIndex, 0, moved);
+    reorderFunnelPages(next);
+  };
 
   const allPageTypeOptions: PageTypeOption[] = [
     ...BUILT_IN_PAGE_TYPE_OPTIONS,
@@ -1300,18 +1442,18 @@ export default function FrontEndFunnel() {
     const raw = htmlPreviewModal.html;
     if (!raw) return raw;
     try {
-      return bakeDynamicComments(raw).html;
+      return preservePageShellLayout(bakeDynamicComments(raw).html);
     } catch {
-      return raw;
+      return preservePageShellLayout(raw);
     }
   }, [htmlPreviewModal.html]);
   const editorInitialMobileHtml = useMemo(() => {
     const raw = htmlPreviewModal.mobileHtml;
     if (!raw) return raw;
     try {
-      return bakeDynamicComments(raw).html;
+      return preservePageShellLayout(bakeDynamicComments(raw).html);
     } catch {
-      return raw;
+      return preservePageShellLayout(raw);
     }
   }, [htmlPreviewModal.mobileHtml]);
 
@@ -1382,6 +1524,7 @@ export default function FrontEndFunnel() {
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveFunnelName, setSaveFunnelName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [saveProgress, setSaveProgress] = useState('');
   // Destinazione del salvataggio: archivio (Saved Funnel) oppure il tab
   // "Funnel" di un'offerta in My Projects.
   const [saveTarget, setSaveTarget] = useState<'archive' | 'project'>('archive');
@@ -1390,6 +1533,9 @@ export default function FrontEndFunnel() {
   // di tenere più flow separati nello stesso progetto (es. "Flow A",
   // "Flow B"): nel FunnelTab gli step vengono raggruppati per flow_name.
   const [saveFlowName, setSaveFlowName] = useState('');
+  // When Save is opened from the visual editor, only that page is saved.
+  // null = table Save (selected rows, or every step if none are checked).
+  const [saveScopeIds, setSaveScopeIds] = useState<string[] | null>(null);
 
   // ── Per-row selection (Save subset) ──────────────────────────────
   // Quando l'utente spunta una o più righe della tabella, il bottone
@@ -1458,6 +1604,15 @@ export default function FrontEndFunnel() {
           }
         } catch { /* IDB non disponibile: resta vuoto */ }
       }
+      if (!resultHtml) {
+        const url = p.swipedData?.htmlUrl || p.clonedData?.htmlUrl;
+        if (url) {
+          try {
+            const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+            resultHtml = (await fetchHtmlFromStorage(url)) || '';
+          } catch { /* offline */ }
+        }
+      }
       return {
         step_number: i + 1,
         page_name: p.name || `Step ${i + 1}`,
@@ -1497,9 +1652,20 @@ export default function FrontEndFunnel() {
       `${norm(fn || '')}|||${norm(pn)}|||${norm(u)}`;
 
     // Leggo gli step già presenti nel progetto per decidere update vs insert.
+    const fetchTimed = async (url: string, init: RequestInit = {}, ms = 25_000) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      try {
+        return await fetch(url, { ...init, signal: ctrl.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
     let existingSteps: Array<{ id: number; step_number: number; page_name: string; url: string; flow_name?: string | null }> = [];
     try {
-      const exRes = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`);
+      setSaveProgress('Checking existing steps…');
+      const exRes = await fetchTimed(`/api/projecthub/projects/${projectId}/funnel-steps?slim=1`, {}, 20_000);
       if (exRes.ok) {
         const rows = await exRes.json();
         if (Array.isArray(rows)) existingSteps = rows;
@@ -1616,15 +1782,24 @@ export default function FrontEndFunnel() {
       }
     };
 
+    setSaveProgress(pages.length === 1 ? 'Saving this page…' : `Saving ${pages.length} steps…`);
+
+    const missingHtml = steps.filter((s) => !s.result_content);
+    if (missingHtml.length) {
+      throw new Error(
+        `No page HTML for ${missingHtml.map((s) => s.page_name).join(', ')}. Open the page in the editor and save again.`,
+      );
+    }
+
     // 1) INSERT delle pagine NUOVE (append). Body leggero (result_content:null);
     //    l'HTML pesante arriva dopo via PATCH, una pagina per richiesta.
     if (toInsert.length) {
       const lightInsert = toInsert.map((t) => ({ ...t.step, result_content: null }));
-      const res = await fetch(`/api/projecthub/projects/${projectId}/funnel-steps`, {
+      const res = await fetchTimed(`/api/projecthub/projects/${projectId}/funnel-steps`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ steps: lightInsert, replace: false }),
-      });
+      }, 30_000);
       if (!res.ok) {
         const txt = await res.text().catch(() => '');
         throw new Error(txt || `Error ${res.status}`);
@@ -1632,7 +1807,7 @@ export default function FrontEndFunnel() {
       const created = await res.json();
       if (Array.isArray(created)) {
         for (const row of created as Array<{ id?: number; step_number?: number }>) {
-          const ins = toInsert.find((t) => t.assignedStep === row.step_number);
+          const ins = toInsert.find((t) => Number(t.assignedStep) === Number(row.step_number));
           if (!ins || !row.id) continue;
           stepIdByPageIdx.set(ins.pageIdx, row.id);
           const html = ins.step.result_content;
@@ -1641,13 +1816,14 @@ export default function FrontEndFunnel() {
           let apiOk = false;
           let apiResponse: Response | null = null;
           try {
-            apiResponse = await fetch(
-              `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}`,
+            apiResponse = await fetchTimed(
+              `/api/projecthub/projects/${projectId}/funnel-steps/${row.id}?return=id`,
               {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ result_content: html }),
               },
+              40_000,
             );
             apiOk = apiResponse.ok;
           } catch (err) {
@@ -1692,13 +1868,14 @@ export default function FrontEndFunnel() {
       let apiOk = false;
       let apiResponse: Response | null = null;
       try {
-        apiResponse = await fetch(
-          `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}`,
+        apiResponse = await fetchTimed(
+          `/api/projecthub/projects/${projectId}/funnel-steps/${u.id}?return=id`,
           {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(patch),
           },
+          40_000,
         );
         apiOk = apiResponse.ok;
       } catch (err) {
@@ -1768,9 +1945,11 @@ export default function FrontEndFunnel() {
       // Lo neutralizziamo così gli script girano nativamente sull'origine.
       const { neutralizeRocketLoader } = await import('@/lib/neutralize-rocket-loader');
       const finalize = (pristineHtml: string, editedHtml: string) =>
-        neutralizeRocketLoader(
-          unbakeDynamicComments(reattachDynamicScripts(pristineHtml, editedHtml)).html,
-        ).html;
+        injectLiveCommentClock(
+          neutralizeRocketLoader(
+            unbakeDynamicComments(reattachDynamicScripts(pristineHtml, editedHtml)).html,
+          ).html,
+        );
       html = finalize(pristine || htmlIn, htmlIn);
       if (mobileHtmlIn) mobileHtml = finalize(pristineMobile || pristine || mobileHtmlIn, mobileHtmlIn);
     } catch { /* fallback: HTML editato così com'è */ }
@@ -1829,10 +2008,14 @@ export default function FrontEndFunnel() {
 
   // Conferma salvataggio dal modal: instrada verso archivio o progetto.
   const handleConfirmSave = () => {
-    // Se l'utente ha spuntato righe specifiche → salva quel subset.
-    // Selezione vuota → salva tutte (back-compat). Convertiamo il Set
-    // in array per propagarlo a saveCurrentFunnelTo{Project,Archive}.
-    const subset = selectedStepIds.size > 0 ? Array.from(selectedStepIds) : undefined;
+    // Editor: only the open page (saveScopeIds). List: only checked rows.
+    const subset = (saveScopeIds && saveScopeIds.length > 0)
+      ? saveScopeIds
+      : Array.from(selectedStepIds);
+    if (subset.length === 0) {
+      toast.error('Check the pages you want to save.');
+      return;
+    }
     if (saveTarget === 'project') {
       if (!saveProjectId) return;
       // Il Flow name è obbligatorio per il save su progetto: senza, gli
@@ -1845,15 +2028,15 @@ export default function FrontEndFunnel() {
       }
       setIsSaving(true);
       saveCurrentFunnelToProject(saveProjectId, subset, flowLabel)
-        .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveFlowName(''); })
-        .catch((e) => { setIsSaving(false); toast.error('Error saving to project: ' + ((e as Error)?.message || '')); });
+        .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveProgress(''); setSaveFlowName(''); setSaveScopeIds(null); })
+        .catch((e) => { setIsSaving(false); setSaveProgress(''); toast.error('Error saving to project: ' + ((e as Error)?.message || '')); });
       return;
     }
     if (!saveFunnelName.trim()) return;
     setIsSaving(true);
     saveCurrentFunnelAsArchive(saveFunnelName.trim(), undefined, subset)
-      .then(() => { setShowSaveModal(false); setIsSaving(false); })
-      .catch(() => { setIsSaving(false); toast.error('Error saving'); });
+      .then(() => { setShowSaveModal(false); setIsSaving(false); setSaveProgress(''); setSaveScopeIds(null); })
+      .catch(() => { setIsSaving(false); setSaveProgress(''); toast.error('Error saving'); });
   };
 
   /* ────────── Swipe All ──────────
@@ -3371,14 +3554,18 @@ export default function FrontEndFunnel() {
   // anche un urlToSwipe sintetico ma VALIDO (`https://uploaded.local/<file>`)
   // così tutti i gate esistenti che richiedono un URL e le chiamate
   // `new URL(...)` continuano a funzionare senza modifiche.
-  const handleUploadHtmlFile = (pageId: string, pageName: string, file: File) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const html = String(reader.result || '');
-      if (!html.trim()) { toast.error('The HTML file is empty.'); return; }
-      const safeName = (file.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
-      // Copia locale immediata (sopravvive anche se Storage fallisce).
+  const handleUploadHtmlFiles = async (pageId: string, pageName: string, fileList: FileList | File[]) => {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    try {
+      toast.message('Reading page files…');
+      const snap = await snapshotFromUploadFiles(files);
+      const html = finalizeClonedHtml(snap.html);
+      if (!html.trim()) {
+        toast.error('The HTML file is empty.');
+        return;
+      }
+      const safeName = (snap.name || 'pagina.html').replace(/[^a-zA-Z0-9._-]/g, '_');
       void saveHtmlBlob(pageId, 'clonedData', html);
       await updateFunnelPage(pageId, {
         urlToSwipe: `https://uploaded.local/${safeName}`,
@@ -3391,9 +3578,23 @@ export default function FrontEndFunnel() {
           cloned_at: new Date(),
         },
       });
-    };
-    reader.onerror = () => toast.error('Error reading the HTML file.');
-    reader.readAsText(file);
+      const missingCss = remainingRelativeStylesheets(html);
+      if (snap.cssInlined > 0) {
+        toast.success(`Page loaded (${snap.cssInlined} stylesheets inlined)`);
+      } else if (missingCss > 0) {
+        toast.warning(
+          'This HTML needs its CSS folder. Upload the page folder or a .zip that contains assets/ — a single index.html is only unstyled text.',
+        );
+      } else {
+        toast.success('HTML loaded');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Error reading the HTML file.');
+    }
+  };
+
+  const handleUploadHtmlFile = (pageId: string, pageName: string, file: File) => {
+    void handleUploadHtmlFiles(pageId, pageName, [file]);
   };
 
   // Vision Analysis Functions
@@ -3466,6 +3667,7 @@ export default function FrontEndFunnel() {
   const QUIZ_URL_PATTERNS = [
     'heyflow', 'typeform', 'involve.me', 'outgrow', 'interact',
     'quizzes', 'quiz', 'tryinteract', 'leadquizzes', 'bucket.io',
+    'landerlab',
   ];
 
   const isQuizUrl = (rawUrl: string | undefined | null): boolean => {
@@ -3749,6 +3951,9 @@ export default function FrontEndFunnel() {
               tone: 'professional',
               language: '',
               knowledge: pageKnowledge,
+              ...(page.clonedData && 'swipeMap' in page.clonedData && page.clonedData.swipeMap
+                ? { swipeMap: page.clonedData.swipeMap }
+                : {}),
               ...(pageCheckoutRules
                 ? { checkoutMode: pageCheckoutMode, checkoutRules: pageCheckoutRules }
                 : {}),
@@ -3873,7 +4078,7 @@ export default function FrontEndFunnel() {
           swipeStatus: 'completed',
           swipeResult: `Rewrite OK (${replacements}/${totalTexts} replacements via ${AUDITOR_LABEL[chosen]})${pageCheckoutMode === 'wasabi' ? ' · WasabiCRM wired' : ''}`,
           clonedData: {
-            html: swipedHtml,
+            html: preservePageShellLayout(swipedHtml),
             mobileHtml: page.clonedData?.mobileHtml,
             title: final.new_title || page.clonedData?.title || pageName,
             method_used: `openclaw-${chosen}`,
@@ -4090,14 +4295,18 @@ export default function FrontEndFunnel() {
         }>(res, '[clone-all]');
         if (!res.ok || data.error) throw new Error(data.error || 'Clone failed');
 
-        const clonedHtml = sanitizeClonedHtml(data.content || '', url, { keepScripts: true });
+        const healedHtml = finalizeClonedHtml(
+          sanitizeClonedHtml(data.content || '', url, { keepScripts: true }),
+        );
+        const understood = await understandClonedLander(healedHtml, url);
+        const clonedHtml = understood.html;
         const clonedMobileHtml = data.mobileContent
-          ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: true })
+          ? finalizeClonedHtml(sanitizeClonedHtml(data.mobileContent, url, { keepScripts: true }))
           : '';
 
         updateFunnelPage(page.id, {
           swipeStatus: 'completed',
-          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars)`,
+          swipeResult: `Clone OK (${(data.finalSize || clonedHtml.length).toLocaleString()} chars${cloneHealNote(clonedHtml, understood.map)})`,
           clonedData: {
             html: clonedHtml,
             mobileHtml: clonedMobileHtml || undefined,
@@ -4106,6 +4315,7 @@ export default function FrontEndFunnel() {
             content_length: data.finalSize || clonedHtml.length,
             duration_seconds: 0,
             cloned_at: new Date(),
+            swipeMap: understood.map,
           },
         });
         void saveHtmlBlob(page.id, 'clonedData', clonedHtml, clonedMobileHtml || undefined);
@@ -4281,16 +4491,28 @@ export default function FrontEndFunnel() {
         // asset relativo (css/img) diventerebbe https://uploaded.local/...
         // → 404 → pagina senza stili/immagini (sembra "vuota"). Il file
         // dell'utente e' gia' self-contained o ha URL assoluti suoi.
-        const clonedHtml = uploadedHtml
-          ? (data.content || '')
-          : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts });
-        const clonedMobileHtml = uploadedHtml
-          ? (data.mobileContent || '')
-          : (data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : '');
+        const isLocalFileClone = /^file:/i.test(url);
+        const skipSanitize = Boolean(uploadedHtml) || isLocalFileClone;
+        const healedHtml = finalizeClonedHtml(
+          skipSanitize
+            ? (data.content || '')
+            : sanitizeClonedHtml(data.content || '', url, { keepScripts: preserveScripts }),
+        );
+        updateFunnelPage(pageId, {
+          swipeStatus: 'in_progress',
+          swipeResult: 'Understanding landing (map texts, images, videos)...',
+        });
+        const understood = await understandClonedLander(healedHtml, isUploaded || isLocalFileClone ? '' : url);
+        const clonedHtml = understood.html;
+        const clonedMobileHtml = finalizeClonedHtml(
+          skipSanitize
+            ? (data.mobileContent || '')
+            : (data.mobileContent ? sanitizeClonedHtml(data.mobileContent, url, { keepScripts: preserveScripts }) : ''),
+        );
         const mobileInfo = clonedMobileHtml ? ` + mobile ${(data.mobileFinalSize || 0).toLocaleString()}` : '';
         const statusMsg = data.jsRendered
-          ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete`
-          : `Clone OK (${(data.finalSize || data.content?.length || 0).toLocaleString()} chars${data.cssInlined ? ', CSS inlined' : ''}${mobileInfo})`;
+          ? `⚠️ JS-rendered page (${(data.finalSize || 0).toLocaleString()} chars) - content might be incomplete${cloneHealNote(clonedHtml, understood.map)}`
+          : `Clone OK (${(data.finalSize || data.content?.length || 0).toLocaleString()} chars${data.cssInlined ? ', CSS inlined' : ''}${mobileInfo}${cloneHealNote(clonedHtml, understood.map)})`;
 
         updateFunnelPage(pageId, {
           swipeStatus: 'completed',
@@ -4303,6 +4525,7 @@ export default function FrontEndFunnel() {
             content_length: data.finalSize || data.content?.length || 0,
             duration_seconds: 0,
             cloned_at: new Date(),
+            swipeMap: understood.map,
           },
         });
 
@@ -4318,7 +4541,7 @@ export default function FrontEndFunnel() {
         // HTML caricato: niente URL reale da iframe-are → snapshot dell'HTML
         // salvato. Altrimenti la live mode punterebbe a uploaded.local (404)
         // e la preview resterebbe vuota.
-        const isUploadedClone = uploadedHtml.length > 0 || url.startsWith('https://uploaded.local/');
+        const isUploadedClone = uploadedHtml.length > 0 || url.startsWith('https://uploaded.local/') || isLocalFileClone;
         // Always default to 'snapshot' — the saved HTML always renders
         // inside our sandbox, while pointing the iframe at the live URL
         // gets blocked by X-Frame-Options / CSP on most modern sites.
@@ -4382,6 +4605,8 @@ export default function FrontEndFunnel() {
           }
         }
         const chosenAuditorEarly = auditorRef.current;
+        let pageSwipeMap: SwipeAssetMap | undefined =
+          (currentPage?.clonedData as { swipeMap?: SwipeAssetMap } | undefined)?.swipeMap;
 
         // No size threshold — if there's no cached HTML at all we clone first;
         // anything else (even small SPA shells) is forwarded to Claude.
@@ -4410,16 +4635,50 @@ export default function FrontEndFunnel() {
             throw new Error(cloneData.error || 'Clone failed — cannot rewrite without HTML');
           }
           htmlToRewrite = sanitizeClonedHtml(cloneData.content || '', url, { keepScripts: preserveScripts });
-
+          htmlToRewrite = finalizeClonedHtml(htmlToRewrite);
+          const understood = await understandClonedLander(htmlToRewrite, url);
+          htmlToRewrite = understood.html;
+          pageSwipeMap = understood.map;
           updateFunnelPage(pageId, {
             clonedData: {
               html: htmlToRewrite,
               title: cloneData.title || pageName,
-              clonedAt: new Date(),
-              method: 'identical',
+              method_used: 'identical',
+              content_length: htmlToRewrite.length,
+              duration_seconds: 0,
+              cloned_at: new Date(),
+              swipeMap: understood.map,
             },
           });
           void saveHtmlBlob(pageId, 'clonedData', htmlToRewrite);
+        }
+
+        if (htmlToRewrite) {
+          htmlToRewrite = finalizeClonedHtml(htmlToRewrite);
+          if (!pageSwipeMap?.texts?.length) {
+            setCloneProgress({
+              phase: 'extract',
+              totalTexts: 0,
+              processedTexts: 0,
+              message: 'Mapping texts, images, videos...',
+            });
+            const understood = await understandClonedLander(htmlToRewrite, url);
+            htmlToRewrite = understood.html;
+            pageSwipeMap = understood.map;
+            const prev = (currentPage?.clonedData || {}) as Record<string, unknown>;
+            updateFunnelPage(pageId, {
+              clonedData: {
+                ...prev,
+                html: htmlToRewrite,
+                title: (prev.title as string) || pageName,
+                method_used: (prev.method_used as string) || 'identical',
+                content_length: htmlToRewrite.length,
+                duration_seconds: Number(prev.duration_seconds) || 0,
+                cloned_at: (prev.cloned_at as Date) || new Date(),
+                swipeMap: pageSwipeMap,
+              },
+            });
+          }
         }
 
         const chosenAuditor = auditorRef.current;
@@ -4514,6 +4773,7 @@ export default function FrontEndFunnel() {
             language: cloneConfig.language || '',
             knowledge: rowKnowledge,
           };
+          if (pageSwipeMap) swipePayload.swipeMap = pageSwipeMap;
           // Checkout rules resolved HERE and shipped as text: the worker keeps
           // no copy, so src/lib/checkout-modes.ts stays the only source of
           // truth. Standard checkout → addendum '' → fields omitted → payload
@@ -4720,6 +4980,7 @@ export default function FrontEndFunnel() {
             productDescription: swipeDesc,
             customPrompt: cloneConfig.customPrompt || undefined,
             targetAgent: targetAgentForRewrite,
+            mappedTexts: textsFromSwipeMap(pageSwipeMap),
             onProgress: (done, total) => setCloneProgress({ phase: 'processing', totalTexts: total, processedTexts: done, message: `Rewriting via OpenClaw (${done}/${total} batches)...` }),
           });
         } else {
@@ -4771,6 +5032,10 @@ export default function FrontEndFunnel() {
             research_notes: cloneProject?.marketResearchData?.notes ?? '',
           };
 
+          const parkedHtml = parkHeavyDataUris(htmlToRewrite);
+          // Extract only needs the page copy. Brief/research files ride on
+          // each process batch; sending them here is what pushes the body
+          // over the gateway limit (HTTP 413).
           const extractRes = await fetch(SUPABASE_FN_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4785,11 +5050,12 @@ export default function FrontEndFunnel() {
               customPrompt: cloneConfig.customPrompt || '',
               targetLanguage: cloneConfig.language || detectPageLanguage(sourceUrlForSwap, htmlToRewrite),
               userId: DEFAULT_USER_ID,
-              renderedHtml: htmlToRewrite,
-              brief: swipeBrief || undefined,
-              market_research: cloneConfig.marketResearch || undefined,
+              renderedHtml: parkedHtml.html,
+              brief: capDoc(swipeBrief),
+              market_research: capDoc(cloneConfig.marketResearch),
               model: claudeModelRef.current,
-              ...cloneRoutingPayload,
+              pageType: cloneRoutingPayload.pageType,
+              checkoutMode: cloneRoutingPayload.checkoutMode,
             }),
           });
 
@@ -4809,7 +5075,11 @@ export default function FrontEndFunnel() {
             }
           }
           if (!extractRes.ok || extractData.error) {
-            throw new Error(extractData.error || extractData.details || `Extract HTTP ${extractRes.status}`);
+            const why = extractData.error || extractData.details;
+            if (!why && extractRes.status === 413) {
+              throw new Error('Extract HTTP 413: the cloned page is too large to send (over the ~2MB gateway limit).');
+            }
+            throw new Error(why || `Extract HTTP ${extractRes.status}`);
           }
           if (!extractData.jobId) throw new Error('Extract: no jobId returned');
 
@@ -4872,7 +5142,7 @@ export default function FrontEndFunnel() {
             pushRewrites(procData.rewrites, pageName);
 
             if (procData.phase === 'completed' && procData.content) {
-              sbFinalHtml = procData.content;
+              sbFinalHtml = parkedHtml.restore(procData.content);
               sbReplacements = procData.replacements || 0;
           setCloneProgress({
             phase: 'processing',
@@ -5153,7 +5423,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         }
 
         setCloneProgress(null);
-        let rewrittenHtml = rewriteData.html;
+        let rewrittenHtml = preservePageShellLayout(rewriteData.html);
         let visualNote = '';
         const projectForVisual = (projects || []).find((p) => p.id === currentPage?.productId);
         const visualName = (cloneConfig.productName || projectForVisual?.name || '').trim();
@@ -5898,7 +6168,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     toast.error('No steps to save');
                     return;
                   }
+                  if (selectedStepIds.size === 0) {
+                    toast.error('Check the pages you want to save.');
+                    return;
+                  }
                   setSaveFunnelName('');
+                  setSaveScopeIds(null);
                   setShowSaveModal(true);
                 }}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-base font-semibold transition-colors ${
@@ -5907,8 +6182,8 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                     : 'bg-green-50 text-green-700 hover:bg-green-100'
                 }`}
                 title={selectedStepIds.size > 0
-                  ? `Save ONLY the ${selectedStepIds.size} selected step${selectedStepIds.size === 1 ? '' : 's'}`
-                  : 'Save all steps as funnel in archive'}
+                  ? `Save the ${selectedStepIds.size} checked step${selectedStepIds.size === 1 ? '' : 's'}`
+                  : 'Check the pages you want to save'}
               >
                 <Download className="w-5 h-5" />
                 {selectedStepIds.size > 0
@@ -6502,7 +6777,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       }}
                     />
                   </th>
-                  <th className="w-10 px-2" title="Step order (1 = first page of funnel)">Step</th>
+                  <th className="w-[4.5rem] px-1" title="Drag a step, or use the arrows, to move it above or below another. 1 = first page.">Step</th>
                   <th className="min-w-[120px]">Page</th>
                   <th className="min-w-[100px]">Type</th>
                   <th className="min-w-[120px]">Template</th>
@@ -6526,7 +6801,25 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                   (funnelPages || []).map((page, index) => {
                     const isSelected = selectedStepIds.has(page.id);
                     return (
-                    <tr key={page.id} className={isSelected ? 'bg-purple-50/50' : undefined}>
+                    <tr
+                      key={page.id}
+                      onDragOver={(e) => {
+                        if (!dragStepId) return;
+                        e.preventDefault();
+                        if (dropStepIndex !== index) setDropStepIndex(index);
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const draggedId = e.dataTransfer.getData('text/plain') || dragStepId;
+                        dropStepAt(draggedId, index);
+                      }}
+                      className={[
+                        isSelected ? 'bg-purple-50/50' : '',
+                        dropStepIndex === index && dragStepId && dragStepId !== page.id
+                          ? 'outline outline-2 outline-indigo-400'
+                          : '',
+                      ].filter(Boolean).join(' ') || undefined}
+                    >
                       {/* Per-row select checkbox — drives the Save subset.
                          Sfondo righe selezionate viola tenue per dare
                          feedback visivo della selezione attiva. */}
@@ -6539,9 +6832,47 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           onChange={() => toggleStepSelected(page.id)}
                         />
                       </td>
-                      {/* Step number (sequential: 1 = first, 2 = second, etc.) */}
-                      <td className="text-center text-gray-500 bg-gray-50 font-medium">
-                        {index + 1}
+                      <td className="text-center text-gray-500 bg-gray-50 font-medium px-1">
+                        <div className="inline-flex items-center gap-0.5">
+                          <span className="flex flex-col">
+                            <button
+                              type="button"
+                              aria-label={`Move step ${index + 1} up`}
+                              title="Move up"
+                              disabled={index === 0}
+                              onClick={() => moveStep(page.id, -1)}
+                              className="text-gray-400 hover:text-indigo-600 disabled:opacity-25 disabled:hover:text-gray-400 leading-none"
+                            >
+                              <ChevronUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              aria-label={`Move step ${index + 1} down`}
+                              title="Move down"
+                              disabled={index === (funnelPages || []).length - 1}
+                              onClick={() => moveStep(page.id, 1)}
+                              className="text-gray-400 hover:text-indigo-600 disabled:opacity-25 disabled:hover:text-gray-400 leading-none"
+                            >
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            </button>
+                          </span>
+                          <span
+                            draggable
+                            title="Drag to move this step"
+                            onDragStart={(e) => {
+                              e.dataTransfer.effectAllowed = 'move';
+                              e.dataTransfer.setData('text/plain', page.id);
+                              setDragStepId(page.id);
+                            }}
+                            onDragEnd={() => {
+                              setDragStepId(null);
+                              setDropStepIndex(null);
+                            }}
+                            className="cursor-grab active:cursor-grabbing select-none px-0.5 min-w-[1rem]"
+                          >
+                            {index + 1}
+                          </span>
+                        </div>
                       </td>
 
                       {/* Page Name */}
@@ -6554,6 +6885,15 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           }
                           className="font-medium truncate"
                         />
+                        {isMaster && (
+                          <p
+                            className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1 min-w-0"
+                            title={page.ownerEmail || 'No owner'}
+                          >
+                            <User className="w-3 h-3 shrink-0" />
+                            <span className="truncate">{page.ownerEmail || 'No owner'}</span>
+                          </p>
+                        )}
                       </td>
 
                       {/* Page Type */}
@@ -6679,12 +7019,17 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                         <TemplatePickerCell
                           pageType={page.pageType}
                           templateId={page.templateId}
+                          templateLabel={
+                            page.clonedData?.method_used === 'template'
+                              ? page.clonedData.title
+                              : undefined
+                          }
                           typeLabel={getPageTypeLabel(page.pageType)}
                           onPick={(selected) => {
-                            updateFunnelPage(page.id, {
+                            void updateFunnelPage(page.id, {
                               templateId: selected
                                 ? pickerValueForTemplate(selected)
-                                : undefined,
+                                : '',
                               urlToSwipe: selected?.url_to_swipe || page.urlToSwipe,
                               clonedData: selected
                                 ? {
@@ -6697,7 +7042,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     htmlUrl: selected.htmlUrl || undefined,
                                   }
                                 : page.clonedData,
-                            });
+                            }).catch(() => {});
                           }}
                         />
                       </td>
@@ -6728,19 +7073,37 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           )}
                           <label
                             className="text-gray-400 hover:text-blue-600 p-0.5 flex-shrink-0 cursor-pointer"
-                            title="Upload an HTML file instead of the link"
+                            title="Upload HTML or a .zip of the page folder"
                           >
                             <input
                               type="file"
-                              accept=".html,.htm,text/html"
+                              accept=".html,.htm,.zip,text/html,application/zip"
                               className="hidden"
                               onChange={(e) => {
-                                const f = e.target.files?.[0];
-                                if (f) handleUploadHtmlFile(page.id, page.name, f);
+                                const list = e.target.files;
+                                if (list?.length) void handleUploadHtmlFiles(page.id, page.name, list);
                                 e.target.value = '';
                               }}
                             />
                             <Upload className="w-3 h-3" />
+                          </label>
+                          <label
+                            className="text-gray-400 hover:text-blue-600 p-0.5 flex-shrink-0 cursor-pointer"
+                            title="Upload the whole page folder (CSS + images)"
+                          >
+                            <input
+                              type="file"
+                              className="hidden"
+                              multiple
+                              // @ts-expect-error webkitdirectory is not in React's input types
+                              webkitdirectory=""
+                              onChange={(e) => {
+                                const list = e.target.files;
+                                if (list?.length) void handleUploadHtmlFiles(page.id, page.name, list);
+                                e.target.value = '';
+                              }}
+                            />
+                            <Folder className="w-3 h-3" />
                           </label>
                         </div>
                       </td>
@@ -6842,10 +7205,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                 ): Promise<{ html: string; mobileHtml?: string } | null> => {
                                   if (!blob) return null;
                                   const kind = target === 'swipedData' ? 'swiped' : 'cloned';
-                                  // 1) SERVER (tabella page_html) — SORGENTE DI VERITÀ. È quello
-                                  //    che l'editor sovrascrive ad ogni Save, quindi "Edit"/anteprima
-                                  //    riaprono SEMPRE l'ULTIMA versione salvata, anche da un altro
-                                  //    dispositivo. URL deterministica per (pageId, kind).
+                                  // Memory first: identical clone writes HTML into Zustand immediately,
+                                  // while page_html may still be uploading and swipe stubs 404.
+                                  if (blob.html && blob.html.length > 40) {
+                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
+                                  }
                                   try {
                                     const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
                                     const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
@@ -6855,13 +7219,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       return { html, mobileHtml: mobileHtml || undefined };
                                     }
                                   } catch { /* fall through */ }
-                                  // 2) blob in memoria (Zustand) — già sincronizzato col server al
-                                  //    boot e ad ogni Save. Fallback se il server non ha la riga.
-                                  if (blob.html && blob.html.length > 0) {
-                                    return { html: blob.html, mobileHtml: blob.mobileHtml };
-                                  }
-                                  // 2.5) htmlUrl legacy (vecchio Supabase Storage) per pagine
-                                  //      create prima di page_html.
                                   if (blob.htmlUrl) {
                                     try {
                                       const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
@@ -6872,7 +7229,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       }
                                     } catch { /* fall through */ }
                                   }
-                                  // 2.9) IndexedDB — solo offline / ultima spiaggia su questa macchina.
                                   try {
                                     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const idb = await loadHtmlBlob(page.id, target);
@@ -6880,7 +7236,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       return { html: idb.html, mobileHtml: idb.mobileHtml };
                                     }
                                   } catch { /* fall through */ }
-                                  // 3) openclaw_messages.response (richiede jobId)
                                   if (blob.jobId) {
                                     try {
                                       const r = await fetch(`/api/openclaw/queue?id=${encodeURIComponent(blob.jobId)}`);
@@ -6890,32 +7245,31 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                       const parsed = JSON.parse(data.response) as { html?: string; mobileHtml?: string };
                                       if (!parsed.html) throw new Error('html missing in response');
                                       return { html: parsed.html, mobileHtml: parsed.mobileHtml };
-                                    } catch (err) {
-                                      toast.error(
-                                        `Unable to retrieve HTML from job ${blob.jobId.slice(0, 8)}...`,
-                                        { description: `${err instanceof Error ? err.message : String(err)}. The job may have been deleted or the response has expired. Re-run the Rewrite.` }
-                                      );
-                                      return null;
-                                    }
+                                    } catch { /* try the other blob */ }
                                   }
-                                  // Nessuna fonte ha l'HTML.
-                                  const wasSkipped = !!blob.htmlSkipped;
-                                  toast.error('HTML not available for this page.', {
-                                    description: wasSkipped
-                                      ? 'The HTML was > 50KB and Supabase stripped it to avoid timeouts. The browser does not have a copy in IndexedDB (probably another device, anonymous session, or cleared cache). Re-run Clone or Rewrite to regenerate it.'
-                                      : 'This row does not yet have a cloned/rewritten HTML, or it was generated on another machine. Run Clone (Identical / Rewrite) to generate the HTML.',
-                                  });
                                   return null;
                                 };
 
-                                // Preview the FRESHEST blob (swiped vs cloned), not
-                                // just "swiped if it exists" — otherwise a stale
-                                // swipedData shadows a newer clonedData rewrite and
-                                // the preview shows the OLD/original version.
-                                const useSwiped = freshestHtmlTarget(page) === 'swipedData' && !!page.swipedData;
+                                const primary = freshestHtmlTarget(page);
+                                const secondary: 'swipedData' | 'clonedData' =
+                                  primary === 'swipedData' ? 'clonedData' : 'swipedData';
+                                const blobOf = (t: 'swipedData' | 'clonedData') =>
+                                  t === 'swipedData' ? page.swipedData : page.clonedData;
+                                let used = primary;
+                                let got = await fetchHtmlIfNeeded(blobOf(primary), primary);
+                                if (!got) {
+                                  used = secondary;
+                                  got = await fetchHtmlIfNeeded(blobOf(secondary), secondary);
+                                }
+                                if (!got) {
+                                  toast.error('HTML not available for this page.', {
+                                    description:
+                                      'Could not load the cloned HTML from this session, the server, or this browser. Re-run Clone or Rewrite.',
+                                  });
+                                  return;
+                                }
+                                const useSwiped = used === 'swipedData' && !!page.swipedData;
                                 if (useSwiped && page.swipedData) {
-                                  const got = await fetchHtmlIfNeeded(page.swipedData, 'swipedData');
-                                  if (!got) return;
                                   setPreviewTab('preview');
                                   setShowVisualEditor(false);
                                   setHtmlPreviewModal({
@@ -6934,8 +7288,6 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     sourceUrl: page.urlToSwipe || page.url || '',
                                   });
                                 } else if (page.clonedData) {
-                                  const got = await fetchHtmlIfNeeded(page.clonedData, 'clonedData');
-                                  if (!got) return;
                                   // Default = snapshot (HTML clonato), come
                                   // richiesto: l'utente vede subito il
                                   // contenuto editato/salvato, non l'URL
@@ -7031,28 +7383,34 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           {(page.swipedData || page.clonedData) && (
                             <button
                               onClick={async () => {
-                                const target = freshestHtmlTarget(page);
-                                const kind = target === 'swipedData' ? 'swiped' : 'cloned';
-                                const blob = (target === 'swipedData' ? page.swipedData : page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
-                                let html = '';
-                                try {
-                                  const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-                                  const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
-                                  html = (await fetchHtmlFromStorage(`${base}&variant=desktop`)) || '';
-                                } catch { /* fall through */ }
-                                if (!html && blob?.html) html = blob.html;
-                                if (!html && blob?.htmlUrl) {
+                                const tryKind = async (target: 'swipedData' | 'clonedData') => {
+                                  const kind = target === 'swipedData' ? 'swiped' : 'cloned';
+                                  const blob = (target === 'swipedData' ? page.swipedData : page.clonedData) as { html?: string; htmlUrl?: string } | undefined;
+                                  if (blob?.html) return blob.html;
                                   try {
                                     const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-                                    html = (await fetchHtmlFromStorage(blob.htmlUrl)) || '';
+                                    const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
+                                    const fromServer = await fetchHtmlFromStorage(`${base}&variant=desktop`);
+                                    if (fromServer) return fromServer;
                                   } catch { /* fall through */ }
-                                }
-                                if (!html) {
+                                  if (blob?.htmlUrl) {
+                                    try {
+                                      const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                      const fromUrl = await fetchHtmlFromStorage(blob.htmlUrl);
+                                      if (fromUrl) return fromUrl;
+                                    } catch { /* fall through */ }
+                                  }
                                   try {
                                     const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const idb = await loadHtmlBlob(page.id, target);
-                                    html = idb?.html || '';
+                                    if (idb?.html) return idb.html;
                                   } catch { /* fall through */ }
+                                  return '';
+                                };
+                                const primary = freshestHtmlTarget(page);
+                                let html = await tryKind(primary);
+                                if (!html) {
+                                  html = await tryKind(primary === 'swipedData' ? 'clonedData' : 'swipedData');
                                 }
                                 if (!html) {
                                   toast.error('HTML not available for this page.', { description: 'Run Clone or Rewrite to generate it.' });
@@ -7095,7 +7453,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           <button
                             onClick={() => deleteFunnelPage(page.id)}
                             className="p-1 text-red-500 hover:bg-red-50 rounded"
-                            title="Delete"
+                            title={
+                              isMaster && page.ownerEmail
+                                ? `Delete — created by ${page.ownerEmail}`
+                                : 'Delete'
+                            }
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -7558,16 +7920,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                       // param e il bundle vede affiliate=null -> redirect.
                       const rawHtml = previewViewport === 'mobile' && htmlPreviewModal.mobileHtml
                         ? htmlPreviewModal.mobileHtml : htmlPreviewModal.html;
-                      let htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
-                        ? prepareClonedHtmlForPreview(rawHtml)
+                      const htmlToOpen = htmlPreviewModal.sourceType === 'cloned'
+                        ? runClonedPreviewPipeline(rawHtml)
                         : rawHtml;
-                      // Rende FAQ/accordion cliccabili anche nella tab nuova:
-                      // lo snapshot statico ha gli script originali spesso
-                      // rotti, quindi iniettiamo il toggler universale.
-                      try {
-                        const { injectInteractivityRescue } = await import('@/lib/spa-rescue');
-                        htmlToOpen = injectInteractivityRescue(htmlToOpen);
-                      } catch { /* fallback: html senza rescue */ }
                       const blob = new Blob([htmlToOpen], { type: 'text/html;charset=utf-8' });
                       const url = URL.createObjectURL(blob);
                       window.open(url, '_blank', 'noopener,noreferrer');
@@ -7834,7 +8189,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                           const doc = iframe.contentDocument || iframe.contentWindow?.document;
                           if (doc) {
                             doc.open();
-                            let safeHtml = htmlToShow;
+                            let safeHtml = preservePageShellLayout(htmlToShow);
                             if (!safeHtml.includes('name="referrer"')) {
                               const refTag = '<meta name="referrer" content="no-referrer">';
                               safeHtml = safeHtml.includes('<head>') ? safeHtml.replace('<head>', '<head>' + refTag) : refTag + safeHtml;
@@ -7916,20 +8271,11 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                             // originali e dobbiamo reinizializzare la UI a runtime.
                             const isClonedPreview = htmlPreviewModal.sourceType === 'cloned';
                             if (isClonedPreview) {
-                              safeHtml = prepareClonedHtmlForPreview(safeHtml);
-                              // ── INIETTA RESCUE INTERATTIVITA' ─────────────────
-                              // prepareClonedHtmlForPreview strippa TUTTI gli script
-                              // della pagina originale (anti-redirect, anti-bouncer):
-                              // senza di noi a iniettare il click delegate, FAQ e
-                              // accordion nel preview non rispondono ai click —
-                              // l'utente vede una pagina morta. injectInteractivityRescue
-                              // aggiunge lo stesso handler usato dall'editor (vedi
-                              // src/lib/spa-rescue.ts), idempotente e safe da
-                              // riapplicare. Import statico in cima al file: il
-                              // dynamic require('@/...') NON viene risolto dal
-                              // bundler client e falliva silenziosamente.
+                              // Live-chat / VSL pages must keep the comment engine
+                              // (and a wall-clock fallback if Vidalytics never
+                              // mounts). Plain landings still strip bouncers.
                               try {
-                                safeHtml = injectInteractivityRescue(safeHtml);
+                                safeHtml = runClonedPreviewPipeline(safeHtml);
                               } catch (e) {
                                 console.warn('[preview] rescue inject fallita:', e);
                               }
@@ -9539,8 +9885,10 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           // Salva nel progetto direttamente dall'editor: persiste l'edit
           // corrente sulla pagina e apre il modal "Save Funnel" preselezionato
           // su Progetto/Funnel (stessa logica del pulsante in frontend).
-          onSaveToProject={(html, mobileHtml) => {
-            void persistEditorHtmlToPage(html, mobileHtml);
+          onSaveToProject={async (html, mobileHtml) => {
+            const pid = htmlPreviewModal.pageId;
+            await persistEditorHtmlToPage(html, mobileHtml);
+            setSaveScopeIds(pid ? [pid] : null);
             setSaveTarget('project');
             setShowSaveModal(true);
           }}
@@ -9571,9 +9919,12 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md mx-4">
             <h3 className="text-lg font-bold text-gray-900 mb-1">Save Funnel</h3>
             <p className="text-sm text-gray-500 mb-4">
-              Save {selectedStepIds.size > 0 ? selectedStepIds.size : (funnelPages?.length || 0)} step
-              {selectedStepIds.size > 0 ? <span className="text-purple-700 font-medium"> (selected)</span> : null}
-              . Choose where to save them.
+              {saveScopeIds && saveScopeIds.length > 0
+                ? `Save ${saveScopeIds.length === 1 ? 'this page' : `${saveScopeIds.length} pages`}. Choose where to put ${saveScopeIds.length === 1 ? 'it' : 'them'}.`
+                : <>
+                    Save {selectedStepIds.size} checked step{selectedStepIds.size === 1 ? '' : 's'}.
+                    Choose where to save them.
+                  </>}
             </p>
 
             {/* Selettore destinazione */}
@@ -9664,7 +10015,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
 
             <div className="flex justify-end gap-3 mt-5">
               <button
-                onClick={() => setShowSaveModal(false)}
+                onClick={() => { setShowSaveModal(false); setSaveScopeIds(null); setSaveProgress(''); }}
                 className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800 transition-colors"
                 disabled={isSaving}
               >
@@ -9680,7 +10031,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                 className="px-5 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
               >
                 {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                {isSaving ? 'Saving...' : 'Save'}
+                {isSaving ? (saveProgress || 'Saving...') : 'Save'}
               </button>
             </div>
           </div>

@@ -3,6 +3,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { extForContentType } from '@/lib/competitor-ads';
 import { isMissingAdTypesTable, resolveAdType, upsertArchiveAdType } from '@/lib/archive-ad-types';
+import { classifyArchiveAd } from '@/lib/classify-archive-ad';
+import { formatAdTags, parseAdTags } from '@/lib/ad-tags';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -66,7 +68,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const resolved = resolveAdType(String(form.get('ad_type') || ''), '');
+  const classified = classifyArchiveAd({
+    mediaType: inferred.media,
+    name: file.name,
+  });
+  const rawType = String(form.get('ad_type') || '').trim();
+  const auto = !rawType || rawType === 'auto';
+  const resolved = resolveAdType(auto ? classified.ad_type : rawType, '');
   if (resolved.isCustom) {
     await upsertArchiveAdType(userId, resolved.value, resolved.label);
   }
@@ -90,14 +98,15 @@ export async function POST(req: NextRequest) {
   }
 
   const name = String(form.get('name') || file.name.replace(/\.[^.]+$/, '')).trim().slice(0, 300);
-  const category = String(form.get('category') || '').trim().slice(0, 60);
+  const category = String(form.get('category') || (auto ? classified.category : '') || '').trim().slice(0, 60);
+  const tags = auto ? formatAdTags(parseAdTags(classified.tags.join(', '))) : '';
   const row = {
     name: name || 'Ad template',
     ad_type: resolved.value,
     category,
     media_type: inferred.media,
     file_path: path,
-    tags: '',
+    tags,
     headline: '',
     primary_text: '',
     owner_user_id: userId,

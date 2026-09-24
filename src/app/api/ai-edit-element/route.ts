@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { normalizeCheckoutMode, withCheckoutRules } from '@/lib/checkout-modes';
 import { stripRuntimeConflicts } from '@/lib/wasabi-checkout-contract';
+import {
+  applyTextSwap,
+  extractVisibleSnippets,
+  isHugeAiHtml,
+  parseTextSwapInstruction,
+} from '@/lib/ai-html-text-swap';
 
 export const maxDuration = 120;
 export const dynamic = 'force-dynamic';
@@ -54,6 +60,18 @@ RULES:
 4. For "insert_before": code is placed right before the target.
 5. For "insert_after": code is placed right after the target.`;
 
+const PATCH_SYSTEM = `You edit COPY on a large landing page. You must NOT rewrite HTML.
+
+Return ONLY a JSON object (no markdown):
+{"replacements":[{"from":"exact visible text","to":"new text"}]}
+
+Rules:
+- "from" must be copied EXACTLY from the snippets/excerpt the user sent.
+- Only include strings that actually change.
+- Prefer brand/name/phrase swaps over restyling.
+- If the instruction is a rename (change X with Y), return one replacement {from:X,to:Y}.
+- Empty replacements array if you cannot do it safely.`;
+
 function isPageLevelRequest(instruction: string): boolean {
   const lower = instruction.toLowerCase();
   const patterns = [
@@ -69,12 +87,52 @@ function isPageLevelRequest(instruction: string): boolean {
   return patterns.some(p => p.test(lower));
 }
 
+function parsePatchJson(raw: string): Array<{ from: string; to: string }> {
+  const cleaned = raw.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim();
+  try {
+    const parsed = JSON.parse(cleaned) as { replacements?: Array<{ from?: string; to?: string }> };
+    const list = Array.isArray(parsed?.replacements) ? parsed.replacements : [];
+    return list
+      .map((r) => ({ from: String(r?.from || '').trim(), to: String(r?.to ?? '') }))
+      .filter((r) => r.from.length >= 2);
+  } catch {
+    return [];
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
-    const { elementHtml, fullHtml, instruction, checkoutMode } = await request.json();
+    const body = await request.json();
+    const {
+      elementHtml,
+      instruction,
+      checkoutMode,
+      mode,
+      snippets,
+      excerpt,
+    } = body as {
+      elementHtml?: string;
+      instruction?: string;
+      checkoutMode?: string;
+      mode?: string;
+      snippets?: string[];
+      excerpt?: string;
+    };
 
     if (!instruction) {
       return NextResponse.json({ error: 'instruction is required' }, { status: 400 });
+    }
+
+    const swap = parseTextSwapInstruction(instruction);
+    if (swap && typeof elementHtml === 'string' && elementHtml.length > 0) {
+      const applied = applyTextSwap(elementHtml, swap.from, swap.to);
+      if (applied.count > 0) {
+        return NextResponse.json({
+          scope: 'element',
+          html: applied.html,
+          applied: { from: swap.from, to: swap.to, count: applied.count },
+        });
+      }
     }
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -83,11 +141,9 @@ export async function POST(request: NextRequest) {
     }
 
     const anthropic = new Anthropic({ apiKey });
-    const isPageLevel = isPageLevelRequest(instruction) || !elementHtml;
+    const huge = isHugeAiHtml(elementHtml, undefined) || mode === 'patches';
+    const isPageLevel = mode !== 'patches' && (isPageLevelRequest(instruction) || !elementHtml) && !huge;
 
-    // On a WasabiCRM checkout the payment runtime binds to data-wc-* markup,
-    // so both the element rewriter and the page-level inserter get the rules.
-    // For a standard checkout (and every other page) the prompts are unchanged.
     const elementSystem = withCheckoutRules(ELEMENT_SYSTEM, checkoutMode);
     const pageSystem = withCheckoutRules(PAGE_SYSTEM, checkoutMode);
     const isWasabi = normalizeCheckoutMode(checkoutMode) === 'wasabi';
@@ -105,6 +161,31 @@ export async function POST(request: NextRequest) {
       }
       return stripped.html;
     };
+
+    if (huge) {
+      const list = Array.isArray(snippets) && snippets.length
+        ? snippets.map(String).slice(0, 80)
+        : extractVisibleSnippets(String(elementHtml || excerpt || ''), 80);
+      const clip = String(excerpt || elementHtml || '').slice(0, 6000);
+      if (swap) {
+        return NextResponse.json({
+          scope: 'patches',
+          replacements: [{ from: swap.from, to: swap.to }],
+        });
+      }
+      const response = await anthropic.messages.create({
+        model: 'claude-opus-4-8',
+        max_tokens: 2048,
+        system: PATCH_SYSTEM,
+        messages: [{
+          role: 'user',
+          content: `Instruction: ${instruction}\n\nVisible snippets:\n${list.map((s, i) => `${i + 1}. ${s}`).join('\n')}\n\nExcerpt:\n${clip}`,
+        }],
+      });
+      const textBlock = response.content.find(b => b.type === 'text');
+      const replacements = parsePatchJson(textBlock?.text?.trim() || '');
+      return NextResponse.json({ scope: 'patches', replacements });
+    }
 
     if (isPageLevel) {
       const response = await anthropic.messages.create({

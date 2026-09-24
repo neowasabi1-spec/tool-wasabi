@@ -52,7 +52,7 @@ function readStoredSession(): StoredSession | null {
  * "login is broken". With the cache we render immediately with the last
  * known permissions and revalidate in background.
  */
-const PERMS_CACHE_KEY = 'wasabi_perms_cache';
+const PERMS_CACHE_KEY = 'wasabi_perms_cache_v2';
 
 function readCachedPermissions(userId: string): AppUserPermissions | null {
   try {

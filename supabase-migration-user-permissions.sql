@@ -42,45 +42,14 @@ CREATE TRIGGER trg_app_user_permissions_updated_at
   FOR EACH ROW
   EXECUTE FUNCTION app_user_permissions_touch_updated_at();
 
--- 3) RLS -------------------------------------------------------------
--- Users can read their OWN permissions (needed by the client-side
--- sidebar / page guards). Masters can read/write everyone's. Writes
--- from anyone else are blocked.
-ALTER TABLE app_user_permissions ENABLE ROW LEVEL SECURITY;
-
+-- 3) Do not enable RLS here. whoami/Users use the service role.
+--    A policy on this table that reads this table freezes is_master()
+--    on every Template query.
+ALTER TABLE app_user_permissions NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE app_user_permissions DISABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "users read own permissions" ON app_user_permissions;
-CREATE POLICY "users read own permissions"
-  ON app_user_permissions
-  FOR SELECT
-  USING (user_id = auth.uid());
-
 DROP POLICY IF EXISTS "masters read all permissions" ON app_user_permissions;
-CREATE POLICY "masters read all permissions"
-  ON app_user_permissions
-  FOR SELECT
-  USING (
-    EXISTS (
-      SELECT 1 FROM app_user_permissions p
-      WHERE p.user_id = auth.uid() AND p.role = 'master'
-    )
-  );
-
 DROP POLICY IF EXISTS "masters write all permissions" ON app_user_permissions;
-CREATE POLICY "masters write all permissions"
-  ON app_user_permissions
-  FOR ALL
-  USING (
-    EXISTS (
-      SELECT 1 FROM app_user_permissions p
-      WHERE p.user_id = auth.uid() AND p.role = 'master'
-    )
-  )
-  WITH CHECK (
-    EXISTS (
-      SELECT 1 FROM app_user_permissions p
-      WHERE p.user_id = auth.uid() AND p.role = 'master'
-    )
-  );
 
 -- 4) Auto-promote the very first user to master ----------------------
 -- Runs after INSERT on auth.users. If no master exists yet, the new

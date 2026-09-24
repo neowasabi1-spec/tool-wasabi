@@ -1373,7 +1373,7 @@ ${input.description ? `\nProvided description:\n${input.description}` : ''}
 ${sources ? `\n${sources}\n` : ''}
 ${link.block ? `\n${link.block}\n` : ''}
 ${!link.block && !sources && !input.description ? `\nNO SOURCES about the product were provided (no offer page, no uploaded files, no description). Research the MARKET around "${productName}" thoroughly, but keep every product-specific section at category level and mark unknown facts "(unknown — not in sources)". Do not invent what the product contains or how it works.\n` : ''}
-${affiliate && link.block ? `\nAFFILIATE OFFER: we sell EXACTLY the product on the offer page above. Its name, format, ingredients, mechanism, dosage, price, guarantee and compliance wording are FACTS to use verbatim — do not rename the product, do not invent ingredients or a different mechanism. Build the research around this real product; competitors are OTHER brands selling the same kind of product.\n` : ''}
+${affiliate && link.block ? `\nAFFILIATE OFFER: we sell EXACTLY the product on the offer page above. Its name, format, ingredients, mechanism, dosage, price, guarantee and compliance wording are FACTS to use verbatim — do not rename the product, do not invent ingredients or a different mechanism. Build the research around this real product. Competitors to study are the brand and the other affiliates running THIS SAME offer — not other brands that merely sell the same kind of product.\n` : ''}
 Generate the FULL, deep RMBC-style unified research document for this product. Be exhaustive — this must be the definitive research dossier, not a summary.`;
 
   const content = await callClaude({ task: 'vsl', instructions, userMessage, maxTokens: 16000 });
@@ -1487,7 +1487,7 @@ async function loadOfferMedia(
   if (!link) return none;
   try {
     const before = (await listLandingMedia(supabase, projectId)).filter((m) => m.storedUrl).length;
-    const r = await extractLandingMediaFromUrl(supabase, { projectId, url: link, limit: 40 });
+    const r = await extractLandingMediaFromUrl(supabase, { projectId, url: link });
     const after = (await listLandingMedia(supabase, projectId)).filter((m) => m.storedUrl).length;
     const id = offerIdentityFromHtml(r.html, [link, r.finalUrl]);
     return {
@@ -1683,7 +1683,7 @@ CRITICAL RULES:
 
   const output = [
     offerNote,
-    affiliate ? 'Affiliate: looking for everyone running THIS exact product (brand + other affiliates). Other products in the category are dropped. Competitor photos stay out of this offer’s library.' : '',
+    affiliate ? 'Affiliate: looking for everyone running THIS exact product (brand + other affiliates). Other products in the category are dropped. Photos are taken from those same-offer landings (icons, stars and logos are skipped).' : '',
     affiliate && offer.hosts.length ? `Offer domains: ${offer.hosts.join(', ')}` : '',
     `Ad libraries searched ${country === 'ALL' ? 'worldwide (all countries)' : `in ${country}`}.`,
     `Search keywords (${searchTerms.length}): ${searchTerms.join(', ')}`,

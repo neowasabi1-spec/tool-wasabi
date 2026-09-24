@@ -378,7 +378,12 @@ function buildProductContextMarkdown(product: ProductInfo): string {
   }
   if (product.brand_name) lines.push(`Brand: ${product.brand_name}`);
   if (product.price != null && String(product.price).trim()) lines.push(`Price: ${product.price}`);
-  if (product.cta_text) lines.push(`Preferred CTA label: ${product.cta_text}`);
+  if (product.cta_text) {
+    lines.push(
+      `Preferred PRIMARY hero CTA (optional): ${product.cta_text}\n` +
+        `Use this ONLY on the main hero / sticky intent button. Do NOT replace package-card buttons that already say buy now / order / add to cart / checkout.`,
+    );
+  }
   if (product.cta_url) lines.push(`CTA URL: ${product.cta_url}`);
   if (product.target_audience) lines.push(`Target audience: ${product.target_audience}`);
   if (product.social_proof) lines.push(`Social proof notes: ${product.social_proof}`);
@@ -406,6 +411,7 @@ export async function POST(req: NextRequest) {
     tone?: string;
     language?: string;
     knowledge?: KnowledgePayload;
+    swipeMap?: { texts?: Array<{ text?: string; original?: string; tag?: string; position?: number }> };
   } = {};
   try {
     body = (await req.json()) as typeof body;
@@ -421,6 +427,28 @@ export async function POST(req: NextRequest) {
   }
 
   let texts = extractTextsFromHtml(body.html);
+  const mapped = Array.isArray(body.swipeMap?.texts) ? body.swipeMap!.texts! : [];
+  if (mapped.length >= 3) {
+    const seen = new Set<string>();
+    const fromMap = mapped
+      .map((t, i) => ({
+        original: String(t.text || t.original || '').trim(),
+        tag: t.tag || 'p',
+        position: typeof t.position === 'number' ? t.position : i,
+      }))
+      .filter((t) => {
+        if (t.original.length < 2 || seen.has(t.original)) return false;
+        seen.add(t.original);
+        return true;
+      });
+    for (const t of texts) {
+      if (!seen.has(t.original)) {
+        seen.add(t.original);
+        fromMap.push(t);
+      }
+    }
+    texts = fromMap;
+  }
   texts = prependDocumentTitle(texts, body.html);
 
   if (texts.length === 0) {
@@ -470,6 +498,7 @@ REGOLE OBBLIGATORIE:
 2. SE sopra trovi una "LIBRERIA TECNICHE / KNOWLEDGE": e' la libreria personale dell'utente — USALA con priorita' rispetto alle tecniche generiche. Quei prompt sono il modo in cui l'utente VUOLE scrivere.
 3. SE sopra trovi un "BRIEF DEL PROGETTO" o "MARKET RESEARCH": tirane fuori positioning, target, claim approvati, voice/tone, vincoli, e applicali in OGNI rewrite.
 4. Mantieni il TIPO di copy: headline = punchy; body paragraph = esplicativo; CTA = imperativo breve; bullet = scannerizzabile. La lunghezza puo' variare liberamente — NON serve restare vicino all'originale, serve restare adatto al ruolo.
+4b. BOTTONI OFFERTA: se l'originale dice "buy now" / "order" / "add to cart", LASCIALO cosi' (cambio brand solo se il brand e' DENTRO il bottone). Non trasformare i pack 2x/3x/6x in una griglia "GET MY {prodotto}". Non inventare colonne di bundle che la fonte non ha.
 5. SOLO testo piano nei "rewritten" — niente HTML, niente markdown, niente escape JSON oltre quelli standard.
 6. Testi legali / disclaimer / compliance: riscrivili solo dove e' sicuro, altrimenti migliora solo la chiarezza preservando le disclosure obbligatorie.
 7. Ogni risposta DEVE contenere UN oggetto {"id","rewritten"} per OGNI id ricevuto. NON omettere id. Se davvero un id e' irrescrivibile, rispondi comunque con un rewritten leggermente migliorato in chiarezza ma diverso dall'originale.

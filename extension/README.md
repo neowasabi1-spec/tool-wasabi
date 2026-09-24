@@ -35,6 +35,34 @@ Done. Pin the "Wasabi Saver" icon to the toolbar if you like.
 
 After saving, two links appear: **open in editor** and **view HTML**.
 
+## How to use — bulk import (AdSpends lists)
+
+Don't save one advertorial at a time. On an AdSpends (or similar) list:
+
+1. Open the Advertorials / Landing / Sales Pages grid.
+2. Click the **Wasabi Saver** icon — Bulk turns on and **Scan** collects the
+   landing URLs from the cards (or click Scan yourself / paste URLs).
+3. Pick **Type** (Advertorial, Landing, …) and Category.
+4. Click **Save N pages**. A small **importer window** opens and walks each
+   URL (HTML + screenshots). **Leave that window open** until it says Done —
+   Chrome otherwise kills the job after a few minutes (~80 pages). You can
+   close the popup; use **Resume remaining pages** if it stops.
+
+Cap is 400 URLs per run. Scan scrolls the open list; it cannot see AdSpends pages that were never loaded. Duplicates already in the archive are skipped.
+
+## How to use — bulk import (AdSpends Ads / creatives)
+
+The Ads grid on AdSpends is a different list (thousands of images/videos, not landing URLs).
+
+1. Open AdSpends → **Ads** (the creatives grid, not Pages).
+2. Click **Wasabi Saver** — Bulk turns on and switches to **Ads (creatives)**. **Scan** scrolls the grid and collects media.
+3. Optional: pick a **Category** (niche) and extra tags. Type is automatic.
+4. Click **Save N creatives**. Leave the importer window open until Done.
+
+Each creative lands in **Template → Ads**, filed as **Image / Video / Carousel / UGC / Story** from format (9:16 → Story), media (video/image), and copy cues (UGC, carousel, …). Already imported creatives are skipped on the next Scan — it scrolls past them and queues up to 400 **new** ones. Repeat Save → Scan for the next slice. Scan only sees cards it can scroll to, not the whole AdSpends catalog.
+
+You can also drag files onto **Upload & auto-sort** on Template → Ads.
+
 ## How to use — creatives (Competitor Library)
 
 1. Hover any image or video on a page — a **Save** button appears.

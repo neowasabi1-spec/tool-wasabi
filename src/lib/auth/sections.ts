@@ -23,6 +23,10 @@ export interface DashboardSection {
    *  automatically. Stored in DB as a regular id so masters can also
    *  delegate it to other users in the future. */
   masterOnlyByDefault?: boolean;
+  /** Shared team library: every logged-in user (master and user) can
+   *  open this section. Hidden from the Users checkbox grid so it
+   *  cannot be turned off. */
+  alwaysGranted?: boolean;
 }
 
 export const DASHBOARD_SECTIONS: DashboardSection[] = [
@@ -40,6 +44,7 @@ export const DASHBOARD_SECTIONS: DashboardSection[] = [
     id: 'templates',
     label: 'My Archive',
     path: '/templates',
+    alwaysGranted: true,
   },
   {
     id: 'projects',
@@ -135,5 +140,7 @@ export function canAccessSection(
 ): boolean {
   if (!permissions) return false;
   if (permissions.role === 'master') return true;
+  const section = DASHBOARD_SECTIONS.find((s) => s.id === sectionId);
+  if (section?.alwaysGranted) return true;
   return permissions.sections.includes(sectionId);
 }

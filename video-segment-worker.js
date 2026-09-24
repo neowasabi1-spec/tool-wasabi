@@ -21,9 +21,9 @@
  *                               fail on a private bucket)
  *   OPENAI_API_KEY              optional — enables subtitle OCR on thumbnails
  *   SEGMENT_MIN_SEC=1.2         drop shots shorter than this
- *   SEGMENT_MAX_SEC=6           split shots longer than this
+ *   SEGMENT_MAX_SEC=45          last-resort cap — shots follow the action, not a clock
  *   SEGMENT_MAX_SHOTS=40        cap shots per video
- *   SCENE_THRESHOLD=0.35        ffmpeg scene score threshold
+ *   SCENE_THRESHOLD=0.42        ffmpeg scene score threshold (hints only)
  *
  * Usage:
  *   set SUPABASE_SERVICE_KEY=... && node video-segment-worker.js
@@ -46,9 +46,9 @@ const OPENAI_API_KEY = (process.env.OPENAI_API_KEY || '').trim();
 
 const BUCKET = 'project-files';
 const MIN_SEC = parseFloat(process.env.SEGMENT_MIN_SEC || '1.2');
-const MAX_SEC = parseFloat(process.env.SEGMENT_MAX_SEC || '6');
+const MAX_SEC = parseFloat(process.env.SEGMENT_MAX_SEC || '45');
 const MAX_SHOTS = parseInt(process.env.SEGMENT_MAX_SHOTS || '40', 10);
-const SCENE_THRESHOLD = parseFloat(process.env.SCENE_THRESHOLD || '0.35');
+const SCENE_THRESHOLD = parseFloat(process.env.SCENE_THRESHOLD || '0.42');
 const POLL_MS = parseInt(process.env.SEGMENT_POLL_MS || '5000', 10);
 
 if (!SUPABASE_KEY) {
@@ -120,30 +120,26 @@ async function detectScenes(file) {
   return [...new Set(times)].sort((a, b) => a - b);
 }
 
-// Turn scene cuts into [start,end] segments, honoring MIN/MAX/MAX_SHOTS.
+// Keep real camera cuts. Do NOT slice on a clock (old 2s/6s chunks produced
+// meaningless fragments the builder then matched to copy by tag overlap).
 function buildSegments(cuts, duration) {
-  const bounds = [0, ...cuts.filter((t) => t < duration - 0.05), duration];
-  let segs = [];
+  const merged = [];
+  for (const t of cuts.filter((x) => x > 0.45 && x < duration - 0.45).sort((a, b) => a - b)) {
+    if (merged.length && t - merged[merged.length - 1] < 0.85) continue;
+    merged.push(t);
+  }
+  const bounds = [0, ...merged, duration];
+  const segs = [];
   for (let i = 0; i < bounds.length - 1; i++) {
-    let start = bounds[i];
-    let end = bounds[i + 1];
-    if (end - start < 0.3) continue;
-    // Split overly long shots into MAX_SEC chunks.
-    while (end - start > MAX_SEC + 0.5) {
-      segs.push([start, start + MAX_SEC]);
-      start += MAX_SEC;
+    const start = bounds[i];
+    const end = bounds[i + 1];
+    if (end - start < MIN_SEC) {
+      if (segs.length) segs[segs.length - 1][1] = end;
+      continue;
     }
     segs.push([start, end]);
   }
-  // Drop too-short shots (likely transitions).
-  segs = segs.filter(([s, e]) => e - s >= MIN_SEC);
-  // If scene detection found nothing useful, fall back to fixed chunks.
-  if (segs.length === 0 && duration > MIN_SEC) {
-    for (let s = 0; s < duration; s += MAX_SEC) {
-      const e = Math.min(s + MAX_SEC, duration);
-      if (e - s >= MIN_SEC) segs.push([s, e]);
-    }
-  }
+  if (segs.length === 0 && duration > 0.4) return [[0, duration]];
   return segs.slice(0, MAX_SHOTS);
 }
 
@@ -161,15 +157,258 @@ async function cutClip(src, start, end, outFile) {
   ]);
 }
 
-async function grabThumb(src, atSec, outFile) {
+async function grabThumb(src, atSec, outFile, width = 0) {
+  const args = ['-y', '-ss', String(Math.max(0, atSec)), '-i', src, '-frames:v', '1', '-q:v', '2'];
+  if (width > 0) args.push('-vf', `scale=${width}:-2`);
+  args.push(outFile);
+  await run('ffmpeg', args);
+}
+
+function fileOk(p) {
+  try { return fs.existsSync(p) && fs.statSync(p).size > 80; } catch { return false; }
+}
+
+function overlayLooksLikeCaption(raw) {
+  const s = String(raw || '')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/@[\w.]+/g, ' ')
+    .replace(/\b(tiktok|instagram|facebook|meta|capcut|watermark|logo)\b/gi, ' ')
+    .replace(/[^\p{L}\p{N}\s']/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (s.length < 3) return false;
+  const words = s.split(' ').filter((w) => w.length >= 2);
+  return words.length >= 1 && /[\p{L}]{3,}/u.test(s);
+}
+
+async function grabBottomCrop(src, atSec, outFile) {
   await run('ffmpeg', [
-    '-y',
-    '-ss', String(atSec),
-    '-i', src,
-    '-frames:v', '1',
-    '-q:v', '3',
+    '-y', '-ss', String(Math.max(0, atSec)), '-i', src,
+    '-frames:v', '1', '-q:v', '2',
+    '-vf', 'crop=iw:ih*0.48:0:ih*0.52,scale=720:-2',
     outFile,
   ]);
+}
+
+async function grabDetectionFrames(src, start, end, workDir, prefix) {
+  const span = Math.max(0.2, end - start);
+  const mid = start + span / 2;
+  const thumb = path.join(workDir, `${prefix}.jpg`);
+  await grabThumb(src, mid, thumb, 720);
+  const extras = [];
+  const extraTimes = [...new Set([
+    start + Math.min(0.35, span * 0.12),
+    end - Math.min(0.35, span * 0.12),
+  ].map((t) => +t.toFixed(2)))].filter((t) => Math.abs(t - mid) > 0.18);
+  for (let i = 0; i < extraTimes.length; i++) {
+    const f = path.join(workDir, `${prefix}_e${i}.jpg`);
+    try {
+      await grabThumb(src, extraTimes[i], f, 720);
+      if (fileOk(f)) extras.push(f);
+    } catch { /* optional */ }
+  }
+  const crop = path.join(workDir, `${prefix}_bot.jpg`);
+  try {
+    await grabBottomCrop(src, mid, crop);
+    if (fileOk(crop)) extras.push(crop);
+  } catch { /* optional */ }
+  return { thumb, extras };
+}
+
+const EMPTY_SCENE = {
+  hasText: null, score: null, region: '',
+  action: '', peopleCount: 0, people: '', context: '', label: '', caption: '', tags: [],
+};
+
+async function analyzeShot(thumbPath, extraThumbs = []) {
+  if (!OPENAI_API_KEY) return { ...EMPTY_SCENE };
+  const paths = [thumbPath, ...extraThumbs].filter((p) => {
+    try { return fs.existsSync(p) && fs.statSync(p).size > 80; } catch { return false; }
+  });
+  if (!paths.length) return { ...EMPTY_SCENE };
+  try {
+    const images = paths.map((p) => ({
+      type: 'image_url',
+      image_url: {
+        url: `data:image/jpeg;base64,${fs.readFileSync(p).toString('base64')}`,
+        detail: 'high',
+      },
+    }));
+    const frameHint = paths.length > 1
+      ? `You are seeing ${paths.length} images from the SAME shot. Early ones are chronological frames; the last may be a crop of the LOWER HALF (where TikTok/CapCut captions sit). Describe the action across the full frames.`
+      : 'Analyze this single video frame as one shot.';
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 480,
+        response_format: { type: 'json_object' },
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                `${frameHint} Reply ONLY JSON with keys:\n` +
+                '"overlayText" (quote EVERY burned-in overlay phrase you can read: captions, karaoke/word-by-word, outlined yellow/white text, lower-thirds, CTA stickers. Empty only if none),\n' +
+                '"text" (true if overlayText is non-empty. Tiny corner logos/@handles alone = false. Do NOT ignore captions because they look "part of the ad"),\n' +
+                '"conf" (0..1), "region" ("top"|"center"|"bottom"|""),\n' +
+                '"band" (if text: [y0,y1] 0=top 1=bottom else []),\n' +
+                '"action" (what is happening, verb phrase),\n' +
+                '"peopleCount" (integer, 0 if none),\n' +
+                '"people" (who: age/gender vibe, count, roles — empty if none),\n' +
+                '"context" (setting + genre),\n' +
+                '"label" (2-5 word title),\n' +
+                '"caption" (one sentence: who + action + where),\n' +
+                '"tags" (3-8 lowercase keywords).\n' +
+                'Do not invent a second scene. If people talk to camera, say so.',
+            },
+            ...images,
+          ],
+        }],
+      }),
+    });
+    const j = await resp.json();
+    const raw = j?.choices?.[0]?.message?.content || '';
+    const p = JSON.parse(raw.replace(/```json?/gi, '').replace(/```/g, '').trim());
+    const tags = Array.isArray(p.tags)
+      ? p.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 8)
+      : [];
+    const overlay = typeof p.overlayText === 'string' ? p.overlayText : '';
+    const hasText = !!(p.text || overlayLooksLikeCaption(overlay));
+    let region = typeof p.region === 'string' ? p.region : '';
+    if (hasText && Array.isArray(p.band) && p.band.length === 2) {
+      const y0 = Number(p.band[0]);
+      const y1 = Number(p.band[1]);
+      if (Number.isFinite(y0) && Number.isFinite(y1) && y0 >= 0 && y1 <= 1 && y1 > y0) {
+        region = `${region || (y0 > 0.5 ? 'bottom' : y1 < 0.5 ? 'top' : 'center')} ${y0.toFixed(2)}-${y1.toFixed(2)}`;
+      }
+    }
+    if (hasText && !region) region = 'bottom 0.62-0.92';
+    const conf = typeof p.conf === 'number' ? p.conf : hasText ? 0.9 : 0.95;
+    return {
+      hasText,
+      score: hasText ? conf : Math.max(conf, 0.95),
+      region,
+      action: typeof p.action === 'string' ? p.action.slice(0, 240) : '',
+      peopleCount: Math.max(0, Math.min(12, Number(p.peopleCount) || 0)),
+      people: typeof p.people === 'string' ? p.people.slice(0, 180) : '',
+      context: typeof p.context === 'string' ? p.context.slice(0, 180) : '',
+      label: typeof p.label === 'string' ? p.label.slice(0, 80) : '',
+      caption: typeof p.caption === 'string' ? p.caption.slice(0, 400) : '',
+      tags,
+    };
+  } catch (e) {
+    errlog('analyzeShot failed (non-fatal):', e.message);
+    return { ...EMPTY_SCENE };
+  }
+}
+
+async function planShotsFromVideo(srcFile, duration, hintCuts, workDir) {
+  if (!OPENAI_API_KEY || duration < 0.6) return null;
+  const n = Math.min(16, Math.max(4, Math.round(duration / 2.8)));
+  const times = [];
+  for (let i = 0; i < n; i++) {
+    times.push(+Math.min(duration - 0.05, Math.max(0.04, (duration * (i + 0.5)) / n)).toFixed(2));
+  }
+  for (const c of hintCuts) {
+    if (c > 0.3 && c < duration - 0.3) times.push(+(c + 0.12).toFixed(2));
+  }
+  const sampleAt = [...new Set(times)].sort((a, b) => a - b).slice(0, 18);
+  const frames = [];
+  for (let i = 0; i < sampleAt.length; i++) {
+    const file = path.join(workDir, `plan_${i}.jpg`);
+    try {
+      await grabThumb(srcFile, sampleAt[i], file, 360);
+      if (fs.existsSync(file) && fs.statSync(file).size > 80) frames.push({ t: sampleAt[i], file });
+    } catch { /* skip */ }
+  }
+  if (frames.length < 3) return null;
+  try {
+    const content = [{
+      type: 'text',
+      text:
+        `This is a competitor ad video ${duration.toFixed(1)}s long. Frames are chronological, each labeled with its timestamp.\n` +
+        (hintCuts.length
+          ? `ffmpeg guessed camera cuts at: ${hintCuts.map((t) => t.toFixed(1)).join(', ')}s — treat as HINTS only.\n`
+          : '') +
+        'Split into SHOTS by ACTION, not by the clock.\n' +
+        'Rules:\n' +
+        '- One shot = one continuous action / same people / same setting.\n' +
+        '- Do NOT cut every 2 seconds. If she holds a product and talks for 7s, that is ONE shot.\n' +
+        '- Cut when people, setting, or the action clearly change (new beat).\n' +
+        '- Ignore a camera cut if the same action continues. Cut without a camera cut if the action changes.\n' +
+        `- Minimum shot ${MIN_SEC}s. Cover 0.00 through ${duration.toFixed(2)} with no gaps.\n` +
+        '- Prefer fewer meaningful shots over fragments.\n' +
+        'Reply ONLY JSON: {"shots":[{"start":0,"end":4.2,"action":"...","peopleCount":1,"people":"...","context":"...","label":"...","caption":"...","tags":["a","b"]}]}',
+    }];
+    for (const f of frames) {
+      content.push({ type: 'text', text: `t=${f.t.toFixed(2)}s` });
+      content.push({
+        type: 'image_url',
+        image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f.file).toString('base64')}` },
+      });
+    }
+    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 1800,
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+        messages: [{ role: 'user', content }],
+      }),
+    });
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    const parsed = JSON.parse(String(j?.choices?.[0]?.message?.content || '')
+      .replace(/```json?/gi, '').replace(/```/g, '').trim());
+    const rows = Array.isArray(parsed?.shots) ? parsed.shots : [];
+    const out = [];
+    for (const r of rows) {
+      let start = Number(r?.start);
+      let end = Number(r?.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      start = Math.max(0, Math.min(duration, start));
+      end = Math.max(0, Math.min(duration, end));
+      if (end - start < MIN_SEC * 0.7) continue;
+      out.push({
+        start: +start.toFixed(2),
+        end: +end.toFixed(2),
+        action: String(r.action || '').slice(0, 240),
+        peopleCount: Math.max(0, Math.min(12, Number(r.peopleCount) || 0)),
+        people: String(r.people || '').slice(0, 180),
+        context: String(r.context || '').slice(0, 180),
+        label: String(r.label || '').slice(0, 80),
+        caption: String(r.caption || '').slice(0, 400),
+        tags: Array.isArray(r.tags)
+          ? r.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean).slice(0, 8)
+          : [],
+      });
+    }
+    out.sort((a, b) => a.start - b.start);
+    if (!out.length) return null;
+    out[0].start = 0;
+    out[out.length - 1].end = +duration.toFixed(2);
+    for (let i = 1; i < out.length; i++) {
+      const gap = out[i].start - out[i - 1].end;
+      if (Math.abs(gap) < 0.45 || gap > 0) {
+        const mid = +((out[i - 1].end + out[i].start) / 2).toFixed(2);
+        out[i - 1].end = mid;
+        out[i].start = mid;
+      }
+    }
+    return out.filter((s) => s.end - s.start >= MIN_SEC).slice(0, MAX_SHOTS);
+  } catch (e) {
+    errlog('planShotsFromVideo failed (falling back to ffmpeg cuts):', e.message);
+    return null;
+  } finally {
+    for (const f of frames) {
+      try { fs.rmSync(f.file, { force: true }); } catch { /* ignore */ }
+    }
+  }
 }
 
 // ── Optional subtitle OCR via OpenAI vision ─────────────────────────────────
@@ -307,20 +546,51 @@ async function processJob(job) {
     log(`duration ${info.duration.toFixed(1)}s, ${info.width}x${info.height}`);
 
     const cuts = await detectScenes(srcFile);
-    const segments = buildSegments(cuts, info.duration);
-    log(`scene cuts: ${cuts.length}, shots: ${segments.length}`);
+    const planned = await planShotsFromVideo(srcFile, info.duration, cuts, workDir);
+    const segments = planned && planned.length
+      ? planned
+      : buildSegments(cuts, info.duration).map(([start, end]) => ({
+        start, end, action: '', peopleCount: 0, people: '', context: '',
+        label: '', caption: '', tags: [],
+      }));
+    log(planned && planned.length
+      ? `action-planned ${segments.length} shots (ffmpeg hints: ${cuts.length})`
+      : `ffmpeg fallback: ${cuts.length} cuts → ${segments.length} shots`);
+
+    const total = info.duration;
+    const sectionFor = (start, end) => {
+      const mid = (start + end) / 2;
+      if (mid <= Math.min(5, total * 0.18)) return 'hook';
+      if (mid >= total * 0.82) return 'cta';
+      return 'body';
+    };
 
     for (let i = 0; i < segments.length; i++) {
-      const [start, end] = segments[i];
+      const seg = segments[i];
+      const start = seg.start;
+      const end = seg.end;
       const clipFile = path.join(workDir, `shot_${i}.mp4`);
-      const thumbFile = path.join(workDir, `shot_${i}.jpg`);
+      let thumbFile = path.join(workDir, `shot_${i}.jpg`);
+      let extras = [];
       try {
         await cutClip(srcFile, start, end, clipFile);
-        await grabThumb(srcFile, (start + end) / 2, thumbFile);
+        const det = await grabDetectionFrames(srcFile, start, end, workDir, `shot_${i}`);
+        thumbFile = det.thumb;
+        extras = det.extras;
       } catch (e) {
         errlog(`shot ${i} cut failed: ${e.message}`);
         continue;
       }
+
+      const vision = await analyzeShot(thumbFile, extras);
+      const action = vision.action || seg.action || '';
+      const peopleCount = vision.peopleCount || seg.peopleCount || 0;
+      const people = vision.people || seg.people || '';
+      const context = vision.context || seg.context || '';
+      const label = vision.label || seg.label || '';
+      const caption = vision.caption || seg.caption || '';
+      const tags = (vision.tags && vision.tags.length ? vision.tags : seg.tags) || [];
+      log(`shot ${i}: ${action || label || '(no scene)'} [${peopleCount}p] ${context}${vision.hasText ? ' SUBS' : ''}`);
 
       const base = `${job.project_id}/shots/${job.brand_id}/${job.ad_id}_${i}_${Date.now()}`;
       const clipKey = `${base}.mp4`;
@@ -333,9 +603,7 @@ async function processJob(job) {
         errlog(`thumb upload failed: ${e.message}`);
       }
 
-      const ocr = await detectBurnedText(thumbFile);
-
-      const { error: insErr } = await supabase.from('competitor_shots').insert({
+      const row = {
         project_id: job.project_id,
         brand_id: job.brand_id,
         ad_id: job.ad_id,
@@ -346,10 +614,29 @@ async function processJob(job) {
         duration_sec: +(end - start).toFixed(2),
         width: info.width,
         height: info.height,
-        has_text: ocr.hasText,
-        text_score: ocr.score,
-        text_region: ocr.region || '',
-      });
+        has_text: vision.hasText,
+        text_score: vision.score,
+        text_region: vision.region || '',
+        label: label || null,
+        caption: caption || null,
+        tags,
+        section: sectionFor(start, end),
+        action: action || null,
+        people_count: peopleCount,
+        people: people || null,
+        context: context || null,
+        scene: { action, peopleCount, people, context },
+      };
+      let { error: insErr } = await supabase.from('competitor_shots').insert(row);
+      if (insErr && /action|people_count|people|context|scene/i.test(insErr.message)) {
+        delete row.action; delete row.people_count; delete row.people;
+        delete row.context; delete row.scene;
+        ({ error: insErr } = await supabase.from('competitor_shots').insert(row));
+      }
+      if (insErr && /label|caption|tags|section/i.test(insErr.message)) {
+        delete row.label; delete row.caption; delete row.tags; delete row.section;
+        ({ error: insErr } = await supabase.from('competitor_shots').insert(row));
+      }
       if (insErr) errlog(`insert shot ${i} failed: ${insErr.message}`);
       else shotsCount++;
     }

@@ -1,11 +1,17 @@
 /**
  * Speech-to-text transcription for saved video creatives.
  *
- * Prefers OpenAI Whisper (purpose-built, accepts mp4/webm directly, up to
- * 25MB). Falls back to Gemini multimodal (inline video) when no OpenAI key is
- * present. Never throws — returns '' on any failure so callers can degrade
- * gracefully (the creative is still saved, just without a transcript).
+ * Prefers OpenAI Whisper on an extracted audio track (the video container
+ * itself is often rejected). Falls back to Gemini, which also reads burned-in
+ * captions when the clip has no usable speech. Never throws — returns '' on
+ * any failure so callers can degrade gracefully.
  */
+
+import { spawn } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import ffmpegStatic from 'ffmpeg-static';
 
 const WHISPER_MAX_BYTES = 24 * 1024 * 1024; // OpenAI hard limit is 25MB
 const GEMINI_INLINE_MAX_BYTES = 18 * 1024 * 1024; // inline request payload cap
@@ -17,14 +23,49 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+/** Whisper accepts audio reliably. Many ad mp4s are rejected as video files. */
+async function audioForWhisper(video: Buffer): Promise<Buffer | null> {
+  const bin = typeof ffmpegStatic === 'string' ? ffmpegStatic : '';
+  if (!bin) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'whisper-'));
+  const src = path.join(dir, 'in.bin');
+  const out = path.join(dir, 'audio.mp3');
+  try {
+    fs.writeFileSync(src, video);
+    await new Promise<void>((resolve, reject) => {
+      const p = spawn(bin, ['-y', '-i', src, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k', out], { stdio: 'ignore' });
+      p.on('error', reject);
+      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg ${code}`))));
+    });
+    const audio = fs.readFileSync(out);
+    return audio.length > 800 ? audio : null;
+  } catch (e) {
+    console.warn('[transcribe] audio extract:', e instanceof Error ? e.message : e);
+    return null;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function transcribeWithWhisper(buffer: Buffer, contentType: string): Promise<string> {
   const key = (process.env.OPENAI_API_KEY || '').trim();
   if (!key) return '';
-  if (buffer.length > WHISPER_MAX_BYTES) return '';
+  let payload = buffer;
+  let type = contentType || 'video/mp4';
+  let name = /webm/i.test(type) ? 'clip.webm' : /quicktime|mov/i.test(type) ? 'clip.mov' : 'clip.mp4';
+  if (/video/i.test(type) || payload.length > WHISPER_MAX_BYTES) {
+    const audio = await audioForWhisper(buffer);
+    if (audio) {
+      payload = audio;
+      type = 'audio/mpeg';
+      name = 'audio.mp3';
+    }
+  }
+  if (payload.length > WHISPER_MAX_BYTES) return '';
   try {
     const fd = new FormData();
-    const ext = /webm/i.test(contentType) ? 'webm' : /quicktime|mov/i.test(contentType) ? 'mov' : 'mp4';
-    fd.append('file', new Blob([buffer], { type: contentType || 'video/mp4' }), `clip.${ext}`);
+    const bytes = new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength);
+    fd.append('file', new Blob([bytes], { type }), name);
     fd.append('model', 'whisper-1');
     fd.append('response_format', 'text');
     const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -32,10 +73,15 @@ async function transcribeWithWhisper(buffer: Buffer, contentType: string): Promi
       headers: { Authorization: `Bearer ${key}` },
       body: fd,
     });
-    if (!res.ok) return '';
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      console.warn('[transcribe] whisper', res.status, err.slice(0, 300));
+      return '';
+    }
     const text = await res.text();
     return (text || '').trim();
-  } catch {
+  } catch (e) {
+    console.warn('[transcribe] whisper:', e instanceof Error ? e.message : e);
     return '';
   }
 }
@@ -55,7 +101,7 @@ async function transcribeWithGemini(buffer: Buffer, contentType: string): Promis
             role: 'user',
             parts: [
               {
-                text: 'Transcribe the spoken audio in this video verbatim. Return ONLY the transcript text, no timestamps, no commentary. If there is no speech, return an empty string.',
+                text: 'Transcribe this ad. Prefer the spoken words, verbatim. If speech is missing or there is only music, transcribe the burned-in on-screen captions in order instead. Return ONLY that text, no timestamps, no commentary. Return an empty string only when there is neither speech nor on-screen captions.',
               },
               { inline_data: { mime_type: contentType || 'video/mp4', data: buffer.toString('base64') } },
             ],
@@ -76,7 +122,7 @@ async function transcribeWithGemini(buffer: Buffer, contentType: string): Promis
 }
 
 const TRANSCRIBE_PROMPT =
-  'Transcribe the spoken audio in this video verbatim. Return ONLY the transcript text, no timestamps, no commentary. If there is no speech, return an empty string.';
+  'Transcribe this ad. Prefer the spoken words, verbatim. If speech is missing or there is only music, transcribe the burned-in on-screen captions in order instead. Return ONLY that text, no timestamps, no commentary. Return an empty string only when there is neither speech nor on-screen captions.';
 
 function geminiKey(): string {
   return (process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();

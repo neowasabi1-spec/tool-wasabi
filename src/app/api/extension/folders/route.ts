@@ -3,6 +3,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getCurrentUserId } from '@/lib/auth/get-current-user';
 import { PAGE_TYPE_OPTIONS } from '@/types';
 import { listArchivePageTypes } from '@/lib/archive-page-types';
+import { listSavedArchiveHits } from '@/lib/archive-saved-urls';
+import { parseSourceFingerprintFromTags } from '@/lib/classify-archive-ad';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,11 +56,36 @@ export async function GET(req: NextRequest) {
   try {
     const { data } = await supabaseAdmin
       .from('archive_categories')
-      .select('name')
-      .eq('owner_user_id', userId);
+      .select('name');
     for (const c of data || []) {
       const name = c.name ? String(c.name) : '';
       if (name && !isDomainLike(name)) catSet.add(name);
+    }
+  } catch {
+    /* table may not exist yet */
+  }
+
+  const savedUrls: string[] = [];
+  try {
+    const hits = await listSavedArchiveHits(userId, null);
+    savedUrls.push(...hits.keys());
+  } catch {
+    /* ignore */
+  }
+
+  const savedCreativeFingerprints: string[] = [];
+  try {
+    const { data } = await supabaseAdmin
+      .from('archive_ads')
+      .select('tags')
+      .eq('owner_user_id', userId)
+      .neq('media_type', 'folder');
+    const seen = new Set<string>();
+    for (const row of data || []) {
+      const fp = parseSourceFingerprintFromTags(String((row as { tags?: string }).tags || ''));
+      if (!fp || seen.has(fp)) continue;
+      seen.add(fp);
+      savedCreativeFingerprints.push(fp);
     }
   } catch {
     /* table may not exist yet */
@@ -69,5 +96,7 @@ export async function GET(req: NextRequest) {
     folders,
     tags: Array.from(tagSet).sort(),
     categories: Array.from(catSet).sort((a, b) => a.localeCompare(b)),
+    savedUrls,
+    savedCreativeFingerprints,
   });
 }

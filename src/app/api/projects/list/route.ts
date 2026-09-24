@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getUserAccessContext } from '@/lib/auth/get-current-user';
 import { listAccessibleProjectIds } from '@/lib/auth/project-access';
 
@@ -32,12 +32,22 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ success: true, projects: [] });
       }
     }
-    let query = supabase
+    let query = supabaseAdmin
       .from('projects')
       .select('id, name, description, brief, status')
-      .order('updated_at', { ascending: false });
+      .order('created_at', { ascending: false });
     if (visibleIds) query = query.in('id', visibleIds);
-    const { data, error } = await query;
+    let { data, error } = await query;
+    if (error && /brief|updated_at/i.test(error.message || '')) {
+      let retry = supabaseAdmin
+        .from('projects')
+        .select('id, name, description, status')
+        .order('created_at', { ascending: false });
+      if (visibleIds) retry = retry.in('id', visibleIds);
+      const second = await retry;
+      data = second.data;
+      error = second.error;
+    }
     if (error) throw error;
     const projects = (data || []).map((p) => ({
       id: p.id,

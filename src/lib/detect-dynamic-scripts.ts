@@ -55,7 +55,11 @@ const COMMERCE_MARKERS: Array<{ re: RegExp; label: string }> = [
   { re: /paypal\.com\/sdk|paypalobjects\.com|braintreegateway|checkout\.com\/(js|sdk)/i, label: 'payment SDK (PayPal/Braintree/Checkout.com)' },
   { re: /cdn\.shopify\.com|myshopify\.com|Shopify\.(Checkout|theme|shop)|ShopifyAnalytics|\/checkouts\//i, label: 'Shopify checkout/platform' },
   { re: /funnelish|clickfunnels|systeme\.io|shopifycloud|cartflows|woocommerce/i, label: 'funnel/commerce platform' },
-  { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan)\s*\(/i, label: 'multi-step popup checkout / package selector' },
+  { re: /checkoutchamp|konnektive|sticky\.io|limelightcrm/i, label: 'CheckoutChamp/Konnektive checkout' },
+  { re: /digistore24|checkout-ds24\.com|digistore24-scripts/i, label: 'Digistore24 checkout' },
+  { re: /\/checkout\.php\b|checkout\/new-design\/(?:checkout|dtc-offers|checkout-whop)\.js/i, label: 'hosted checkout.php runtime' },
+  { re: /data-package-option|name=["']bundle_choice["']|checkout-popup-overlay|member-popup|id=["']mbAccept["']|id=["']mbNo["']|id=["']member["']/i, label: 'checkout bundle selector / offer popup' },
+  { re: /\b(openCheckout|showCheckout|beginCheckout|toggleCheckout|selectPackage|choosePackage|selectPlan|selectBundle|chooseBundle)\s*\(/i, label: 'multi-step popup checkout / package selector' },
 ];
 
 // VSL players live in external <script src> (vsl-player.js, VTurb, …) and
@@ -64,6 +68,14 @@ const PLAYER_MARKERS: Array<{ re: RegExp; label: string }> = [
   { re: /vsl-player\.js|VSLPlayer\.mount/i, label: 'custom HLS VSL player' },
   { re: /vturb-smartplayer|scripts\.converteai\.net|cdn\.converteai/i, label: 'VTurb/ConverteAI player' },
   { re: /player\.pandavideo|vidalytics\.com/i, label: 'hosted VSL player' },
+];
+
+const CHAT_QUIZ_MARKERS: Array<{ re: RegExp; label: string }> = [
+  { re: /data-next-chat\s*=|#chatbox-app\b|function\s+displayMessages\s*\(|landerlab\.io/i, label: 'Landerlab chat quiz' },
+];
+
+const POPUP_QUIZ_MARKERS: Array<{ re: RegExp; label: string }> = [
+  { re: /id=["']ssqOverlay["']|\bssq-overlay\b|\bssqOverlay\b|\bssq-inline\b/i, label: 'CTA popup quiz' },
 ];
 
 /**
@@ -81,6 +93,20 @@ export function detectPlayerMarkers(html: string): string[] {
   if (!html || typeof html !== 'string') return [];
   const out: string[] = [];
   for (const m of PLAYER_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
+export function detectChatQuizMarkers(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const out: string[] = [];
+  for (const m of CHAT_QUIZ_MARKERS) if (m.re.test(html)) out.push(m.label);
+  return out;
+}
+
+export function detectPopupQuizMarkers(html: string): string[] {
+  if (!html || typeof html !== 'string') return [];
+  const out: string[] = [];
+  for (const m of POPUP_QUIZ_MARKERS) if (m.re.test(html)) out.push(m.label);
   return out;
 }
 
@@ -126,10 +152,17 @@ export function extractReinjectableScripts(html: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(html)) !== null) {
     const attrs = m[1] || '';
-    if (/\bsrc\s*=/.test(attrs)) continue; // inline only
+    if (/\bsrc\s*=/.test(attrs)) {
+      const src = attrs.match(/\bsrc\s*=\s*["']([^"']+)/i)?.[1] || '';
+      if (/checkoutchamp|konnektive|sticky\.io|limelight|dtc-offers|checkout-whop|checkout\/new-design\/checkout\.js|\/checkout\.js(?:\?|$)|digistore24|checkout-ds24/i.test(src)) {
+        out.push(m[0]);
+      }
+      continue;
+    }
     const body = m[2] || '';
     if (!body.trim()) continue;
     if (/data-fallback|data-swipe-replacer|data-restyle-media|data-editor/i.test(attrs)) continue;
+    if (/ssqOverlay|#ssqBody|ssq-overlay|var\s+QS\s*=/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(attrs + body)) continue;
     if (TRACKING_ONLY.test(body) && !DOM_MUTATION.test(body)) continue;
     out.push(m[0]);
   }
@@ -172,8 +205,10 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   // checkout whose logic is entirely in cdn.shopify.com bundles).
   const commerceSignals = detectCommerceMarkers(html);
   const playerSignals = detectPlayerMarkers(html);
+  const chatQuizSignals = detectChatQuizMarkers(html);
+  const popupQuizSignals = detectPopupQuizMarkers(html);
 
-  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0) {
+  if (!inlineJs.trim() && commerceSignals.length === 0 && playerSignals.length === 0 && chatQuizSignals.length === 0 && popupQuizSignals.length === 0) {
     return { functional: false, signals, inlineScriptCount };
   }
 
@@ -182,6 +217,11 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   }
   for (const s of commerceSignals) signals.push(s);
   for (const s of playerSignals) signals.push(s);
+
+  // Chat quizzes (Landerlab messenger) are replayed by injectChatQuizEngine.
+  // CTA popup quizzes (#ssqOverlay) are replayed by injectPopupQuizEngine.
+  // Do NOT mark them functional: that made Preview keep Landerlab's tracker
+  // JS, which blanks the srcdoc iframe (editor looked fine because it strips).
 
   // NOTE (regression fix 2026-07-08): a loose combo — content keyword + DOM
   // mutation + timer — used to ALSO flag a page as functional. But
@@ -196,8 +236,12 @@ export function detectDynamicScripts(html: string): DynamicScriptsResult {
   // decision on its own.
   const combo = CONTENT_KEYWORDS.test(inlineJs) && DOM_MUTATION.test(inlineJs) && TIMING.test(inlineJs);
   const functional = signals.length > 0;
-  const reported = functional && combo
-    ? [...signals, 'inline JS builds content over time (content keyword + DOM mutation + timer)']
-    : signals;
+  const reported = [
+    ...(functional && combo
+      ? [...signals, 'inline JS builds content over time (content keyword + DOM mutation + timer)']
+      : signals),
+    ...chatQuizSignals,
+    ...popupQuizSignals,
+  ];
   return { functional, signals: Array.from(new Set(reported)), inlineScriptCount };
 }

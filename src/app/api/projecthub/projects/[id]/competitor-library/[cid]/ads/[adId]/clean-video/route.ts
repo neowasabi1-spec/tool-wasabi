@@ -33,7 +33,7 @@ function isStale(status: string | null | undefined, cleanError: string | null | 
   return age > (status === 'processing' ? STALE_PROCESSING_MS : STALE_PENDING_MS);
 }
 
-async function triggerBackground(origin: string, payload: { adId: number; projectId: string; force?: boolean }) {
+async function triggerBackground(origin: string, payload: { adId: number; projectId: string; force?: boolean; deghost?: boolean }) {
   try {
     await fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
       method: 'POST',
@@ -79,12 +79,16 @@ export async function POST(
     return NextResponse.json({ status: 'processing', queued: false });
   }
 
+  const body = await req.json().catch(() => ({} as { mode?: string }));
+  const deghost = body?.mode === 'deghost';
+
   const { error } = await supabaseAdmin
     .from('competitor_ads')
     .update({
       clean_status: 'pending',
       clean_error: `__ts:${Date.now()}`,
-      clean_full_path: null,
+      // A ghost fix reads the cleaned file already paid for. Don't wipe it.
+      ...(deghost ? {} : { clean_full_path: null }),
     })
     .eq('id', adIdNum)
     .eq('project_id', id);
@@ -96,9 +100,15 @@ export async function POST(
     );
   }
 
-  // User click always force-resets the window ledger so a previous stitch of
-  // original footage cannot be reused and shown as "cleaned".
-  await triggerBackground(new URL(req.url).origin, { adId: adIdNum, projectId: id, force: true });
+  // "Fix leftover subtitles" reuses the paid clean and only un-blends ghosts.
+  // The first Remove subtitles is the paid pass. A later paid retry keeps
+  // windows that already cleaned.
+  await triggerBackground(new URL(req.url).origin, {
+    adId: adIdNum,
+    projectId: id,
+    force: !deghost,
+    deghost,
+  });
   return NextResponse.json({ status: 'pending', queued: true });
 }
 

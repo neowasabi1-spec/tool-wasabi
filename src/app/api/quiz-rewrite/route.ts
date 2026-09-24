@@ -259,6 +259,7 @@ export async function POST(request: NextRequest) {
       productDescription: string;
       customPrompt?: string;
       targetLanguage?: string;
+      swipeMap?: { texts?: Array<{ text?: string; original?: string; tag?: string; position?: number }> };
     };
     const { html, productName, productDescription, customPrompt } = body;
     const targetLanguage = (body.targetLanguage || 'it').toLowerCase().substring(0, 2);
@@ -285,7 +286,16 @@ export async function POST(request: NextRequest) {
       Math.min(800, Number.parseInt(process.env.QUIZ_REWRITE_MAX_TEXTS || String(DEFAULT_MAX_TEXTS), 10) || DEFAULT_MAX_TEXTS),
     );
 
-    const rawUniversal = extractAllTextsUniversal(html);
+    const mapped = Array.isArray(body.swipeMap?.texts) ? body.swipeMap!.texts! : [];
+    const rawUniversal =
+      mapped.length >= 3
+        ? mapped.map((t, i) => ({
+            id: i,
+            text: String(t.text || t.original || '').trim(),
+            context: `tag:${t.tag || 'p'}`,
+            position: typeof t.position === 'number' ? t.position : i,
+          })).filter((t) => t.text.length >= 2)
+        : extractAllTextsUniversal(html);
     const filtered = filterAndCap(rawUniversal, { maxTexts });
     if (filtered.length === 0) {
       return NextResponse.json({ error: 'No text found in the HTML to rewrite' }, { status: 400 });

@@ -160,9 +160,10 @@ Your task is to take:
 
 And create an OPTIMAL section-by-section blueprint for a new landing page that:
 - Uses the DESIGN AESTHETIC of the analyzed landing (colors, fonts, spacing, visual style)
-- But RESTRUCTURES the sections for optimal conversion for the NEW product
-- Adds/removes/reorders sections based on what THIS product needs
-- Writes all copy specifically for this product
+- Keeps the SAME persuasion sequence and the SAME offer UI as the source (package count, pack labels, buy-now vs scroll CTAs)
+- Rewrites copy for the NEW product inside those sections
+- Does NOT invent a new pricing/bundle grid (no Hormozi 1/2/3 packs, no "GET MY {product}" cards) unless the source landing already had that exact pattern
+- May add/remove non-offer sections (FAQ, story) only when the product truly needs them
 
 Return a JSON object with this EXACT structure:
 
@@ -221,7 +222,8 @@ CRITICAL RULES:
 - Headlines must be compelling and specific to this product
 - Include at MINIMUM: hero, problem/agitation, solution, benefits, social proof, guarantee, and final CTA
 - Social proof items should be realistic and on-brand (clearly fictional but believable)
-- FAQs should address real objections from the product analysis`;
+- FAQs should address real objections from the product analysis
+- PRICING/OFFER: source_action for pricing/order_form must be keep_modified if the source had an offer. Never source_action "new" for a bundle/pricing grid. Mirror pack count and CTA verbs from the source.`;
 
 export const HTML_BUILDER_PROMPT = `You are an expert frontend developer specializing in high-converting landing pages.
 
@@ -270,10 +272,11 @@ REQUIREMENTS:
    - FAQ accordion with CSS-only toggle (use <details>/<summary>)
    - Testimonial cards with avatar placeholders
    - Feature/benefit icons using Unicode or SVG
-   - Price comparison (crossed out vs current) if in blueprint
+   - Price comparison (crossed out vs current) ONLY if the source already had it
    - Guarantee badge with border and icon
    - Social proof counter/ticker if specified
    - Star ratings using Unicode stars
+   - Offer/pricing: copy the source package count and CTA verbs. Keep checkout hrefs (Digistore / Shopify / etc.) or the product CTA URL — never invent a GET MY bundle grid.
 
 IMPORTANT: Return ONLY the complete HTML code starting with <!DOCTYPE html>.
 No markdown, no code fences, no commentary. Just pure HTML.`;

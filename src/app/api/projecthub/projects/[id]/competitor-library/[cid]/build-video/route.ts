@@ -43,15 +43,24 @@ export async function POST(
   if (script.length < 30) {
     const sourceAdId = Number(body.sourceAdId);
     if (Number.isFinite(sourceAdId) && sourceAdId > 0) {
-      const { data: ad } = await supabaseAdmin
+      let adRes = await supabaseAdmin
         .from('competitor_ads')
-        .select('rewritten_script, body_text')
+        .select('rewritten_script, transcript')
         .eq('id', sourceAdId)
         .eq('project_id', id)
         .maybeSingle();
+      if (adRes.error && /transcript/i.test(adRes.error.message || '')) {
+        adRes = await supabaseAdmin
+          .from('competitor_ads')
+          .select('rewritten_script')
+          .eq('id', sourceAdId)
+          .eq('project_id', id)
+          .maybeSingle();
+      }
+      const ad = adRes.data;
       script = String(
         (ad as { rewritten_script?: string } | null)?.rewritten_script ||
-          (ad as { body_text?: string } | null)?.body_text ||
+          (ad as { transcript?: string } | null)?.transcript ||
           '',
       ).trim();
     }

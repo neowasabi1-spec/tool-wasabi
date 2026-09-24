@@ -30,6 +30,15 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts } from '@/lib/spa-rescue';
+import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
+import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
+import {
+  applyReplacementList,
+  applyTextSwap,
+  extractVisibleSnippets,
+  isHugeAiHtml,
+  parseTextSwapInstruction,
+} from '@/lib/ai-html-text-swap';
 
 /* ── Direct browser → Supabase Storage upload (bypasses Vercel 4.5MB body limit) ── */
 const ALLOWED_UPLOAD_TYPES: Record<string, string> = {
@@ -61,9 +70,12 @@ function injectPreviewScrollFix(html: string): string {
     'iframe[src*="vimeo"],iframe[src*="wistia"],iframe[data-src*="vidalytics"],' +
     '[id*="video"] iframe,[class*="video"] iframe,[class*="player"] iframe' +
     '{pointer-events:none!important;}' +
+    'vturb-smartplayer iframe,#vsl-anchor iframe{pointer-events:auto!important;}' +
     '</style>' +
     '<script>(function(){function fix(){try{var fs=document.querySelectorAll("iframe");' +
-    'for(var i=0;i<fs.length;i++){var f=fs[i];var s=((f.getAttribute("src")||"")+" "+' +
+    'for(var i=0;i<fs.length;i++){var f=fs[i];' +
+    'if(f.closest&&f.closest("vturb-smartplayer,#vsl-anchor"))continue;' +
+    'var s=((f.getAttribute("src")||"")+" "+' +
     '(f.getAttribute("data-src")||""));var p=f.parentElement;var pc=p?((p.className||"")+" "+(p.id||"")):"";' +
     'if(/vidalytics|youtube|youtu\\.be|vimeo|wistia/i.test(s)||/video|player/i.test(pc)){' +
     'f.style.setProperty("pointer-events","none","important");}}}catch(e){}}' +
@@ -436,6 +448,61 @@ const EDITOR_SCRIPT = `
     if(!el||el===document.documentElement||el===document.body||el===document.head)return true;
     var t=el.tagName&&el.tagName.toLowerCase();
     return!t||t==='html'||t==='head'||t==='style'||t==='link'||t==='meta'||t==='script'||t==='noscript';
+  }
+  function isEditorUi(el){
+    return !!(el&&el.getAttribute&&el.getAttribute('data-editor-ui')==='1');
+  }
+  function realKids(p){
+    var out=[];
+    if(!p)return out;
+    for(var i=0;i<p.children.length;i++){
+      var c=p.children[i];
+      if(isEditorUi(c)||sk(c))continue;
+      out.push(c);
+    }
+    return out;
+  }
+  /* Climb wrapper-only parents (Elementor widget > figure > img) so Move up
+     swaps the whole image block with the button, not a no-op on a lone <img>. */
+  function movableBlock(el){
+    var n=el,guard=0;
+    while(n&&n.parentElement&&n.parentElement!==document.body&&n.parentElement!==document.documentElement&&guard++<16){
+      var kids=realKids(n.parentElement);
+      if(kids.length===1&&kids[0]===n){n=n.parentElement;continue;}
+      break;
+    }
+    return n;
+  }
+  function nextReal(n,dir){
+    var s=dir<0?n.previousElementSibling:n.nextElementSibling;
+    while(s&&(isEditorUi(s)||sk(s)))s=dir<0?s.previousElementSibling:s.nextElementSibling;
+    return s;
+  }
+  function moveSel(dir){
+    if(!sel)return;
+    var n=movableBlock(sel);
+    if(!n||!n.parentElement)return;
+    var sib=nextReal(n,dir);
+    if(sib){
+      if(dir<0)n.parentElement.insertBefore(n,sib);
+      else n.parentElement.insertBefore(sib,n);
+    }else{
+      var p=n.parentElement;
+      if(!p||p===document.body||p===document.documentElement||!p.parentElement)return;
+      if(dir<0)p.parentElement.insertBefore(n,p);
+      else{
+        var after=p.nextElementSibling;
+        if(after)p.parentElement.insertBefore(n,after);
+        else p.parentElement.appendChild(n);
+      }
+    }
+    if(sel){
+      sel.style.outline=SS;sel.style.outlineOffset='2px';
+      try{sel.scrollIntoView({block:'nearest',inline:'nearest'});}catch(e){}
+      positionPlus();positionDel(sel);positionResize(sel);
+    }
+    sendHtml();
+    window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');
   }
 
   var plusBtn=document.createElement('div');
@@ -1079,6 +1146,10 @@ const EDITOR_SCRIPT = `
       var t=editEl&&editEl.tagName&&editEl.tagName.toLowerCase();
       if(t&&['h1','h2','h3','h4','h5','h6','span','a','button','li','label'].indexOf(t)>=0){e.preventDefault();finishEdit();}
     }
+    if(!editing&&sel&&(e.key==='ArrowUp'||e.key==='ArrowDown')){
+      e.preventDefault();
+      moveSel(e.key==='ArrowUp'?-1:1);
+    }
   });
 
   document.addEventListener('submit',function(e){e.preventDefault();},true);
@@ -1219,10 +1290,8 @@ const EDITOR_SCRIPT = `
         var cl=sel.cloneNode(true);sel.parentElement.insertBefore(cl,sel.nextSibling);
         co(sel);sel=cl;sel.style.outline=SS;sel.style.outlineOffset='2px';sendHtml();
         window.parent.postMessage({type:'element-selected',data:gi(sel)},'*');}break;
-      case 'cmd-move-up':if(sel&&sel.previousElementSibling){
-        sel.parentElement.insertBefore(sel,sel.previousElementSibling);sendHtml();}break;
-      case 'cmd-move-down':if(sel&&sel.nextElementSibling){
-        sel.parentElement.insertBefore(sel.nextElementSibling,sel);sendHtml();}break;
+      case 'cmd-move-up':moveSel(-1);break;
+      case 'cmd-move-down':moveSel(1);break;
       case 'cmd-get-html':
         if(sel)co(sel);if(editEl){editEl.contentEditable='false';co(editEl);}
         var ch='<!DOCTYPE html>'+document.documentElement.outerHTML;
@@ -1690,7 +1759,15 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   // .mySwiper con autoplay+pagination) si comporta PIXEL-PERFECT
   // identico al sito originale, sia in editor che in preview.
   // (vedi stripNonCarouselScripts in src/lib/spa-rescue.ts)
+  // Popup quiz questions live in JS. Freeze them into #ssqBody before
+  // strip so the editor can select/edit each step.
+  if (isPopupQuizHtml(clean) && !/data-ssq-step=/.test(clean)) {
+    clean = injectPopupQuizEngine(clean);
+  }
   clean = stripNonCarouselScripts(clean);
+  // Editor clicks must select copy, not open the quiz. Preview/heal
+  // re-injects wasabi-popup-quiz-engine from the materialized steps.
+  clean = clean.replace(/<script\b[^>]*\bid=["']wasabi-popup-quiz-engine["'][^>]*>[\s\S]*?<\/script>/gi, '');
   // Preview-only: this observer rewrites img src in a loop and blocks the
   // editor iframe so "editor-ready" never fires (stuck on Loading editor…).
   clean = clean.replace(/<script\b[^>]*\bdata-restyle-media\b[^>]*>[\s\S]*?<\/script>/gi, '');
@@ -2009,7 +2086,12 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     ${REVEAL_VISIBILITY_CSS}
   </style>`;
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
-  const inject = editorCss + script;
+  let inject = editorCss + script;
+  if (isChatQuizHtml(clean)) inject = chatQuizEditorRevealCss() + inject;
+  if (isPopupQuizHtml(clean)) {
+    if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
+    inject = popupQuizEditorRevealCss() + inject;
+  }
   if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
   if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
   return clean + inject;
@@ -2017,7 +2099,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
 
 function stripEditorScript(html: string): string {
   let result = html;
-  result = result.replace(/<style data-editor-override>[\s\S]*?<\/style>/g, '');
+  result = result.replace(/<style\b[^>]*\bdata-editor-override\b[^>]*>[\s\S]*?<\/style>/g, '');
   // Overlay UI dell'editor (plus / cestino / maniglia resize): marcati con
   // data-editor-ui, non devono finire nell'HTML salvato.
   result = result.replace(/<div[^>]*\bdata-editor-ui\b[^>]*>[\s\S]*?<\/div>/gi, '');
@@ -2596,6 +2678,133 @@ function BgGradientEditor({
 }
 
 /* ─────────── Component ─────────── */
+
+type LandingLibItem = {
+  id: number | string;
+  kind: 'image' | 'gif' | 'video';
+  storedUrl: string;
+  name?: string;
+};
+
+/** Media already downloaded from this project's competitor landings. */
+function CompetitorMediaLibrary({
+  projectId,
+  products,
+  onProject,
+  prefer,
+  hint,
+  onPick,
+}: {
+  projectId: string;
+  products?: Array<{ id: string; name: string }>;
+  onProject?: (id: string) => void;
+  prefer: 'image' | 'gif' | 'video';
+  hint?: string;
+  onPick: (url: string) => void;
+}) {
+  const [items, setItems] = useState<LandingLibItem[]>([]);
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [filter, setFilter] = useState<'image' | 'gif' | 'video'>(prefer);
+
+  useEffect(() => { setFilter(prefer); }, [prefer]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancel = false;
+    setStatus('loading');
+    fetch(`/api/projecthub/projects/${projectId}/landing-media`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => {
+        if (cancel) return;
+        const list = Array.isArray(rows)
+          ? rows.filter((x) => x && typeof x.storedUrl === 'string' && x.storedUrl)
+          : [];
+        setItems(list);
+        setStatus('ready');
+      })
+      .catch(() => { if (!cancel) setStatus('error'); });
+    return () => { cancel = true; };
+  }, [projectId]);
+
+  const kinds: Array<'image' | 'gif' | 'video'> = prefer === 'video' ? ['video'] : ['image', 'gif'];
+  const shown = items.filter((m) => m.kind === filter && kinds.includes(m.kind));
+
+  return (
+    <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">
+        Competitor landing media
+      </p>
+      {!projectId ? (
+        <div>
+          <p className="text-[10px] text-slate-500 mb-1">Link this page to a project to use its downloaded landing media.</p>
+          {products && products.length > 0 && onProject && (
+            <select
+              className="prop-input"
+              defaultValue=""
+              onChange={(e) => { if (e.target.value) onProject(e.target.value); }}
+            >
+              <option value="">Choose project…</option>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          )}
+        </div>
+      ) : status === 'loading' ? (
+        <p className="text-[10px] text-slate-400 py-3 text-center flex items-center justify-center gap-1">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading library…
+        </p>
+      ) : status === 'error' ? (
+        <p className="text-[10px] text-red-500">Could not load landing media.</p>
+      ) : items.filter((m) => kinds.includes(m.kind)).length === 0 ? (
+        <p className="text-[10px] text-slate-500">
+          No {prefer === 'video' ? 'videos' : 'images or GIFs'} from competitor landings in this project yet.
+        </p>
+      ) : (
+        <>
+          {kinds.length > 1 && (
+            <div className="flex gap-1 mb-1.5">
+              {kinds.map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setFilter(k)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium border ${
+                    filter === k ? 'bg-white border-slate-300 text-slate-800' : 'border-transparent text-slate-500'
+                  }`}
+                >
+                  {k === 'image' ? 'Images' : 'GIFs'} ({items.filter((m) => m.kind === k).length})
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="grid grid-cols-3 gap-1.5 max-h-52 overflow-y-auto">
+            {shown.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                title={m.name || 'Use this file'}
+                onClick={() => onPick(m.storedUrl)}
+                className="relative aspect-square rounded-md overflow-hidden border border-slate-200 bg-white hover:border-violet-400 hover:ring-1 hover:ring-violet-300"
+              >
+                {m.kind === 'video' ? (
+                  <video src={m.storedUrl} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={m.storedUrl} alt="" className="w-full h-full object-cover" />
+                )}
+                {m.kind !== 'image' && (
+                  <span className="absolute bottom-0.5 left-0.5 text-[8px] font-bold uppercase bg-black/70 text-white px-1 rounded">
+                    {m.kind}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+          <p className="text-[10px] text-slate-400 mt-1">{hint || 'Click a file to use it here.'}</p>
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange, quizNav, checkoutMode }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -3647,6 +3856,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   // Pannello "Immagini nel blocco" come menu a tendina: con caroselli/gallery
   // da decine di immagini la lista è lunghissima, quindi parte chiuso.
   const [childImgsOpen, setChildImgsOpen] = useState(false);
+  const [carouselPick, setCarouselPick] = useState(0);
 
   const handleMediaUpload = useCallback(async (file: File, target: 'image' | 'video') => {
     if (uploading) return;
@@ -4276,7 +4486,32 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setAiEditError('');
     setAiEditProgress(null);
 
+    const sourceHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
+    const commit = (next: string) => {
+      setIframeVersion(v => v + 1);
+      if (editorViewport === 'mobile' && mobileHtml) {
+        setAiEditHistory(prev => [...prev, mobileHtml]);
+        setMobileHtml(next);
+        setMobileCodeHtml(next);
+      } else {
+        setAiEditHistory(prev => [...prev, currentHtml]);
+        setCurrentHtml(next);
+        setCodeHtml(next);
+        pushUndo(next);
+      }
+    };
+
     try {
+      const swap = parseTextSwapInstruction(aiEditPrompt);
+      if (swap) {
+        const applied = applyTextSwap(sourceHtml, swap.from, swap.to);
+        if (applied.count === 0) {
+          throw new Error(`"${swap.from}" was not found on the page`);
+        }
+        commit(applied.html);
+        return;
+      }
+
       const res = await fetch('/api/ai-edit-html', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -4355,7 +4590,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       setAiEditRunning(false);
       setAiEditProgress(null);
     }
-  }, [aiEditPrompt, aiEditModel, aiEditRunning, activeCheckoutMode, currentHtml, pushUndo]);
+  }, [aiEditPrompt, aiEditModel, aiEditRunning, activeCheckoutMode, currentHtml, mobileHtml, editorViewport, pushUndo]);
 
   /* ── WasabiCRM: wire this page to the payment runtime ──
    * The checkout flavour above only ever changed the AI's system prompt, which
@@ -4642,6 +4877,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setElAiMessages(prev => [...prev, { role: 'user', content: instruction }]);
     setElAiLoading(true);
 
+    const pageHtml = editorViewport === 'mobile' && mobileHtml ? mobileHtml : currentHtml;
+    const commitPage = (next: string) => {
+      setIframeVersion(v => v + 1);
+      if (editorViewport === 'mobile' && mobileHtml) {
+        setMobileHtml(next);
+        setMobileCodeHtml(next);
+      } else {
+        setCurrentHtml(next);
+        setCodeHtml(next);
+        pushUndo(next);
+      }
+    };
+
     let elementHtml: string | null = null;
     if (selectedElement) {
       elAiPendingRef.current = null;
@@ -4656,14 +4904,39 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     }
 
     try {
+      const swap = parseTextSwapInstruction(instruction);
+      if (swap) {
+        const applied = applyTextSwap(pageHtml, swap.from, swap.to);
+        if (applied.count === 0) {
+          throw new Error(`"${swap.from}" was not found on the page`);
+        }
+        commitPage(applied.html);
+        setElAiMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `Done! Replaced "${swap.from}" → "${swap.to}" (${applied.count} time${applied.count === 1 ? '' : 's'}).`,
+        }]);
+        return;
+      }
+
+      const huge = isHugeAiHtml(elementHtml, selectedElement?.tagName);
       const res = await fetch('/api/ai-edit-element', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          elementHtml: elementHtml || undefined,
-          instruction,
-          checkoutMode: activeCheckoutMode,
-        }),
+        body: JSON.stringify(
+          huge
+            ? {
+                instruction,
+                mode: 'patches',
+                snippets: extractVisibleSnippets(elementHtml || pageHtml),
+                excerpt: (elementHtml || pageHtml).slice(0, 6000),
+                checkoutMode: activeCheckoutMode,
+              }
+            : {
+                elementHtml: elementHtml || undefined,
+                instruction,
+                checkoutMode: activeCheckoutMode,
+              },
+        ),
       });
       // Parsing robusto: in caso di timeout del gateway (Netlify/Vercel
       // chiudono la funzione dopo pochi secondi) o errore 5xx, il server
@@ -4684,6 +4957,19 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       }
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+
+      if (data.scope === 'patches') {
+        const applied = applyReplacementList(pageHtml, Array.isArray(data.replacements) ? data.replacements : []);
+        if (applied.count === 0) {
+          throw new Error('Nothing to change on this large block. Try "change X with Y", or select a smaller element.');
+        }
+        commitPage(applied.html);
+        setElAiMessages(prev => [...prev, {
+          role: 'assistant',
+          content: `Done! Updated ${applied.count} text occurrence${applied.count === 1 ? '' : 's'} on the page.`,
+        }]);
+        return;
+      }
 
       if (data.scope === 'page') {
         const { action, target, code } = data;
@@ -4716,7 +5002,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     } finally {
       setElAiLoading(false);
     }
-  }, [elAiInput, elAiLoading, activeCheckoutMode, selectedElement, sendToIframe, currentHtml, pushUndo]);
+  }, [elAiInput, elAiLoading, activeCheckoutMode, selectedElement, sendToIframe, currentHtml, mobileHtml, editorViewport, pushUndo]);
 
   useEffect(() => {
     elAiChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -4791,7 +5077,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         // No-op sulle pagine senza quel motore.
         const withEngine = reattachDynamicScripts(initialHtml, activeHtml);
         const unbaked = unbakeDynamicComments(withEngine).html;
-        const keepScripts = detectDynamicScripts(unbaked).functional;
+        const chatQuiz = isChatQuizHtml(unbaked);
+        const keepScripts = !chatQuiz && detectDynamicScripts(unbaked).functional;
         if (!cancelled) {
           const rescued = injectInteractivityRescue(unbaked, { keepScripts });
           // Fix scroll in preview: quando teniamo gli script, il player video
@@ -5509,6 +5796,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {el.tagName !== 'img' && el.childImg && el.childImg.src && !(el.childImgs && el.childImgs.length > 1) && (
                   <div className="p-3">
                     <PropLabel icon={Image}>Image (in block)</PropLabel>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer={/\.gif(\?|#|$)/i.test(el.childImg.src) ? 'gif' : 'image'}
+                      onPick={(url) => setChildImgSrc(url)}
+                    />
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
                     <input type="url" defaultValue={el.childImg.src} key={el.childImg.src} className="prop-input"
                       onBlur={(e) => setChildImgSrc(e.target.value)}
@@ -5552,13 +5846,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       Carousel/gallery: replace each image individually.
                       {!childImgsOpen && ' Click to expand.'}
                     </p>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer="image"
+                      hint={`Click a file to replace image #${Math.min(carouselPick, el.childImgs.length - 1) + 1}. Click a row below to choose which one.`}
+                      onPick={(url) => setChildImgSrcAt(Math.min(carouselPick, el.childImgs!.length - 1), url)}
+                    />
                     <input ref={childImgsUploadRef} type="file" accept="image/*,.gif,.webp,.avif,.svg" className="hidden"
                       onChange={(e) => { const f = e.target.files?.[0]; const idx = childImgsUploadIndexRef.current; if (f && idx >= 0) handleChildImgUploadAt(f, idx); e.target.value = ''; }} />
                     {childImgsOpen && <ShapeRow scope="all" />}
                     {childImgsOpen && (
                       <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5 mt-2">
                         {el.childImgs.map((ci, i) => (
-                          <div key={i} className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 bg-slate-50">
+                          <div key={i} className={`flex items-center gap-2 p-1.5 rounded-lg border bg-slate-50 ${carouselPick === i ? 'border-violet-300' : 'border-slate-200'}`}
+                            onClick={() => setCarouselPick(i)}>
                             <div className="w-10 h-10 rounded bg-white border border-slate-200 overflow-hidden flex-shrink-0 flex items-center justify-center">
                               {ci.src
                                 ? <img src={ci.src} alt="" className="w-full h-full object-cover" />
@@ -5590,6 +5893,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {el.tagName === 'img' && (
                   <div className="p-3">
                     <PropLabel icon={Image}>Image</PropLabel>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer={/\.gif(\?|#|$)/i.test(el.src || '') ? 'gif' : 'image'}
+                      onPick={(url) => setAttr('src', url)}
+                    />
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Image URL</label>
                     <input type="url" defaultValue={el.src} className="prop-input"
                       onBlur={(e) => setAttr('src', e.target.value)}
@@ -5644,6 +5954,13 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 {(el.tagName === 'video' || el.tagName === 'source') && (
                   <div className="p-3">
                     <PropLabel icon={Film}>Video</PropLabel>
+                    <CompetitorMediaLibrary
+                      projectId={selectedProductId}
+                      products={availableProducts}
+                      onProject={(id) => { setSelectedProductId(id); onProductChange?.(id); }}
+                      prefer="video"
+                      onPick={(url) => setAttr('src', url)}
+                    />
                     <label className="text-[10px] text-slate-500 mb-0.5 block">Video URL</label>
                     <input type="url" defaultValue={el.src} className="prop-input"
                       onBlur={(e) => setAttr('src', e.target.value)}

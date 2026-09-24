@@ -199,6 +199,60 @@ function segmentsCrossBlockBoundary(
   return false
 }
 
+/** Copy may only change text nodes. Funnelish puts the same digits in
+ *  @font-face unicode ranges and in class names (el-877485) as in the
+ *  countdown, and picture tags contain `>` inside media="(width > 1024px)".
+ *  A raw String.replace writes the rewrite into that CSS and those tags. */
+function splitQuoteAware(html: string): Array<{ tag: boolean; text: string }> {
+  const parts: Array<{ tag: boolean; text: string }> = []
+  let i = 0
+  while (i < html.length) {
+    if (html[i] !== '<') {
+      const j = html.indexOf('<', i)
+      const end = j < 0 ? html.length : j
+      parts.push({ tag: false, text: html.slice(i, end) })
+      i = end
+      continue
+    }
+    let j = i + 1
+    let quote = ''
+    while (j < html.length) {
+      const c = html[j]
+      if (quote) {
+        if (c === quote) quote = ''
+      } else if (c === '"' || c === "'") quote = c
+      else if (c === '>') { j++; break }
+      j++
+    }
+    parts.push({ tag: true, text: html.slice(i, j) })
+    i = j
+  }
+  return parts
+}
+
+function replaceVisibleText(html: string, from: string, to: string): { html: string; replaced: boolean } {
+  if (!from || from === to || !html.includes(from)) return { html, replaced: false }
+  const held: string[] = []
+  let working = html.replace(/<(style|script|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, (m) => {
+    const n = held.length
+    held.push(m)
+    // Private-use chars only. A decimal marker is copy: "45" sits inside HOLD45.
+    return `\uE000${String.fromCharCode(0xE001 + n)}`
+  })
+  const parts = splitQuoteAware(working)
+  let replaced = false
+  for (const part of parts) {
+    if (part.tag || part.text.includes('\uE000') || !part.text.includes(from)) continue
+    part.text = part.text.replace(from, to)
+    replaced = true
+    break
+  }
+  if (!replaced) return { html, replaced: false }
+  working = parts.map((p) => p.text).join('')
+  working = working.replace(/\uE000([\uE001-\uF8FF])/g, (_m, ch) => held[ch.charCodeAt(0) - 0xE001] ?? '')
+  return { html: working, replaced: true }
+}
+
 function distributeTextProportionally(
   segments: string[], 
   textSegments: { index: number; content: string }[], 
@@ -484,6 +538,16 @@ function replaceLiquidPlaceholders(html: string): string {
     .replace(/  +/g, ' ')
 }
 
+// Opus 4.7+ (and Sonnet 5 / Opus 5) reject a non-default `temperature`.
+// Thinking blocks can lead the content array, so the copy lives in type=text.
+function claudeMessageText(data: { content?: Array<{ type?: string; text?: string }> } | null): string {
+  const blocks = data?.content || []
+  return blocks
+    .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text || '')
+    .join('')
+}
+
 // ─── (A) PAGE BLUEPRINT (Claude) ───────────────────────────────────
 // Genera UNA volta per job la STRATEGIA dell'intera pagina (grande idea,
 // meccanismo unico, lead, awareness, sequenza prove/obiezioni, angle per
@@ -570,9 +634,9 @@ async function generateClaudePageBlueprint(opts: {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: opts.model || 'claude-opus-4-8',
-          max_tokens: 1500,
-          temperature: 0.5,
+          model: opts.model || 'claude-sonnet-5',
+          max_tokens: 4000,
+          output_config: { effort: 'low' },
           system: sys,
           messages: [{ role: 'user', content: userParts }],
         }),
@@ -663,10 +727,11 @@ serve(async (req) => {
 
     // Allowlist of selectable models (mirror of src/lib/swipe-models.ts). Keep
     // in sync when adding options. Unknown/absent → Opus (previous default).
-    const SWIPE_MODEL_DEFAULT = 'claude-opus-4-8'
+    const SWIPE_MODEL_DEFAULT = 'claude-sonnet-5'
     const ALLOWED_SWIPE_MODELS = new Set([
-      'claude-opus-4-8',
-      'claude-sonnet-4-6',
+      'claude-sonnet-5',
+      'claude-opus-5-5',
+      'claude-opus-5',
       'claude-haiku-4-5-20251001',
     ])
     const CLAUDE_MODEL_RUNTIME =
@@ -690,7 +755,7 @@ serve(async (req) => {
     // which version of the function is actually serving requests. Critical
     // because GitHub pushes don't auto-deploy; if you don't see this exact
     // string in the logs you're still on the old build.
-    console.log(`🔖 funnel-swap build: v4.8-model-selector (2026-07-09)`)
+    console.log(`🔖 funnel-swap build: v5-sonnet-no-temperature (2026-09-24)`)
     console.log(`📋 Richiesta ricevuta: phase=${phase}, cloneMode=${cloneMode}, url=${url?.substring(0, 50)}...`)
     if (system_kb) {
       const kbChars = String(system_kb).length
@@ -876,15 +941,21 @@ serve(async (req) => {
             }
             
             if (!found && clonedHTML.includes(originalText)) {
-              clonedHTML = clonedHTML.replace(originalText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, originalText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             
             if (!found && rawText !== originalText && clonedHTML.includes(rawText)) {
-              clonedHTML = clonedHTML.replace(rawText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, rawText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             
             if (!found && originalText.length >= 5 && originalText.length < 500) {
@@ -896,7 +967,7 @@ serve(async (req) => {
                   const pattern = escapedWords.join(tagsBetween)
                   const regex = new RegExp(pattern, 'i')
                   const match = clonedHTML.match(regex)
-                  if (match) {
+                  if (match && match[0].length <= Math.max(800, originalText.length * 4)) {
                     const matchedStr = match[0]
                     const tagsInMatch = matchedStr.match(/<[^>]+>/g) || []
                     
@@ -1243,7 +1314,7 @@ html body [class*="h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="min-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="max-h-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [class*="aspect-["]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
-html body [style*="height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
+html body [style*="height:"]:not(main):not([class*="main_wrapper"]):not([class*="desktop_grid"]):not([style*="height:100%"]):not([style*="height: 100%"]):not([style*="100vh"]):has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [style*="max-height:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl),
 html body [style*="aspect-ratio:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl){
   height:auto !important;min-height:0 !important;max-height:none !important;
@@ -1303,7 +1374,7 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
     var nodes=document.querySelectorAll(sel);
     for(var i=0;i<nodes.length;i++){
       var el=nodes[i];var tn=el.tagName;
-      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;
+      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;if(tn==='MAIN'||tn==='HTML'||tn==='BODY')continue;var shellSt=el.getAttribute('style')||'';var shellCl=typeof el.className==='string'?el.className:'';if(/main_wrapper|desktop_grid/.test(shellCl)||/height: *100%|100vh/i.test(shellSt))continue;
       if(!el.querySelector('p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl'))continue;
       if(el.__fbRelaxed)continue;el.__fbRelaxed=1;
       el.style.setProperty('height','auto','important');
@@ -1703,17 +1774,11 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
           },
           body: JSON.stringify({
             model: CLAUDE_MODEL_RUNTIME,
-            // 6000 was too tight: 12 texts × ~500 tok avg = 6000 tok, so any
-            // single long body paragraph would cut the JSON mid-way and the
-            // parser would fall back to the ORIGINAL text for the entire
-            // batch (12 texts unchanged). Bumping to 16000 gives ~1300 tok
-            // per text — comfortable headroom for long body copy.
-            // 12000 (era 16000): un batch piccolo (~12 testi) produce ~7-8k token,
-            // quindi 12000 è ampio; lasciare 16000 + input grande sforava il
-            // context 200k. Con i cap su brief/MR/description sopra, input+output
-            // restano sotto il limite con margine.
-            max_tokens: 12000,
-            temperature: 0.6,
+            // Room for a short adaptive-thinking prefix plus the JSON array.
+            // temperature is omitted: Opus 4.7+ and Sonnet 5 return HTTP 400
+            // if it is set to anything other than the model default.
+            max_tokens: 16000,
+            output_config: { effort: 'medium' },
             system: systemBlocks,
             messages: [{ role: 'user', content: rewritePrompt }]
           }),
@@ -1800,7 +1865,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
       } catch { /* best-effort logging */ }
 
       try {
-        let responseText = claudeData.content[0].text
+        let responseText = claudeMessageText(claudeData)
         responseText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
         
         let jsonMatch = responseText.match(/\[[\s\S]*\]/)
@@ -1899,14 +1964,14 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
 
       } catch (parseError) {
         console.error('❌ Errore parsing risposta Claude:', parseError)
-        console.error('Risposta raw (primi 500 caratteri):', claudeData.content[0].text.substring(0, 500))
+        console.error('Risposta raw (primi 500 caratteri):', claudeMessageText(claudeData).substring(0, 500))
 
         // Last-resort regex sweep: salvage as many `{"index": N, "text": "..."}`
         // pairs as possible from the raw response, even if the surrounding
         // JSON envelope is malformed. This is much better than dropping the
         // entire batch back to the original text (which is what used to
         // happen and caused "many texts unchanged" reports).
-        const rawText: string = claudeData.content[0].text || ''
+        const rawText: string = claudeMessageText(claudeData)
         const salvaged: Array<{ index: number; text: string }> = []
         const itemRe = /"index"\s*:\s*(\d+)\s*,\s*"text"\s*:\s*"((?:[^"\\]|\\.)*)"/g
         let m: RegExpExecArray | null
@@ -2124,14 +2189,20 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
             let found = false
             
             if (!found && clonedHTML.includes(originalText)) {
-              clonedHTML = clonedHTML.replace(originalText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, originalText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             if (!found && rawText !== originalText && clonedHTML.includes(rawText)) {
-              clonedHTML = clonedHTML.replace(rawText, newText)
-              replacementCount++
-              found = true
+              const vis = replaceVisibleText(clonedHTML, rawText, newText)
+              if (vis.replaced) {
+                clonedHTML = vis.html
+                replacementCount++
+                found = true
+              }
             }
             if (!found && originalText.length >= 5 && originalText.length < 500) {
               try {
@@ -2141,7 +2212,7 @@ RESTITUISCI SOLO JSON ARRAY (stesso ordine):
                   const pattern = escapedWords.join('(?:\\s|&nbsp;|<[^>]{0,200}>)*')
                   const regex = new RegExp(pattern, 'i')
                   const match = clonedHTML.match(regex)
-                  if (match) {
+                  if (match && match[0].length <= Math.max(800, originalText.length * 4)) {
                     const matchedStr = match[0]
                     const tagsInMatch = matchedStr.match(/<[^>]+>/g) || []
                     if (tagsInMatch.length > 0) {

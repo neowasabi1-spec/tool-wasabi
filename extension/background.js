@@ -122,6 +122,14 @@ function dbgSend(tabId, method, params) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function withTimeout(promise, ms, message) {
+  let t;
+  const timeout = new Promise((_, reject) => {
+    t = setTimeout(() => reject(new Error(message || 'timeout')), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+}
+
 // Kept well under Netlify's ~6MB function request-body limit: base64 inflates
 // bytes by ~33%, so 4MB of media -> ~5.3MB body. Larger media is fetched
 // server-side from its URL instead of being shipped inline.
@@ -259,7 +267,7 @@ async function captureViewport(tabId, { width, height, mobile, dsf }) {
 }
 
 async function captureScreenshots(tabId) {
-  await dbgAttach(tabId);
+  await withTimeout(dbgAttach(tabId), 8000, 'debugger attach timed out');
   try {
     await dbgSend(tabId, 'Page.enable').catch(() => {});
     let desktop = null;
@@ -300,6 +308,46 @@ function canonUrl(u) {
   } catch {
     return String(u || '').toLowerCase().replace(/\/+$/, '');
   }
+}
+
+function pageIdentity(raw) {
+  try {
+    const x = new URL(String(raw || '').trim());
+    const host = x.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (x.pathname || '/').replace(/\/+$/, '') || '/';
+    return `${x.protocol}//${host}${path.toLowerCase()}`;
+  } catch {
+    return String(raw || '').toLowerCase().replace(/\/+$/, '').split('?')[0];
+  }
+}
+
+async function loadKnownSavedIds(token, extra) {
+  const ids = new Set();
+  const add = (u) => {
+    const id = pageIdentity(u);
+    if (id) ids.add(id);
+  };
+  (extra || []).forEach(add);
+  try {
+    const local = (await chrome.storage.local.get('wasabi_saved_page_ids')).wasabi_saved_page_ids;
+    if (Array.isArray(local)) local.forEach(add);
+  } catch { /* ignore */ }
+  if (token) {
+    try {
+      const res = await fetch(`${TOOL_ORIGIN}/api/extension/folders`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      (data.savedUrls || []).forEach(add);
+    } catch { /* older API */ }
+  }
+  return ids;
+}
+
+async function rememberSavedIds(ids) {
+  try {
+    await chrome.storage.local.set({ wasabi_saved_page_ids: [...ids].slice(-8000) });
+  } catch { /* ignore */ }
 }
 
 // Hosts where we stop BEFORE navigating (external payment/social — a competitor
@@ -614,6 +662,7 @@ async function waitForChange(tabId, beforeUrl, beforeSig, timeoutMs) {
 async function waitForLoad(tabId, timeoutMs) {
   const deadline = Date.now() + (timeoutMs || 12000);
   while (Date.now() < deadline) {
+    if (bulkStopRequested && tabId === bulkLandingTabId) throw new Error('Stopped');
     let st = 'complete';
     try { st = (await chrome.tabs.get(tabId)).status || 'complete'; } catch { return; }
     if (st === 'complete') { await sleep(600); return; }
@@ -1341,6 +1390,488 @@ async function runFunnelWalk(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk import — a dedicated extension window drives one page at a time so
+// Chrome cannot kill the job after ~5 minutes (~80 pages). The listing tab stays put.
+// ---------------------------------------------------------------------------
+const BULK_KEY = 'wasabi_bulk_import';
+const BULK_MAX = 400;
+let bulkStopRequested = false;
+let bulkLandingTabId = null;
+
+function throwIfBulkStopped() {
+  if (bulkStopRequested) throw new Error('Stopped');
+}
+
+async function abortBulkNow() {
+  bulkStopRequested = true;
+  const ids = new Set();
+  if (bulkLandingTabId) ids.add(bulkLandingTabId);
+  bulkLandingTabId = null;
+  try {
+    const st = await getBulkState();
+    if (st && st.tabId) ids.add(st.tabId);
+  } catch { /* ignore */ }
+  for (const id of ids) {
+    try { await dbgDetach(id); } catch { /* ignore */ }
+    try { await chrome.tabs.remove(id); } catch { /* ignore */ }
+  }
+}
+
+async function setBulkState(patch) {
+  const cur = (await chrome.storage.local.get(BULK_KEY))[BULK_KEY] || {};
+  const next = { ...cur, ...patch, updatedAt: Date.now() };
+  await chrome.storage.local.set({ [BULK_KEY]: next });
+  return next;
+}
+async function getBulkState() {
+  return (await chrome.storage.local.get(BULK_KEY))[BULK_KEY] || null;
+}
+async function clearBulkState() {
+  await chrome.storage.local.remove(BULK_KEY);
+}
+
+function normalizeBulkUrls(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of list || []) {
+    let u = String(raw || '').trim();
+    if (!u) continue;
+    try {
+      const parsed = new URL(u);
+      if (!/^https?:$/i.test(parsed.protocol)) continue;
+      u = parsed.href;
+    } catch {
+      continue;
+    }
+    const key = canonUrl(u);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(u);
+    if (out.length >= BULK_MAX) break;
+  }
+  return out;
+}
+
+async function waitUntilPageReady(tabId, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 18000);
+  await waitForLoad(tabId, timeoutMs || 18000);
+  let last = null;
+  while (Date.now() < deadline) {
+    throwIfBulkStopped();
+    try {
+      const r = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const href = location.href || '';
+          const t = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim();
+          return {
+            href,
+            ready: document.readyState === 'complete',
+            len: t.length,
+            title: document.title || '',
+          };
+        },
+      });
+      last = r && r[0] && r[0].result;
+      if (last && last.ready && /^https?:/i.test(last.href) && last.len > 80) return last;
+    } catch {
+      /* tab not scriptable yet */
+    }
+    await sleep(400);
+  }
+  return last;
+}
+
+let bulkKnown = null;
+
+function bulkRunnerUrl() {
+  return chrome.runtime.getURL('bulk-runner.html');
+}
+
+async function findBulkRunnerTab() {
+  try {
+    const want = bulkRunnerUrl();
+    const tabs = await chrome.tabs.query({});
+    return (tabs || []).find((t) => String(t.url || '').split('?')[0] === want) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openBulkRunner() {
+  const existing = await findBulkRunnerTab();
+  if (existing && existing.windowId) {
+    try {
+      await chrome.windows.update(existing.windowId, { focused: true });
+      await chrome.tabs.update(existing.id, { active: true });
+    } catch { /* ignore */ }
+    return existing;
+  }
+  const win = await chrome.windows.create({
+    url: bulkRunnerUrl(),
+    type: 'popup',
+    focused: true,
+    width: 440,
+    height: 560,
+    left: 48,
+    top: 48,
+  });
+  return win && win.tabs && win.tabs[0];
+}
+
+async function ensureLandingTab(tabId, url) {
+  if (tabId) {
+    try {
+      await chrome.tabs.get(tabId);
+      return tabId;
+    } catch { /* dead */ }
+  }
+  const tab = await chrome.tabs.create({ url, active: true });
+  return tab && tab.id;
+}
+
+async function processBulkOnePage(opts) {
+  throwIfBulkStopped();
+  const url = String(opts.url || '').trim();
+  if (!url) throw new Error('Missing URL');
+  const token = await getValidToken();
+  if (!token) throw new Error('Session expired — open the tool and log in.');
+  if (!bulkKnown) bulkKnown = await loadKnownSavedIds(token, opts.savedUrls);
+  const known = bulkKnown;
+  const listedId = pageIdentity(url);
+  if (listedId && known.has(listedId)) {
+    return { ok: true, skipped: true, duplicate: true, tabId: opts.tabId || null };
+  }
+
+  const tabId = await ensureLandingTab(opts.tabId, url);
+  if (!tabId) throw new Error('Could not open a landing tab');
+  bulkLandingTabId = tabId;
+  throwIfBulkStopped();
+
+  let current = '';
+  try { current = (await chrome.tabs.get(tabId)).url || ''; } catch { /* ignore */ }
+  if (pageIdentity(current) !== listedId) {
+    const g = await funnelGoto(tabId, url);
+    if (!g || !g.ok) await sleep(1500);
+  }
+
+  await waitUntilPageReady(tabId, 12000);
+  const page = await bgCaptureHtml(tabId);
+  if (!page.html || page.html.length < 80) {
+    throw new Error('Page was empty (blocked or still loading)');
+  }
+  const liveId = pageIdentity(page.url || url);
+  if (liveId && known.has(liveId)) {
+    if (listedId) known.add(listedId);
+    await rememberSavedIds(known);
+    return { ok: true, skipped: true, duplicate: true, tabId, identity: liveId };
+  }
+
+  let screenshotPaths = {};
+  try {
+    screenshotPaths = await bgCaptureShots(token, tabId, !!opts.wantDesktop, !!opts.wantMobile);
+  } catch (e) {
+    console.warn('[bulk] shots failed, saving HTML anyway', e);
+  }
+
+  const name = String(page.title || domainOf(page.url) || 'Page').slice(0, 180);
+  const data = await bgSavePage(token, {
+    url: page.url || url,
+    title: page.title,
+    name,
+    html: page.html,
+    screenshotDesktopPath: screenshotPaths.desktop || null,
+    screenshotMobilePath: screenshotPaths.mobile || null,
+    pageType: String(opts.pageType || '').slice(0, 60) || 'landing',
+    pageTypeLabel: opts.pageTypeLabel,
+    pageTypeExplicit: true,
+    category: String(opts.category || '').slice(0, 60),
+    tags: Array.isArray(opts.tags) ? opts.tags : [],
+    projectId: opts.projectId || null,
+    skipDuplicateScan: true,
+  });
+  if (listedId) known.add(listedId);
+  if (liveId) known.add(liveId);
+  await rememberSavedIds(known);
+  return {
+    ok: true,
+    saved: !data.duplicate,
+    duplicate: !!data.duplicate,
+    tabId,
+    identity: liveId || listedId,
+  };
+}
+
+function normalizeCreativeItems(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of list || []) {
+    const mediaUrl = String((raw && raw.mediaUrl) || '').trim();
+    if (!/^https?:\/\//i.test(mediaUrl)) continue;
+    let key = mediaUrl;
+    try {
+      const u = new URL(mediaUrl);
+      key = (u.hostname.replace(/^www\./i, '') + (u.pathname || '/').replace(/\/+$/, '')).toLowerCase();
+    } catch {
+      key = mediaUrl.split('?')[0].toLowerCase();
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      mediaUrl,
+      mediaType: raw.mediaType === 'video' ? 'video' : 'image',
+      name: String(raw.name || '').slice(0, 180),
+      text: String(raw.text || '').slice(0, 800),
+      headline: String(raw.headline || '').slice(0, 300),
+      width: Number(raw.width) || 0,
+      height: Number(raw.height) || 0,
+      carousel: !!raw.carousel,
+      pageUrl: String(raw.pageUrl || '').slice(0, 500),
+      pageTitle: String(raw.pageTitle || '').slice(0, 200),
+    });
+    if (out.length >= BULK_MAX) break;
+  }
+  return out;
+}
+
+function creativeFingerprint(url) {
+  let s = String(url || '');
+  try {
+    const u = new URL(s.trim());
+    const host = u.hostname.replace(/^www\./i, '').toLowerCase();
+    const path = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    s = `${u.protocol}//${host}${path}`.toLowerCase();
+  } catch {
+    s = s.split('?')[0].replace(/\/+$/, '').toLowerCase();
+  }
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (h << 5) + h + s.charCodeAt(i);
+    h = h >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+async function rememberCreativeFp(url) {
+  const fp = creativeFingerprint(url);
+  if (!fp) return;
+  try {
+    const cur = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+    if (cur.includes(fp)) return;
+    cur.push(fp);
+    if (cur.length > 20000) cur.splice(0, cur.length - 20000);
+    await chrome.storage.local.set({ wasabi_creative_fps: cur });
+  } catch { /* ignore */ }
+}
+
+const MAX_SIGNED_BYTES = 40 * 1024 * 1024;
+
+async function fetchMediaAsBlob(url) {
+  try {
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob.size || blob.size > MAX_SIGNED_BYTES) return null;
+    return blob;
+  } catch {
+    return null;
+  }
+}
+
+async function processBulkOneCreative(opts) {
+  throwIfBulkStopped();
+  const item = opts.item || {};
+  const mediaUrl = String(item.mediaUrl || '').trim();
+  if (!/^https?:\/\//i.test(mediaUrl)) throw new Error('Missing media URL');
+
+  let mediaBase64 = '';
+  let contentType = '';
+  let storagePath = '';
+  const inline = await fetchMediaAsDataUrl(mediaUrl);
+  if (inline) {
+    mediaBase64 = inline.dataUrl;
+    contentType = inline.type;
+  } else {
+    const blob = await fetchMediaAsBlob(mediaUrl);
+    if (blob) {
+      contentType = blob.type || (item.mediaType === 'video' ? 'video/mp4' : 'image/jpeg');
+      const signed = await toolFetch('/api/extension/sign-archive-ad', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contentType, mediaType: item.mediaType }),
+      });
+      if (signed.ok && signed.data && signed.data.uploadUrl) {
+        const put = await fetch(signed.data.uploadUrl, {
+          method: 'PUT',
+          headers: { 'Content-Type': contentType, 'x-upsert': 'false' },
+          body: blob,
+        });
+        if (put.ok) storagePath = signed.data.path;
+      }
+    }
+  }
+
+  const r = await toolFetch('/api/extension/save-archive-ad', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      mediaUrl,
+      mediaBase64: mediaBase64 || undefined,
+      storagePath: storagePath || undefined,
+      contentType: contentType || undefined,
+      mediaType: item.mediaType,
+      name: item.name,
+      headline: item.headline,
+      primaryText: item.text,
+      width: item.width,
+      height: item.height,
+      pageUrl: item.pageUrl || opts.pageUrl,
+      pageTitle: item.pageTitle || opts.pageTitle,
+      category: opts.category || '',
+      extraTags: Array.isArray(opts.tags) ? opts.tags : [],
+      carousel: !!item.carousel,
+    }),
+  });
+  if (!r.ok) {
+    throw new Error((r.data && (r.data.error || r.data.message)) || `Save failed (${r.status})`);
+  }
+  await rememberCreativeFp(mediaUrl);
+  return {
+    ok: true,
+    skipped: !!(r.data && r.data.skipped),
+    duplicate: !!(r.data && r.data.duplicate),
+    ad_type: r.data && r.data.ad_type,
+  };
+}
+
+async function startCreativeBulk(opts) {
+  const all = normalizeCreativeItems(opts.items);
+  bulkStopRequested = false;
+  let localFps = [];
+  try {
+    localFps = (await chrome.storage.local.get('wasabi_creative_fps')).wasabi_creative_fps || [];
+  } catch { /* ignore */ }
+  const skip = new Set((localFps || []).map((x) => String(x).toLowerCase()));
+  const items = all.filter((it) => !skip.has(creativeFingerprint(it.mediaUrl)));
+  const skippedUpFront = all.length - items.length;
+  if (!items.length) {
+    await setBulkState({
+      running: false, done: true, error: 'empty', kind: 'creatives',
+      status: skippedUpFront
+        ? `All ${skippedUpFront} already in the archive. Scan again for the next batch.`
+        : 'No creatives to import.',
+      total: skippedUpFront, savedCount: 0, failedCount: 0, skippedCount: skippedUpFront,
+      urls: [], items: [],
+    });
+    return {
+      ok: false,
+      error: skippedUpFront
+        ? `All ${skippedUpFront} already in the archive. Scan again for the next batch.`
+        : 'No creatives to import.',
+    };
+  }
+  const token = await getValidToken();
+  if (!token) {
+    await setBulkState({
+      running: false, done: true, error: 'auth', kind: 'creatives',
+      status: 'Session expired — open the tool and log in.',
+      total: items.length, savedCount: 0, failedCount: 0, skippedCount: 0,
+      urls: items.map((i) => i.mediaUrl), items,
+    });
+    return { ok: false, error: 'Session expired — open the tool and log in.' };
+  }
+  await setBulkState({
+    running: true,
+    done: false,
+    error: null,
+    kind: 'creatives',
+    status: skippedUpFront
+      ? `Starting ${items.length} new creatives (${skippedUpFront} already in archive)…`
+      : `Starting ${items.length} creatives…`,
+    total: items.length,
+    index: 0,
+    savedCount: 0,
+    failedCount: 0,
+    skippedCount: skippedUpFront,
+    category: opts.category || '',
+    tags: Array.isArray(opts.tags) ? opts.tags : [],
+    pageUrl: opts.pageUrl || '',
+    pageTitle: opts.pageTitle || '',
+    pageTypeLabel: 'auto Image/Video/Story/UGC',
+    urls: items.map((i) => i.mediaUrl),
+    items,
+    runnerOpen: false,
+  });
+  await openBulkRunner();
+  return { ok: true, started: true };
+}
+
+async function startBulkImport(opts) {
+  if (opts && opts.kind === 'creatives') return startCreativeBulk(opts);
+  const urls = normalizeBulkUrls(opts.urls);
+  bulkKnown = null;
+  bulkStopRequested = false;
+  if (!urls.length) {
+    await setBulkState({
+      running: false, done: true, error: 'empty',
+      status: 'No URLs to import.', total: 0, savedCount: 0, failedCount: 0, skippedCount: 0, urls: [],
+    });
+    return { ok: false, error: 'No URLs to import.' };
+  }
+  const token = await getValidToken();
+  if (!token) {
+    await setBulkState({
+      running: false, done: true, error: 'auth',
+      status: 'Session expired — open the tool and log in.',
+      total: urls.length, savedCount: 0, failedCount: 0, skippedCount: 0, urls,
+    });
+    return { ok: false, error: 'Session expired — open the tool and log in.' };
+  }
+  bulkKnown = await loadKnownSavedIds(token, opts.savedUrls);
+  let index = Math.max(0, Number(opts.startIndex) || 0);
+  let skippedCount = Number(opts.skippedCount) || 0;
+  while (index < urls.length && bulkKnown.has(pageIdentity(urls[index]))) {
+    skippedCount += 1;
+    index += 1;
+  }
+  await setBulkState({
+    running: true,
+    done: index >= urls.length,
+    error: null,
+    status: index >= urls.length
+      ? `Done. ${skippedCount} already in archive, nothing new.`
+      : `Starting ${urls.length} pages (${skippedCount} already in archive)…`,
+    total: urls.length,
+    index,
+    savedCount: Number(opts.savedCount) || 0,
+    failedCount: Number(opts.failedCount) || 0,
+    skippedCount,
+    projectId: opts.projectId || null,
+    pageType: opts.pageType,
+    pageTypeLabel: opts.pageTypeLabel,
+    category: opts.category,
+    tags: Array.isArray(opts.tags) ? opts.tags : [],
+    wantDesktop: !!opts.wantDesktop,
+    wantMobile: !!opts.wantMobile,
+    urls,
+    runnerOpen: false,
+  });
+  if (index >= urls.length) return { ok: true, started: false, done: true };
+  await openBulkRunner();
+  return { ok: true, started: true };
+}
+
+async function resumeBulkIfNeeded() {
+  if (walkRunning) return;
+  const st = await getBulkState();
+  if (!st || st.done || !st.urls || !st.urls.length) return;
+  if (!st.running && st.runnerOpen === false) return;
+  const existing = await findBulkRunnerTab();
+  if (existing) return;
+  if (st.running) await openBulkRunner();
+}
+
+// ---------------------------------------------------------------------------
 // Message router
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1369,6 +1900,83 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // Clear a finished walk so the popup goes back to its idle (0) state.
   if (msg.type === 'FUNNEL_WALK_RESET') {
     clearWalkState().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'BULK_START') {
+    (async () => {
+      if (walkRunning) {
+        sendResponse({ ok: false, error: 'A funnel walk is already running.' });
+        return;
+      }
+      const existing = await findBulkRunnerTab();
+      if (existing) {
+        sendResponse({ ok: false, error: 'A bulk import window is already open.' });
+        return;
+      }
+      const result = await startBulkImport({ ...msg, startIndex: 0 });
+      sendResponse(result);
+    })();
+    return true;
+  }
+  if (msg.type === 'BULK_RESUME') {
+    (async () => {
+      const st = await getBulkState();
+      if (!st || !st.urls || !st.urls.length) {
+        sendResponse({ ok: false, error: 'Nothing to resume.' });
+        return;
+      }
+      bulkStopRequested = false;
+      await setBulkState({ running: true, done: false, runnerOpen: true });
+      await openBulkRunner();
+      sendResponse({ ok: true, started: true });
+    })();
+    return true;
+  }
+  if (msg.type === 'BULK_ONE') {
+    (async () => {
+      if (bulkStopRequested) {
+        sendResponse({ ok: false, error: 'Stopped' });
+        return;
+      }
+      try {
+        const r = await processBulkOnePage(msg);
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.type === 'BULK_CREATIVE_ONE') {
+    (async () => {
+      if (bulkStopRequested) {
+        sendResponse({ ok: false, error: 'Stopped' });
+        return;
+      }
+      try {
+        const r = await processBulkOneCreative(msg);
+        sendResponse(r);
+      } catch (e) {
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      }
+    })();
+    return true;
+  }
+  if (msg.type === 'BULK_STATUS') {
+    Promise.all([getBulkState(), findBulkRunnerTab()]).then(([state, runner]) => {
+      sendResponse({ ok: true, state, running: !!(state && state.running && !state.done) || !!runner });
+    });
+    return true;
+  }
+  if (msg.type === 'BULK_STOP') {
+    abortBulkNow().then(() => sendResponse({ ok: true, stopped: true }));
+    return true;
+  }
+  if (msg.type === 'BULK_RESET') {
+    bulkKnown = null;
+    bulkStopRequested = false;
+    clearBulkState().then(() => sendResponse({ ok: true }));
     return true;
   }
 
@@ -1681,3 +2289,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   return false;
 });
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm && alarm.name === 'wasabi-bulk-keepalive') resumeBulkIfNeeded();
+});
+resumeBulkIfNeeded();

@@ -6,6 +6,8 @@ import { fetchHtmlSmart } from '@/lib/fetch-html-smart';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { persistPageHtml } from '@/lib/page-html-persist';
 import { resolvePageType, upsertArchivePageType } from '@/lib/archive-page-types';
+import { inferPageGeo } from '@/lib/page-geo';
+import { inferPageTags } from '@/lib/page-niche-tags';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -155,13 +157,16 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  const { geo, lang } = inferPageGeo({ url, html, title: name });
   const clonedData: Record<string, unknown> = {
     title: name,
     source_url: url,
     method_used: 'manual-upload',
     cloned_at: new Date().toISOString(),
     category,
-    tags: [] as string[],
+    tags: inferPageTags({ title: name, html }),
+    geo,
+    lang,
   };
   // Keep a small inline snapshot so the card can render before screenshots land.
   if (html.length <= 80_000) clonedData.html = html;

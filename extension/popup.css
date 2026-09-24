@@ -72,7 +72,7 @@ body {
 .plus-btn:hover { border-color: var(--accent); }
 .chk { display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; text-transform: none; }
 
-input[type="text"], select {
+input[type="text"], select, textarea {
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
@@ -81,7 +81,26 @@ input[type="text"], select {
   font-size: 13px;
   outline: none;
 }
-input[type="text"]:focus, select:focus { border-color: var(--accent-2); }
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+input[type="text"]:focus, select:focus, textarea:focus { border-color: var(--accent-2); }
+.ghost {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.ghost:hover { border-color: var(--accent); color: var(--accent); }
 
 .url { font-size: 11px; word-break: break-all; margin: 0; }
 
