@@ -179,6 +179,25 @@ const capDoc = (s: unknown, n = ENQUEUE_DOC_CAP): string | undefined => {
 };
 // Restiamo ben sotto i ~6MB di Netlify lasciando margine per l'overhead JSON.
 const ENQUEUE_BODY_BUDGET = 5_000_000;
+// Supabase Edge (and Netlify in front of it) answer 413 when the extract
+// body — mostly the cloned HTML with inlined images — is too big. Park the
+// heavy data-URIs, send the copy, put the images back on the rewritten HTML.
+const DATA_URI_RE = /data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]{400,}/gi;
+function parkHeavyDataUris(html: string): { html: string; restore: (out: string) => string } {
+  const held: string[] = [];
+  const slim = html.replace(DATA_URI_RE, (m) => {
+    const token = `https://wasabi.invalid/hold/${held.length}`;
+    held.push(m.replace(/\s+/g, ''));
+    return token;
+  });
+  return {
+    html: slim,
+    restore: (out: string) => held.reduce(
+      (acc, uri, i) => acc.split(`https://wasabi.invalid/hold/${i}`).join(uri),
+      out,
+    ),
+  };
+}
 // Serializza il messaggio swipe_landing_local garantendo che stia sotto il
 // budget: se sfora, prima toglie l'html in cache (il worker rifà il fetch),
 // poi sfoltisce la libreria prompts. Evita il 500 "Internal Error. ID:" di
@@ -4924,6 +4943,10 @@ export default function FrontEndFunnel() {
             research_notes: cloneProject?.marketResearchData?.notes ?? '',
           };
 
+          const parkedHtml = parkHeavyDataUris(htmlToRewrite);
+          // Extract only needs the page copy. Brief/research files ride on
+          // each process batch; sending them here is what pushes the body
+          // over the gateway limit (HTTP 413).
           const extractRes = await fetch(SUPABASE_FN_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -4938,11 +4961,12 @@ export default function FrontEndFunnel() {
               customPrompt: cloneConfig.customPrompt || '',
               targetLanguage: cloneConfig.language || detectPageLanguage(sourceUrlForSwap, htmlToRewrite),
               userId: DEFAULT_USER_ID,
-              renderedHtml: htmlToRewrite,
-              brief: swipeBrief || undefined,
-              market_research: cloneConfig.marketResearch || undefined,
+              renderedHtml: parkedHtml.html,
+              brief: capDoc(swipeBrief),
+              market_research: capDoc(cloneConfig.marketResearch),
               model: claudeModelRef.current,
-              ...cloneRoutingPayload,
+              pageType: cloneRoutingPayload.pageType,
+              checkoutMode: cloneRoutingPayload.checkoutMode,
             }),
           });
 
@@ -4962,7 +4986,11 @@ export default function FrontEndFunnel() {
             }
           }
           if (!extractRes.ok || extractData.error) {
-            throw new Error(extractData.error || extractData.details || `Extract HTTP ${extractRes.status}`);
+            const why = extractData.error || extractData.details;
+            if (!why && extractRes.status === 413) {
+              throw new Error('Extract HTTP 413: the cloned page is too large to send (over the ~2MB gateway limit).');
+            }
+            throw new Error(why || `Extract HTTP ${extractRes.status}`);
           }
           if (!extractData.jobId) throw new Error('Extract: no jobId returned');
 
@@ -5025,7 +5053,7 @@ export default function FrontEndFunnel() {
             pushRewrites(procData.rewrites, pageName);
 
             if (procData.phase === 'completed' && procData.content) {
-              sbFinalHtml = procData.content;
+              sbFinalHtml = parkedHtml.restore(procData.content);
               sbReplacements = procData.replacements || 0;
           setCloneProgress({
             phase: 'processing',
