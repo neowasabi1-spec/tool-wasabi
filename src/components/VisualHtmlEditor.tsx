@@ -2139,6 +2139,8 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
 function stripEditorScript(html: string): string {
   let result = html;
   result = result.replace(/<style\b[^>]*\bdata-editor-override\b[^>]*>[\s\S]*?<\/style>/g, '');
+  result = result.replace(/<style\b[^>]*\bid=["']wasabi-mq-play["'][^>]*>[\s\S]*?<\/style>/gi, '');
+  result = result.replace(/<script\b[^>]*\bid=["']wasabi-mq-pace["'][^>]*>[\s\S]*?<\/script>/gi, '');
   // Overlay UI dell'editor (plus / cestino / maniglia resize): marcati con
   // data-editor-ui, non devono finire nell'HTML salvato.
   result = result.replace(/<div[^>]*\bdata-editor-ui\b[^>]*>[\s\S]*?<\/div>/gi, '');
@@ -5157,7 +5159,8 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         //     rimuovendo i nodi statici,
         //  3) teniamo gli script, così il motore ri-anima i commenti "a tempo".
         // No-op sulle pagine senza quel motore.
-        const withEngine = reattachDynamicScripts(initialHtml, activeHtml);
+        const base = /wasabi-mq-css/.test(activeHtml) ? activeHtml : reattachDynamicScripts(initialHtml, activeHtml);
+        const withEngine = paceMessengerIntros(base);
         const unbaked = unbakeDynamicComments(withEngine).html;
         const chatQuiz = isChatQuizHtml(unbaked);
         const keepScripts = !chatQuiz && detectDynamicScripts(unbaked).functional;

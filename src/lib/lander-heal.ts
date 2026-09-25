@@ -495,10 +495,12 @@ export function paceMessengerIntros(html: string): string {
   if (!/id=["']quiz-loading["']/.test(out) && /id=["']mq-results["']/.test(out)) {
     out = out.replace(/<div id="mq-results"[\s\S]*?<\/div>/, MQ_LOADING + MQ_RESULTS);
   }
+  out = out.replace(/<style\b[^>]*\bid=["']wasabi-mq-editor["'][^>]*>[\s\S]*?<\/style>/gi, '');
   if (/id=["']wasabi-mq-pace["']/.test(out)) return out;
   out = out.replace(/<style id="wasabi-mq-css">/, `<style id="wasabi-mq-css">${MQ_PACE_CSS}`);
-  if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, `${MQ_PACE_SCRIPT}</body>`);
-  else out += MQ_PACE_SCRIPT;
+  const play = `<style id="wasabi-mq-play">${MQ_PACE_CSS}</style>${MQ_PACE_SCRIPT}`;
+  if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, `${play}</body>`);
+  else out += play;
   return out;
 }
 
