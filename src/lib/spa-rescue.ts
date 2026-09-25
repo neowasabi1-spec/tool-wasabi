@@ -483,18 +483,36 @@ export function resetScriptBuiltSlot(html: string): string {
   if (!/id=["']chatbox-content["']/i.test(html)) return html;
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    const box = doc.getElementById('chatbox-content');
-    if (!box || !box.childNodes.length) return html;
     const builds = Array.from(doc.scripts).some((s) => {
       const t = s.textContent || '';
       return /chatbox-content/.test(t) && /addBotMessage|var\s+questions\s*=/.test(t);
     });
     if (!builds) return html;
-    box.innerHTML = '';
+    const box = doc.getElementById('chatbox-content');
+    if (box) box.innerHTML = '';
+    doc.getElementById('quiz-loading')?.remove();
+    doc.getElementById('quiz-results')?.remove();
+    const prog = doc.getElementById('progress-area');
+    if (prog) prog.removeAttribute('style');
     return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
   } catch {
     return html;
   }
+}
+
+/** Editor must not run the page script, or save freezes a random quiz step. */
+export function deferEditorScripts(html: string): string {
+  if (!html) return html;
+  return html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs: string, body: string) => {
+    if (/data-editor|data-fallback|wasabi-/i.test(attrs)) return full;
+    if (/\bsrc\s*=/i.test(attrs)) return full;
+    if (/text\/wasabi-hold/i.test(attrs)) return full;
+    if (!/getElementById|querySelector|appendChild|createElement|addEventListener/.test(body)) return full;
+    if (/\btype\s*=\s*["'][^"']*["']/i.test(attrs)) {
+      return `<script${attrs.replace(/\btype\s*=\s*["'][^"']*["']/i, 'type="text/wasabi-hold"')}>${body}</script>`;
+    }
+    return `<script type="text/wasabi-hold"${attrs}>${body}</script>`;
+  });
 }
 
 function stripAllScripts(html: string): string {
