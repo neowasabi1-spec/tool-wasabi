@@ -495,6 +495,14 @@ const MQ_PACE_SCRIPT = `<script id="wasabi-mq-pace">(function(){var box=document
 export function exportMessengerHtml(html: string): string {
   if (!html || !/id=["']wasabi-mq-css["']/.test(html)) return html;
   let out = html.replace(/<style\b[^>]*\bid=["']wasabi-mq-export["'][^>]*>[\s\S]*?<\/style>/gi, '');
+  out = out.replace(/<input\b[^>]*\bid=["']mq-go["'][^>]*>/i, (tag) => {
+    const bare = tag.replace(/\schecked(?:=(?:"[^"]*"|'[^']*'|[^\s>]*))?/gi, '');
+    return bare.replace(/>$/, ' checked>');
+  });
+  out = out.replace(/<input\b[^>]*\bclass=["'][^"']*\bmq-ctl\b[^"']*["'][^>]*>/gi, (tag) => {
+    if (/\bid=["']mq-go["']/i.test(tag)) return tag;
+    return tag.replace(/\schecked(?:=(?:"[^"]*"|'[^']*'|[^\s>]*))?/gi, '');
+  });
   const intros = out.match(/class="msg-row bot"/g)?.length || 3;
   const questions = out.match(/class="msg-row bot mq-q/g)?.length || 3;
   const btnDelay = (0.45 + intros * 0.9).toFixed(2);
@@ -516,10 +524,12 @@ export function exportMessengerHtml(html: string): string {
     `#chatbox-content>.msg-row.bot:not(.mq-q):nth-child(4){animation-delay:3.1s}` +
     `#chatbox-content>label.yes-btn{display:inline-block!important;opacity:0;animation:mqFade .35s ${btnDelay}s forwards}` +
     `#chatbox-content .mq-q{display:none!important}` +
-    `#chatbox-content #mq-go:checked~label.yes-btn{display:none!important;animation:none}` +
-    `#chatbox-content #mq-go:checked~.mq-show-0{display:flex!important;opacity:1!important}` +
-    `#chatbox-content #mq-go:checked~label.option-btn.mq-show-0{display:block!important}` +
-    `body:has(#mq-go:checked) #progress-area{display:block!important}` +
+    `#chatbox-content #mq-go:checked~label.yes-btn{display:inline-block!important}` +
+    `#chatbox-content #mq-go:checked~.mq-show-0,#chatbox-content #mq-go:checked~label.option-btn.mq-show-0{display:none!important}` +
+    `#chatbox-content #mq-go:not(:checked)~label.yes-btn{display:none!important;animation:none}` +
+    `#chatbox-content #mq-go:not(:checked)~.mq-show-0{display:flex!important;opacity:1!important}` +
+    `#chatbox-content #mq-go:not(:checked)~label.option-btn.mq-show-0{display:block!important}` +
+    `body:has(#mq-go:not(:checked)) #progress-area{display:block!important}` +
     steps.join('');
   const tag = `<style id="wasabi-mq-export">${css}</style>`;
   if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, `${tag}</body>`);
