@@ -203,17 +203,16 @@ export async function understandLander(html: string, url = ''): Promise<LanderAg
   let outHtml = healed.html;
   let map = buildSwipeAssetMap(outHtml);
   const remaining = readHealStamp(outHtml).remaining;
+  // Screenshot only when the tool is unsure. Labeling runs on every page.
   const vision = needsVision(map, remaining);
 
   let parsed: AgentJson | null = null;
   let snapshot: { mediaType: string; data: string } | null = null;
-  if (vision) {
-    if (url) snapshot = await fetchPageSnapshot(url);
-    try {
-      parsed = await labelWithClaude({ url, map, snapshot });
-    } catch {
-      parsed = null;
-    }
+  if (vision && url) snapshot = await fetchPageSnapshot(url);
+  try {
+    parsed = await labelWithClaude({ url, map, snapshot });
+  } catch {
+    parsed = null;
   }
 
   if (parsed) {

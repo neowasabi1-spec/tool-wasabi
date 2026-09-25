@@ -1,5 +1,4 @@
 import { buildSwipeAssetMap, type SwipeAssetMap } from './swipe-asset-map';
-import { readHealStamp } from './lander-heal';
 import { pageNeedsJsRender } from './spa-rescue';
 
 export async function understandClonedLander(
@@ -8,16 +7,12 @@ export async function understandClonedLander(
 ): Promise<{ html: string; map: SwipeAssetMap }> {
   const local = buildSwipeAssetMap(html);
   if (!html || html.length < 80) return { html, map: local };
-  // JS shells need a browser freeze in clone-funnel, not a screenshot
-  // of an empty page. Static HTML already maps without an LLM.
+  // JS shells need a browser freeze in clone-funnel, not a label pass
+  // over an empty document.
   if (pageNeedsJsRender(html)) return { html, map: local };
-  const remaining = readHealStamp(html).remaining;
-  const known =
-    local.understood &&
-    local.family !== 'unknown' &&
-    local.texts.length >= 3 &&
-    remaining.length === 0;
-  if (known) return { html, map: local };
+  // The tool already listed the nodes. Haiku still labels them on every
+  // clone: three random texts used to look "understood" and skip the model,
+  // so headlines and quiz questions never got a role.
   try {
     const tooBig = html.length > 1_200_000;
     const res = await fetch('/api/lander-agent', {
