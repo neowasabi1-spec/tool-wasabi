@@ -29,7 +29,7 @@ import {
   normalizeCheckoutMode,
   type CheckoutMode,
 } from '@/lib/checkout-modes';
-import { stripNonCarouselScripts, releaseHeldScripts, deferEditorScripts } from '@/lib/spa-rescue';
+import { stripNonCarouselScripts, releaseHeldScripts } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -2121,7 +2121,6 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
     inject = popupQuizEditorRevealCss() + inject;
   }
-  clean = deferEditorScripts(clean);
   if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
   if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
   return clean + inject;
