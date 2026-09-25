@@ -8,7 +8,7 @@
  */
 
 import { getAnthropicKey } from './anthropic-key';
-import { healClonedLander, injectGenericStepEngine, readHealStamp, applyMessengerFlow, type MessengerFlow } from './lander-heal';
+import { healClonedLander, injectGenericStepEngine, readHealStamp, type MessengerFlow } from './lander-heal';
 import { SWIPE_MODEL_DEFAULT } from './swipe-models';
 import {
   buildSwipeAssetMap,
@@ -248,11 +248,6 @@ export async function understandLander(html: string, url = ''): Promise<LanderAg
     });
   } catch {
     parsed = null;
-  }
-
-  if (parsed?.flow?.questions?.length && slot) {
-    const next = applyMessengerFlow(outHtml, { ...parsed.flow, containerId: slot.id });
-    if (next !== outHtml) outHtml = next;
   }
 
   if (parsed) {

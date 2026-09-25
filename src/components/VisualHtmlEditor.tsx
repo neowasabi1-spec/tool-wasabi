@@ -30,7 +30,6 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts } from '@/lib/spa-rescue';
-import { healClonedLander } from '@/lib/lander-heal';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -1124,6 +1123,20 @@ const EDITOR_SCRIPT = `
       selectEl(faqTrig);
       return;
     }
+    /* Buttons, links and fields belong to the page script. Swallowing
+       the click here is why quizzes, bars and menus die in the editor. */
+    var pageCtl=e.target.closest&&e.target.closest('button,a,input,select,textarea,label');
+    if(pageCtl) return;
+    var mqLabel=e.target.closest&&e.target.closest('label[for]');
+    if(mqLabel){
+      var mqInp=document.getElementById(mqLabel.getAttribute('for')||'');
+      if(mqInp&&mqInp.classList&&mqInp.classList.contains('mq-ctl')){
+        e.preventDefault();e.stopPropagation();
+        if(mqInp.type==='radio') mqInp.checked=true;
+        else mqInp.checked=!mqInp.checked;
+        return;
+      }
+    }
     e.preventDefault();e.stopPropagation();
     var el=e.target;if(sk(el))return;
     selectEl(el);
@@ -1764,11 +1777,6 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   // strip so the editor can select/edit each step.
   if (isPopupQuizHtml(clean) && !/data-ssq-step=/.test(clean)) {
     clean = injectPopupQuizEngine(clean);
-  }
-  // Messenger quizzes draw the bubbles from a script. Strip would leave
-  // an empty card, so write the steps into the DOM first.
-  if (/id=["']chatbox-content["'][^>]*>\s*<\/div>/i.test(clean) && /var\s+questions\s*=\s*\[/.test(clean)) {
-    clean = healClonedLander(clean).html;
   }
   clean = stripNonCarouselScripts(clean);
   // Editor clicks must select copy, not open the quiz. Preview/heal

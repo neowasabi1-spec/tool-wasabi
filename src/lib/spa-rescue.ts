@@ -535,6 +535,12 @@ export function stripNonCarouselScripts(html: string): string {
   const DROP_SRC = /pixel|gtag|fbevents|googletagmanager|hotjar|clarity|analytics|facebook\.net|connect\.facebook/i;
   const KEEP_INLINE = /(?:new\s+Swiper\s*\(|Swiper\.create\s*\(|\.slick\s*\(|\.flickity\s*\(|\.glide\s*\(|new\s+Splide\s*\(|\.owlCarousel\s*\(|VSLPlayer\.mount\s*\(|fireCommentsForVideoTime|handleVideoTick|vidalytics_embed|getVidalyticsPlayer)/;
   const TRACKING_INLINE = /googletagmanager|gtag\s*\(|fbq\s*\(|fbevents|hotjar|clarity\.ms|dataLayer\.push/i;
+  // Page behavior lives in inline JS (quiz, chat, accordion, timer).
+  // Keep it. Drop only trackers, hard redirects, and framework boot
+  // scripts that re-hydrate and blank the iframe.
+  const BUILDS_PAGE = /getElementById|querySelector|appendChild|createElement|addEventListener|insertAdjacentHTML|classList|innerHTML/;
+  const REDIRECT_ONLY = /(?:window\.|top\.)?location\s*(?:\.href\s*=|\.replace\s*\(|\.assign\s*\(|=\s*["'])/;
+  const FRAMEWORK_INLINE = /__NEXT_DATA__|__NUXT__|webpackChunk|hydrateRoot|createRoot\s*\(|astro-island/;
   return html.replace(
     /<script\b([^>]*)>([\s\S]*?)<\/script>/gi,
     (full, attrs: string, body: string) => {
@@ -545,6 +551,9 @@ export function stripNonCarouselScripts(html: string): string {
         return '';
       }
       if (KEEP_INLINE.test(body)) return full;
+      if (FRAMEWORK_INLINE.test(body)) return '';
+      if (BUILDS_PAGE.test(body) && !(REDIRECT_ONLY.test(body) && !/addEventListener|appendChild|createElement/.test(body))) return full;
+      if (TRACKING_INLINE.test(body) || REDIRECT_ONLY.test(body)) return '';
       // Original SlimSoda-style popup quiz is replayed by injectPopupQuizEngine.
       // Keep our engine; drop the competitor IIFE even on Shopify/commerce pages.
       if (/ssqOverlay|#ssqBody|ssq-overlay|var\s+QS\s*=/.test(body) && !/__wasabiPopupQuiz|wasabi-popup-quiz-engine/.test(full)) {
@@ -587,12 +596,6 @@ export function injectInteractivityRescue(
     timed.length > 0 ||
     commerce ||
     (opts.keepScripts !== false && detectDynamicScripts(html).functional);
-
-  // Write messenger bubbles into the DOM before any script strip. Otherwise
-  // the editor shows Lauren's card with an empty chat.
-  if (/var\s+questions\s*=\s*\[/.test(html) && /id=["']chatbox-content["'][^>]*>\s*<\/div>/i.test(html)) {
-    html = healClonedLander(html).html;
-  }
 
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);

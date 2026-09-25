@@ -465,26 +465,9 @@ export function applyMessengerFlow(html: string, flow: MessengerFlow): string {
  * the clone agent, which reads the script and calls applyMessengerFlow.
  */
 function bakeMessengerSteps(html: string): string {
-  if (!html || /id=["']wasabi-mq-css["']/.test(html)) return html;
-  const block = html.match(/<script\b[^>]*>(?:(?!<\/script>)[\s\S])*?\bvar\s+questions\s*=\s*(\[[\s\S]*?\])\s*;(?:(?!<\/script>)[\s\S])*?<\/script>/i);
-  if (!block) return html;
-  let questions: MessengerFlow['questions'] = [];
-  try { questions = JSON.parse(block[1]); } catch { return html; }
-  const initBody = block[0].match(/function\s+init\s*\(\)\s*\{([\s\S]*?)\n\t\t\}/)?.[1] || block[0];
-  const intros: string[] = [];
-  const introRe = /addBotMessage\(\s*(['"])([\s\S]*?)\1\s*\)/g;
-  let im: RegExpExecArray | null;
-  while ((im = introRe.exec(initBody))) intros.push(im[2]);
-  const containerId = html.match(/id=["']([^"']+)["'][^>]*>\s*<\/div>/i)?.[1] || 'chatbox-content';
-  const out = applyMessengerFlow(html, {
-    containerId: /chatbox-content/.test(html) ? 'chatbox-content' : containerId,
-    intros,
-    startLabel: block[0].match(/addYesButton\(\s*(['"])([\s\S]*?)\1/)?.[2] || 'Continue',
-    questions,
-    resultHref: block[0].match(/\bAFF_URL\s*=\s*(['"])([^'"]+)\1/)?.[2],
-    resultCta: html.match(/id=["']mobile-sticky-bar["'][^>]*>([^<]+)/i)?.[1]?.trim(),
-  });
-  return out === html ? html : out.replace(block[0], '');
+  // Leave the page script in place. It is the quiz, the progress bar
+  // and the eligibility check. A static copy drops that flow.
+  return html;
 }
 
 export function healClonedLander(html: string): HealResult {
