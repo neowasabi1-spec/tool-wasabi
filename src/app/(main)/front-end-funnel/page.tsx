@@ -24,7 +24,7 @@ import { injectInteractivityRescue, releaseHeldScripts } from '@/lib/spa-rescue'
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 import { injectLiveCommentClock } from '@/lib/live-comment-clock';
 import { extractTimedComments } from '@/lib/bake-dynamic-comments';
-import { healClonedLander, readHealStamp, bakeCheckoutChampSnapshot } from '@/lib/lander-heal';
+import { healClonedLander, readHealStamp, bakeCheckoutChampSnapshot, exportMessengerHtml } from '@/lib/lander-heal';
 import { preservePageShellLayout } from '@/lib/page-shell-layout';
 import { snapshotFromUploadFiles, remainingRelativeStylesheets } from '@/lib/html-bundle';
 import { summarizeSwipeMap, textsFromSwipeMap, type SwipeAssetMap } from '@/lib/swipe-asset-map';
@@ -2616,7 +2616,7 @@ export default function FrontEndFunnel() {
       return;
     }
     const nextUrl = getNextStepUrl(pageId);
-    const finalHtml = injectCtaLinks(html, nextUrl);
+    const finalHtml = exportMessengerHtml(injectCtaLinks(html, nextUrl));
     const slug = stepSlugs[pageId] || generateSlug(page.name, funnelPages.indexOf(page));
 
     setPublishingIds(prev => ({ ...prev, [pageId]: platform }));

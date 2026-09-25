@@ -30,7 +30,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts, releaseHeldScripts } from '@/lib/spa-rescue';
-import { healClonedLander, paceMessengerIntros } from '@/lib/lander-heal';
+import { healClonedLander, paceMessengerIntros, exportMessengerHtml } from '@/lib/lander-heal';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -3358,7 +3358,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           setIsEditing(false);
           break;
         case 'html-updated': {
-          const clean = stripEditorScript(e.data.data);
+          const clean = exportMessengerHtml(stripEditorScript(e.data.data));
           if (editorViewport === 'mobile' && mobileHtml) {
             setMobileHtml(clean);
           } else {
@@ -3369,9 +3369,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         }
         case 'clean-html':
           if (editorViewport === 'mobile' && mobileHtml) {
-            setMobileHtml(stripEditorScript(e.data.data));
+            setMobileHtml(exportMessengerHtml(stripEditorScript(e.data.data)));
           } else {
-            setCurrentHtml(stripEditorScript(e.data.data));
+            setCurrentHtml(exportMessengerHtml(stripEditorScript(e.data.data)));
           }
           break;
         case 'sections-list':
@@ -3604,7 +3604,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   };
 
   const handleDownload = () => {
-    const blob = new Blob([currentHtml], { type: 'text/html' });
+    const blob = new Blob([exportMessengerHtml(currentHtml)], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -3616,7 +3616,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   };
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(currentHtml);
+    navigator.clipboard.writeText(exportMessengerHtml(currentHtml));
   };
 
   /* ── Tracking snippet inject ──

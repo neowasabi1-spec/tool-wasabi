@@ -488,6 +488,45 @@ const MQ_LOADING = `<section id="quiz-loading" class="quiz-panel mq-q"><div clas
 const MQ_RESULTS = `<section id="quiz-results" class="quiz-panel quiz-results mq-q"><div class="quiz-results-center"><span class="quiz-results-badge">&#10003; YOU QUALIFY!</span></div><h2>Your Online Concealed Carry Permit Is Ready!</h2><p>Based on your answers, you qualify for a concealed carry permit.</p><div class="quiz-next-step-card"><div class="quiz-next-step-label">Next steps:</div><div class="quiz-next-step-title">Complete Your Online Application</div><ol><li>Click through to the next page.</li><li>Submit your information through the official online portal.</li><li>Receive your permit and start carrying legally in all 50 states.</li></ol></div><a class="quiz-results-cta" href="https://apply.securemyconcealedpermit.com/click">Continue to Claim Your Permit »</a></section>`;
 const MQ_PACE_SCRIPT = `<script id="wasabi-mq-pace">(function(){var box=document.getElementById('chatbox-content');if(!box||box.getAttribute('data-mq-pace'))return;box.setAttribute('data-mq-pace','1');var intros=[],kids=box.children,i;for(i=0;i<kids.length;i++){var el=kids[i];if(el.classList&&el.classList.contains('msg-row')&&el.classList.contains('bot')&&!el.classList.contains('mq-q'))intros.push(el);}var btn=box.querySelector('label.yes-btn');var n=0;function greet(){if(n<intros.length){intros[n].classList.add('mq-on');n++;setTimeout(greet,900);return;}if(btn)btn.classList.add('mq-on');}setTimeout(greet,500);var total=box.querySelectorAll('.msg-row.mq-q').length||1;function showStep(idx){var nodes=box.querySelectorAll('.mq-show-'+idx);for(var k=0;k<nodes.length;k++)nodes[k].classList.add('mq-on');var area=document.getElementById('progress-area');if(area)area.style.display='block';var pct=Math.round((idx/total)*100);var fill=document.getElementById('progress-fill');var pctEl=document.getElementById('progress-pct');var label=document.getElementById('progress-label');if(fill)fill.style.width=pct+'%';if(pctEl)pctEl.textContent=pct+'%';if(label)label.textContent='Question '+(idx+1)+' of '+total;}function runCheck(){var fill=document.getElementById('progress-fill');var pctEl=document.getElementById('progress-pct');var label=document.getElementById('progress-label');if(fill)fill.style.width='100%';if(pctEl)pctEl.textContent='100%';if(label)label.textContent='Questions Complete!';var loading=document.getElementById('quiz-loading');var results=document.getElementById('quiz-results');if(loading)loading.classList.add('mq-on');var stats=loading?loading.querySelectorAll('.quiz-loading-stat'):[];var times=[600,1300,2000,2800];for(var s=0;s<stats.length;s++){(function(el,t){setTimeout(function(){el.classList.add('visible');},t);})(stats[s],times[s]||600);}var bar=document.getElementById('quiz-loading-bar');var lp=document.getElementById('quiz-loading-pct');var start=Date.now();var tick=setInterval(function(){var p=Math.min(100,Math.round(((Date.now()-start)/3600)*100));if(bar)bar.style.width=p+'%';if(lp)lp.textContent=String(p);if(p>=100){clearInterval(tick);setTimeout(function(){if(loading)loading.classList.remove('mq-on');if(results)results.classList.add('mq-on');},250);}},60);}box.addEventListener('click',function(e){var t=e.target;if(!t||!t.closest)return;if(t.closest('label.yes-btn')){e.preventDefault();showStep(0);return;}var opt=t.closest('label.option-btn');if(!opt)return;e.preventDefault();var m=String(opt.className).match(/mq-show-(\\d+)/);var idx=m?parseInt(m[1],10):0;if(box.querySelector('.msg-row.mq-show-'+(idx+1)))showStep(idx+1);else runCheck();});})();</script>`;
 
+/**
+ * Saved/exported HTML has no editor script. CheckoutChamp also drops inline JS.
+ * CSS reveals each greeting, then each answer, then the eligibility card.
+ */
+export function exportMessengerHtml(html: string): string {
+  if (!html || !/id=["']wasabi-mq-css["']/.test(html)) return html;
+  let out = html.replace(/<style\b[^>]*\bid=["']wasabi-mq-export["'][^>]*>[\s\S]*?<\/style>/gi, '');
+  const intros = out.match(/class="msg-row bot"/g)?.length || 3;
+  const questions = out.match(/class="msg-row bot mq-q/g)?.length || 3;
+  const btnDelay = (0.45 + intros * 0.9).toFixed(2);
+  const steps: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const prev = [`#chatbox-content #mq-a${i}-0:checked~.mq-show-${i + 1}`, `#chatbox-content #mq-a${i}-1:checked~.mq-show-${i + 1}`];
+    steps.push(`${prev.join(',')}{display:flex!important;opacity:1!important}`);
+    steps.push(`#chatbox-content #mq-a${i}-0:checked~label.option-btn.mq-show-${i + 1},#chatbox-content #mq-a${i}-1:checked~label.option-btn.mq-show-${i + 1}{display:block!important}`);
+    if (i === questions - 1) {
+      steps.push(`#chatbox-content #mq-a${i}-0:checked~#quiz-loading,#chatbox-content #mq-a${i}-1:checked~#quiz-loading,#chatbox-content #mq-a${i}-0:checked~#quiz-results,#chatbox-content #mq-a${i}-1:checked~#quiz-results{display:block!important;width:auto!important}`);
+    }
+  }
+  const css =
+    `@keyframes mqFade{from{opacity:0}to{opacity:1}}` +
+    `#chatbox-content>.msg-row.bot:not(.mq-q){display:flex!important;opacity:0;animation:mqFade .35s forwards}` +
+    `#chatbox-content>.msg-row.bot:not(.mq-q):nth-child(1){animation-delay:.4s}` +
+    `#chatbox-content>.msg-row.bot:not(.mq-q):nth-child(2){animation-delay:1.3s}` +
+    `#chatbox-content>.msg-row.bot:not(.mq-q):nth-child(3){animation-delay:2.2s}` +
+    `#chatbox-content>.msg-row.bot:not(.mq-q):nth-child(4){animation-delay:3.1s}` +
+    `#chatbox-content>label.yes-btn{display:inline-block!important;opacity:0;animation:mqFade .35s ${btnDelay}s forwards}` +
+    `#chatbox-content .mq-q{display:none!important}` +
+    `#chatbox-content #mq-go:checked~label.yes-btn{display:none!important;animation:none}` +
+    `#chatbox-content #mq-go:checked~.mq-show-0{display:flex!important;opacity:1!important}` +
+    `#chatbox-content #mq-go:checked~label.option-btn.mq-show-0{display:block!important}` +
+    `body:has(#mq-go:checked) #progress-area{display:block!important}` +
+    steps.join('');
+  const tag = `<style id="wasabi-mq-export">${css}</style>`;
+  if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, `${tag}</body>`);
+  else out += tag;
+  return out;
+}
+
 /** Intros one at a time, then the permit bar and the eligibility check after the answers. */
 export function paceMessengerIntros(html: string): string {
   if (!html || !/id=["']wasabi-mq-css["']/.test(html)) return html;
