@@ -404,110 +404,13 @@ export function bakeCheckoutChampSnapshot(html: string): string {
   return out;
 }
 
-/** Messenger whose bubbles and questions exist only inside an inline script. */
-export function isInlineMessengerQuiz(html: string): boolean {
-  if (!html || /wasabi-inline-messenger/.test(html)) return false;
-  if (!/id=["']chatbox-content["']/i.test(html)) return false;
-  return /var\s+questions\s*=\s*\[/.test(html) && /getElementById\(\s*['"]chatbox-content['"]\s*\)/.test(html);
-}
-
-function escText(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/**
- * The chat node is empty until inline JS runs. Clone strips that script, so
- * the eye shows a header and nothing else, and text mapping never sees the
- * questions. Write the transcript into the DOM and replay it with our engine.
- */
-export function bakeInlineMessengerQuiz(html: string): string {
-  if (!isInlineMessengerQuiz(html)) return html;
-  const block = html.match(/var\s+questions\s*=\s*(\[[\s\S]*?\])\s*;/);
-  let questions: Array<{ label?: string; question?: string; options?: string[] }> = [];
-  try {
-    questions = block ? JSON.parse(block[1]) : [];
-  } catch {
-    questions = [];
-  }
-  questions = questions.filter((q) => q && (q.question || q.label));
-  if (!questions.length) return html;
-
-  const initBody = html.match(/function\s+init\s*\(\)\s*\{([\s\S]*?)\n\t\t\}/)?.[1] || '';
-  const intros: string[] = [];
-  const introRe = /addBotMessage\(\s*(['"])([\s\S]*?)\1\s*\)/g;
-  let im: RegExpExecArray | null;
-  while ((im = introRe.exec(initBody))) intros.push(im[2]);
-  const yesLabel = html.match(/addYesButton\(\s*(['"])([\s\S]*?)\1/)?.[2] || 'Yes';
-  const aff =
-    html.match(/\bAFF_URL\s*=\s*(['"])([^'"]+)\1/)?.[2] ||
-    html.match(/id=["']mobile-sticky-bar["'][^>]*href=["']([^"']+)/i)?.[1] ||
-    '#';
-  const avatar =
-    html.match(/<img\b[^>]*class=["'][^"']*kate-avatar[^"']*["'][^>]*src=["']([^"']+)/i)?.[1] ||
-    html.match(/<img\b[^>]*src=["']([^"']+)["'][^>]*class=["'][^"']*kate-avatar/i)?.[1] ||
-    '';
-  const cta =
-    html.match(/id=["']mobile-sticky-bar["'][^>]*>([^<]+)/i)?.[1]?.trim() || 'Continue';
-
-  const bot = (inner: string) =>
-    `<div class="msg-row bot">${avatar ? `<img class="msg-mini-avatar" src="${escText(avatar)}" alt="">` : ''}<div class="bubble">${inner}</div></div>`;
-  const introHtml = intros.map((t) => bot(escText(t))).join('');
-  const qHtml = questions
-    .map((q, i) => {
-      const opts = (q.options || ['Yes', 'No']).map((o) => String(o).replace(/\|/g, '/')).join('|');
-      return `<div class="msg-row bot mq-q" data-mq="${i}" data-opts="${escText(opts)}" hidden>${
-        avatar ? `<img class="msg-mini-avatar" src="${escText(avatar)}" alt="">` : ''
-      }<div class="bubble">${q.label ? `<div>${escText(String(q.label))}</div>` : ''}<strong>${escText(String(q.question || ''))}</strong></div></div>`;
-    })
-    .join('');
-  const results =
-    `<div id="mq-results" class="quiz-panel quiz-results" hidden>` +
-    `<h2>You qualify</h2>` +
-    `<a class="quiz-results-cta" href="${escText(aff)}">${escText(cta)}</a></div>`;
-  const inner =
-    introHtml +
-    `<button type="button" class="yes-btn" id="mq-yes">${escText(yesLabel)}</button>` +
-    qHtml +
-    results;
-
-  let out = html.replace(
-    /<div\s+id=["']chatbox-content["'][^>]*>\s*<\/div>/i,
-    `<div id="chatbox-content">${inner}</div>`,
-  );
-  out = out.replace(
-    /<script\b[^>]*>(?:(?!<\/script>)[\s\S])*?\bvar\s+questions\s*=\s*\[(?:(?!<\/script>)[\s\S])*?<\/script>/i,
-    '',
-  );
-  const engine =
-    `<script id="wasabi-inline-messenger">(function(){` +
-    `if(window.__wasabiInlineMessenger)return;window.__wasabiInlineMessenger=1;` +
-    `var root=document.getElementById('chatbox-content');if(!root)return;` +
-    `var yes=document.getElementById('mq-yes');` +
-    `var qs=[].slice.call(root.querySelectorAll('[data-mq]'));` +
-    `function ask(i){var q=qs[i];if(!q){var r=document.getElementById('mq-results');if(r)r.hidden=false;var bar=document.getElementById('mobile-sticky-bar');if(bar)bar.classList.add('force-show');return;}` +
-    `q.hidden=false;var opts=document.createElement('div');opts.className='options-block';` +
-    `String(q.getAttribute('data-opts')||'Yes|No').split('|').forEach(function(label){` +
-    `var b=document.createElement('button');b.type='button';b.className='option-btn'+(label==='Yes'?' answer-yes':label==='No'?' answer-no':'');b.textContent=label;` +
-    `b.addEventListener('click',function(){opts.remove();var row=document.createElement('div');row.className='msg-row user';var bub=document.createElement('div');bub.className='bubble';bub.textContent=label;row.appendChild(bub);q.insertAdjacentElement('afterend',row);ask(i+1);});` +
-    `opts.appendChild(b);});q.insertAdjacentElement('afterend',opts);}` +
-    `if(yes)yes.addEventListener('click',function(){yes.hidden=true;ask(0);});` +
-    `})();</script>`;
-  out = /<\/body>/i.test(out) ? out.replace(/<\/body>/i, `${engine}</body>`) : out + engine;
-  return out;
-}
-
 export function healClonedLander(html: string): HealResult {
   if (!html) return { html, applied: [], remaining: [] };
-  let out = html;
-  const messenger = isInlineMessengerQuiz(out);
-  if (messenger) out = bakeInlineMessengerQuiz(out);
-  const beforeCc = out;
-  out = bakeCheckoutChampSnapshot(out);
-  const baked = out !== beforeCc;
+  let out = bakeCheckoutChampSnapshot(html);
+  const baked = out !== html;
   const beforeVturb = out;
   out = repairVturbPlayer(out);
   const applied: string[] = [];
-  if (messenger) applied.push('inline-messenger');
   if (baked) applied.push('cc-snapshot');
   if (out !== beforeVturb) applied.push('vturb-anchor');
 

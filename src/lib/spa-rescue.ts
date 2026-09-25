@@ -15,7 +15,7 @@
 import { neutralizeRocketLoader } from './neutralize-rocket-loader';
 import { isChatQuizHtml } from './chat-quiz-engine';
 import { injectPopupQuizEngine, isPopupQuizHtml } from './popup-quiz-engine';
-import { bakeInlineMessengerQuiz, healClonedLander, isInlineMessengerQuiz } from './lander-heal';
+import { healClonedLander } from './lander-heal';
 import { detectDynamicScripts, detectCommerceMarkers } from './detect-dynamic-scripts';
 import { injectLiveCommentClock } from './live-comment-clock';
 import { extractTimedComments } from './bake-dynamic-comments';
@@ -588,13 +588,6 @@ export function injectInteractivityRescue(
     commerce ||
     (opts.keepScripts !== false && detectDynamicScripts(html).functional);
 
-  if (isInlineMessengerQuiz(html)) {
-    html = bakeInlineMessengerQuiz(html);
-    html = html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (block, attrs: string) =>
-      /\bid\s*=\s*["']wasabi-inline-messenger["']/i.test(attrs) ? block : '',
-    );
-    return healClonedLander(html).html;
-  }
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
     return healClonedLander(html).html;
