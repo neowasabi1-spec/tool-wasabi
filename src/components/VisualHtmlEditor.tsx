@@ -29,7 +29,7 @@ import {
   normalizeCheckoutMode,
   type CheckoutMode,
 } from '@/lib/checkout-modes';
-import { stripNonCarouselScripts, resetScriptBuiltSlot, deferEditorScripts } from '@/lib/spa-rescue';
+import { stripNonCarouselScripts, resetScriptBuiltSlot, releaseHeldScripts } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -1730,7 +1730,7 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
 }
 
 function prepareEditorHtml(html: string, sourceUrl?: string): string {
-  let clean = resetScriptBuiltSlot(html);
+  let clean = releaseHeldScripts(resetScriptBuiltSlot(html));
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
 
@@ -2129,7 +2129,6 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
     inject = popupQuizEditorRevealCss() + inject;
   }
-  clean = deferEditorScripts(clean);
   if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
   if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
   return clean + inject;

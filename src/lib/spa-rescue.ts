@@ -500,19 +500,10 @@ export function resetScriptBuiltSlot(html: string): string {
   }
 }
 
-/** Editor must not run the page script, or save freezes a random quiz step. */
-export function deferEditorScripts(html: string): string {
-  if (!html) return html;
-  return html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs: string, body: string) => {
-    if (/data-editor|data-fallback|wasabi-/i.test(attrs)) return full;
-    if (/\bsrc\s*=/i.test(attrs)) return full;
-    if (/text\/wasabi-hold/i.test(attrs)) return full;
-    if (!/getElementById|querySelector|appendChild|createElement|addEventListener/.test(body)) return full;
-    if (/\btype\s*=\s*["'][^"']*["']/i.test(attrs)) {
-      return `<script${attrs.replace(/\btype\s*=\s*["'][^"']*["']/i, 'type="text/wasabi-hold"')}>${body}</script>`;
-    }
-    return `<script type="text/wasabi-hold"${attrs}>${body}</script>`;
-  });
+/** Turn held page scripts back into real scripts so preview can run them. */
+export function releaseHeldScripts(html: string): string {
+  if (!html || !html.includes('wasabi-hold')) return html;
+  return html.replace(/\s+type=["']text\/wasabi-hold["']/gi, '');
 }
 
 function stripAllScripts(html: string): string {
