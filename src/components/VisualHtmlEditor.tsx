@@ -2174,6 +2174,26 @@ function rgbToHex(rgb: string): string {
   return '#' + match.slice(0, 3).map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
 }
 
+function colorAlpha(color: string | undefined): number {
+  if (!color || color === 'transparent') return 0;
+  const m = color.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+(?:\s*,\s*([\d.]+))?\s*\)/i);
+  if (!m || m[1] == null) return 1;
+  const a = parseFloat(m[1]);
+  return Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : 1;
+}
+
+function colorWithAlpha(color: string, alpha: number): string {
+  const hex = !color || color === 'transparent' ? '#000000' : rgbToHex(color);
+  const nums = (hex || '#000000').replace('#', '');
+  const r = parseInt(nums.slice(0, 2), 16) || 0;
+  const g = parseInt(nums.slice(2, 4), 16) || 0;
+  const b = parseInt(nums.slice(4, 6), 16) || 0;
+  const a = Math.max(0, Math.min(1, alpha));
+  if (a >= 0.995) return `#${nums.slice(0, 6)}`;
+  if (a <= 0.004) return 'transparent';
+  return `rgba(${r},${g},${b},${a.toFixed(2)})`;
+}
+
 function backgroundImageOpacity(bg: string | undefined): number {
   if (!bg) return 1;
   const m = bg.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/i);
@@ -6321,12 +6341,26 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 <div className="p-3">
                   <PropLabel icon={Palette}>Background</PropLabel>
                   <div className="flex items-center gap-2 mt-1">
-                    <input type="color" value={rgbToHex(el.styles.backgroundColor)}
+                    <input type="color" value={rgbToHex(el.styles.backgroundColor) === 'transparent' ? '#000000' : rgbToHex(el.styles.backgroundColor)}
                       className="w-6 h-6 rounded cursor-pointer border border-slate-200"
-                      onChange={(e) => setStyle('backgroundColor', e.target.value)} />
+                      onChange={(e) => setStyle('backgroundColor', colorWithAlpha(e.target.value, colorAlpha(el.styles.backgroundColor)))} />
                     <span className="text-[10px] font-mono text-slate-500">{rgbToHex(el.styles.backgroundColor)}</span>
                     <button onClick={() => setStyle('backgroundColor', 'transparent')}
                       className="ml-auto text-[10px] text-slate-400 hover:text-red-500">Reset</button>
+                  </div>
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] text-slate-500">Trasparenza</label>
+                      <span className="text-[10px] font-mono text-slate-400">{Math.round((1 - colorAlpha(el.styles.backgroundColor)) * 100)}%</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round((1 - colorAlpha(el.styles.backgroundColor)) * 100)}
+                      className="w-full accent-blue-600"
+                      onChange={(e) => setStyle('backgroundColor', colorWithAlpha(el.styles.backgroundColor, 1 - Number(e.target.value) / 100))}
+                    />
                   </div>
 
                   {/* Gradient editor (linear / radial) — drives `background-image`
