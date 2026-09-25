@@ -29,7 +29,7 @@ import {
   normalizeCheckoutMode,
   type CheckoutMode,
 } from '@/lib/checkout-modes';
-import { stripNonCarouselScripts, resetScriptBuiltSlot, releaseHeldScripts } from '@/lib/spa-rescue';
+import { stripNonCarouselScripts, releaseHeldScripts } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -720,22 +720,13 @@ const EDITOR_SCRIPT = `
     plusBtn.style.display='none';var delVis=delBtn.style.opacity;delBtn.style.opacity='0';
     delBtn.style.display='none';plusBtn.style.display='none';
     var rzVis=[];for(var _rh=0;_rh<rzHandles.length;_rh++){rzVis.push(rzHandles[_rh].style.display);rzHandles[_rh].style.display='none';}
-    var chat=document.getElementById('chatbox-content');
-    var chatStash=null;
     var held=[];
-    var builds=false;
     var ss=document.querySelectorAll('script');
     for(var si=0;si<ss.length;si++){
       var sc=ss[si];
       if((sc.getAttribute('type')||'')==='text/wasabi-hold'){held.push(sc);sc.removeAttribute('type');}
-      var st=sc.textContent||'';
-      if(/chatbox-content/.test(st)&&/addBotMessage|var\s+questions\s*=/.test(st))builds=true;
     }
-    if(chat&&builds){chatStash=chat.innerHTML;chat.innerHTML='';}
-    var loading=document.getElementById('quiz-loading');if(loading)loading.remove();
-    var results=document.getElementById('quiz-results');if(results)results.remove();
     var h='<!DOCTYPE html>'+document.documentElement.outerHTML;
-    if(chatStash!==null&&chat)chat.innerHTML=chatStash;
     for(var hi=0;hi<held.length;hi++)held[hi].setAttribute('type','text/wasabi-hold');
     delBtn.style.display='';plusBtn.style.display='';for(var _rh2=0;_rh2<rzHandles.length;_rh2++){rzHandles[_rh2].style.display=rzVis[_rh2];}
     if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;positionPlus();positionResize(sel);}
@@ -1730,7 +1721,7 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
 }
 
 function prepareEditorHtml(html: string, sourceUrl?: string): string {
-  let clean = releaseHeldScripts(resetScriptBuiltSlot(html));
+  let clean = releaseHeldScripts(html);
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
 

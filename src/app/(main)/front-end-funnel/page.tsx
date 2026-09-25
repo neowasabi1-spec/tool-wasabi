@@ -20,7 +20,7 @@ import {
   normalizeCheckoutMode,
   type CheckoutMode,
 } from '@/lib/checkout-modes';
-import { injectInteractivityRescue, resetScriptBuiltSlot, releaseHeldScripts } from '@/lib/spa-rescue';
+import { injectInteractivityRescue, releaseHeldScripts } from '@/lib/spa-rescue';
 import { detectDynamicScripts } from '@/lib/detect-dynamic-scripts';
 import { injectLiveCommentClock } from '@/lib/live-comment-clock';
 import { extractTimedComments } from '@/lib/bake-dynamic-comments';
@@ -375,7 +375,7 @@ function clonedPreviewKeepScripts(html: string): boolean {
 }
 
 function runClonedPreviewPipeline(rawHtml: string): string {
-  const healed = healClonedLander(resetScriptBuiltSlot(releaseHeldScripts(rawHtml))).html;
+  const healed = healClonedLander(releaseHeldScripts(rawHtml)).html;
   const timed = extractTimedComments(healed);
   const keepLive = clonedPreviewKeepScripts(healed) || timed.length > 0;
   let html = prepareClonedHtmlForPreview(healed, { keepScripts: keepLive });
