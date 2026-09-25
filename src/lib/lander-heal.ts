@@ -474,7 +474,10 @@ export function bakeInlineMessengerQuiz(html: string): string {
     /<div\s+id=["']chatbox-content["'][^>]*>\s*<\/div>/i,
     `<div id="chatbox-content">${inner}</div>`,
   );
-  out = out.replace(/<script\b[^>]*>[\s\S]*?var\s+questions\s*=\s*\[[\s\S]*?<\/script>/i, '');
+  out = out.replace(
+    /<script\b[^>]*>(?:(?!<\/script>)[\s\S])*?\bvar\s+questions\s*=\s*\[(?:(?!<\/script>)[\s\S])*?<\/script>/i,
+    '',
+  );
   const engine =
     `<script id="wasabi-inline-messenger">(function(){` +
     `if(window.__wasabiInlineMessenger)return;window.__wasabiInlineMessenger=1;` +
