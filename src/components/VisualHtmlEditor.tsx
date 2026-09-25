@@ -133,7 +133,7 @@ interface ElementInfo {
   alt: string;
   childImg?: { src: string; alt: string } | null;
   childImgs?: { src: string; alt: string }[] | null;
-  childBg?: { src: string } | null;
+  childBg?: { src: string; opacity?: number } | null;
   isTextNode: boolean;
   hasChildren: boolean;
   childCount: number;
@@ -396,7 +396,7 @@ const EDITOR_SCRIPT = `
       childBg:(function(){
         try{
           var cand=[el].concat(Array.prototype.slice.call(el.querySelectorAll('*')));
-          var best=null,bestSrc='',ba=-1;
+          var best=null,bestSrc='',ba=-1,bestOpacity=1;
           for(var i=0;i<cand.length;i++){
             var c=cand[i];var bi='';try{bi=getComputedStyle(c).backgroundImage||'';}catch(e){continue;}
             if(!bi||bi==='none'||bi.indexOf('url(')<0)continue;
@@ -404,9 +404,13 @@ const EDITOR_SCRIPT = `
             /* Salta gradienti/data-uri minuscoli e spacer */
             var u=mm[1];if(u.indexOf('data:image/svg')===0)continue;
             var rr=c.getBoundingClientRect();var ar=rr.width*rr.height;
-            if(ar>ba){ba=ar;best=c;bestSrc=u;}
+            if(ar>ba){ba=ar;best=c;bestSrc=u;bestOpacity=(function(s){
+              var om=s.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/i);
+              if(!om)return 1;var ov=parseFloat(om[1]);if(!isFinite(ov))return 1;
+              return Math.max(0,Math.min(1,1-ov));
+            })(bi);}
           }
-          if(best)return{src:bestSrc};
+          if(best)return{src:bestSrc,opacity:bestOpacity};
         }catch(e){}
         return null;
       })(),
@@ -1299,7 +1303,9 @@ const EDITOR_SCRIPT = `
             var _br=_bc[_bi].getBoundingClientRect();var _bar=_br.width*_br.height;
             if(_bar>_bba){_bba=_bar;_bgEl=_bc[_bi];}}
         }catch(e){}
-        if(_bgEl){_bgEl.style.setProperty('background-image','url("'+m.value+'")','important');
+        if(_bgEl){var _next=String(m.value||'');
+          if(_next&&_next.indexOf('url(')<0&&_next.indexOf('gradient')<0)_next='url("'+_next.replace(/"/g,'%22')+'")';
+          _bgEl.style.setProperty('background-image',_next||'none','important');
           /* assicura che lo sfondo sia visibile (alcune sezioni hanno
              background-size:0 o image:none inline che vince) */
           if(!_bgEl.style.backgroundSize)_bgEl.style.backgroundSize='cover';
@@ -2166,6 +2172,29 @@ function rgbToHex(rgb: string): string {
   const match = rgb.match(/\d+/g);
   if (!match || match.length < 3) return '#000000';
   return '#' + match.slice(0, 3).map(n => parseInt(n).toString(16).padStart(2, '0')).join('');
+}
+
+function backgroundImageOpacity(bg: string | undefined): number {
+  if (!bg) return 1;
+  const m = bg.match(/rgba?\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*([\d.]+)\s*\)/i);
+  if (!m) return 1;
+  const overlay = parseFloat(m[1]);
+  if (!Number.isFinite(overlay)) return 1;
+  return Math.max(0, Math.min(1, 1 - overlay));
+}
+
+function backgroundWithOpacity(url: string, opacity: number, fadeColor: string): string {
+  if (!url) return 'none';
+  const safe = url.replace(/"/g, '%22');
+  const o = Math.max(0, Math.min(1, opacity));
+  if (o >= 0.995) return `url("${safe}")`;
+  const hex = !fadeColor || fadeColor === 'transparent' ? '#ffffff' : rgbToHex(fadeColor);
+  const nums = hex.replace('#', '');
+  const r = parseInt(nums.slice(0, 2), 16) || 255;
+  const g = parseInt(nums.slice(2, 4), 16) || 255;
+  const b = parseInt(nums.slice(4, 6), 16) || 255;
+  const a = (1 - o).toFixed(2);
+  return `linear-gradient(rgba(${r},${g},${b},${a}), rgba(${r},${g},${b},${a})), url("${safe}")`;
 }
 
 // Estrae il numero (px) da un valore di computed style tipo "12px" / "0px" /
@@ -6327,10 +6356,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     // sull'elemento selezionato.
                     const useChild = !ownBg && !!childBgSrc;
                     const currentBg = ownBg || childBgSrc;
-                    const applyBg = (v: string) => {
-                      if (useChild) setChildBgImage(v);
-                      else setStyle('backgroundImage', v ? `url("${v}")` : 'none');
+                    const imageOpacity = useChild
+                      ? (el.childBg?.opacity ?? 1)
+                      : backgroundImageOpacity(el.styles.backgroundImage);
+                    const transparency = Math.round((1 - imageOpacity) * 100);
+                    const paintBg = (url: string, opacity: number) => {
+                      const next = backgroundWithOpacity(url, opacity, el.styles.backgroundColor);
+                      if (useChild) setChildBgImage(next === 'none' ? '' : next);
+                      else setStyle('backgroundImage', next);
                     };
+                    const applyBg = (v: string) => paintBg(v, imageOpacity);
                     return (
                       <div className="mt-2.5">
                         <label className="text-[10px] text-slate-500 mb-0.5 block">
@@ -6368,6 +6403,22 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                           {uploading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
                           {uploading ? 'Uploading...' : (currentBg ? 'Upload/replace background' : 'Upload background image')}
                         </button>
+                        {currentBg && (
+                          <div className="mt-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-[10px] text-slate-500">Trasparenza</label>
+                              <span className="text-[10px] font-mono text-slate-400">{transparency}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={100}
+                              value={transparency}
+                              className="w-full accent-blue-600"
+                              onChange={(e) => paintBg(currentBg, 1 - Number(e.target.value) / 100)}
+                            />
+                          </div>
+                        )}
                         {currentBg && (
                           <button onClick={() => applyBg('')}
                             className="mt-1 w-full text-[10px] text-slate-400 hover:text-red-500">Remove background</button>
