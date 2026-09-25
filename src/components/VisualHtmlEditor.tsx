@@ -29,7 +29,7 @@ import {
   normalizeCheckoutMode,
   type CheckoutMode,
 } from '@/lib/checkout-modes';
-import { stripNonCarouselScripts, releaseHeldScripts } from '@/lib/spa-rescue';
+import { stripNonCarouselScripts, releaseHeldScripts, deferEditorScripts } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -893,6 +893,7 @@ const EDITOR_SCRIPT = `
     try{return getComputedStyle(p).display!=='none';}catch(e){return true;}
   }
   function _toggleFaq(target){
+    if(target&&target.closest&&target.closest('#chatbox-content,.chat-card,.quiz-panel'))return null;
     var trigger=_faqTriggerFor(target);
     if(!trigger)return null;
     var item=_findFaqItem(trigger)||trigger.parentElement;
@@ -2120,6 +2121,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
     if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
     inject = popupQuizEditorRevealCss() + inject;
   }
+  clean = deferEditorScripts(clean);
   if (clean.includes('</body>')) return clean.replace('</body>', `${inject}</body>`);
   if (clean.includes('</html>')) return clean.replace('</html>', `${inject}</html>`);
   return clean + inject;

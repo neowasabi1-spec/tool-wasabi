@@ -506,6 +506,21 @@ export function releaseHeldScripts(html: string): string {
   return html.replace(/\s+type=["']text\/wasabi-hold["']/gi, '');
 }
 
+/** Keep the page script in the HTML, but don't run it inside the editor. */
+export function deferEditorScripts(html: string): string {
+  if (!html) return html;
+  return html.replace(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi, (full, attrs: string, body: string) => {
+    if (/data-editor|data-fallback|wasabi-/i.test(attrs)) return full;
+    if (/\bsrc\s*=/i.test(attrs)) return full;
+    if (/text\/wasabi-hold/i.test(attrs)) return full;
+    if (!/getElementById|querySelector|appendChild|createElement|addEventListener/.test(body)) return full;
+    if (/\btype\s*=\s*["'][^"']*["']/i.test(attrs)) {
+      return `<script${attrs.replace(/\btype\s*=\s*["'][^"']*["']/i, 'type="text/wasabi-hold"')}>${body}</script>`;
+    }
+    return `<script type="text/wasabi-hold"${attrs}>${body}</script>`;
+  });
+}
+
 function stripAllScripts(html: string): string {
   let out = html;
   out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
