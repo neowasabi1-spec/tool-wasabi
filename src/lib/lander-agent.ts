@@ -8,7 +8,7 @@
  */
 
 import { getAnthropicKey } from './anthropic-key';
-import { healClonedLander, injectGenericStepEngine, readHealStamp } from './lander-heal';
+import { healClonedLander, injectGenericStepEngine, readHealStamp, applyMessengerFlow, type MessengerFlow } from './lander-heal';
 import { SWIPE_MODEL_DEFAULT } from './swipe-models';
 import {
   buildSwipeAssetMap,
@@ -79,6 +79,7 @@ type AgentJson = {
   interactivity?: string;
   texts?: Array<{ id: number; role?: string }>;
   media?: Array<{ id: number; role?: string }>;
+  flow?: MessengerFlow;
 };
 
 function parseAgentJson(raw: string): AgentJson | null {
@@ -125,6 +126,8 @@ async function labelWithClaude(args: {
   url: string;
   map: SwipeAssetMap;
   snapshot: { mediaType: string; data: string } | null;
+  script?: string;
+  containerId?: string;
 }): Promise<AgentJson | null> {
   const key = getAnthropicKey();
   if (!key) return null;
@@ -152,9 +155,15 @@ Rules:
 - One object per input id you are sure about. Skip junk (legal crumbs, pixels, country pickers).
 - interactivity=generic-step when the page hides steps / quiz panels and needs click-to-reveal.
 - interactivity=chat-quiz only for messenger/chat UIs.
-- Image/video ids refer to the media arrays (images then videos keep their own ids).`;
+- Image/video ids refer to the media arrays (images then videos keep their own ids).
+${args.script ? `
+This landing builds its chat or quiz only inside a script, so after clone the box is empty. Also return:
+"flow":{"containerId":"${args.containerId || ''}","intros":["bubbles shown before the first click"],"startLabel":"the button that starts the questions","questions":[{"label":"","question":"","options":["Yes","No"]}],"resultTitle":"","resultCta":"","resultHref":""}
+intros must NOT contain the questions. Questions stay hidden until that button is clicked.` : ''}`;
 
-  const userText = `Map this landing.\n${JSON.stringify(outline)}`;
+  const userText = args.script
+    ? `Map this landing.\n${JSON.stringify(outline)}\n\nScript that builds the empty box:\n${args.script}`
+    : `Map this landing.\n${JSON.stringify(outline)}`;
   const content: Array<Record<string, unknown>> = [];
   if (args.snapshot) {
     content.push({
@@ -200,11 +209,29 @@ function stampMapMeta(html: string, map: SwipeAssetMap): string {
   return tag + out;
 }
 
+function scriptedEmptySlot(html: string): { id: string; script: string } | null {
+  if (!html || /id=["']wasabi-mq-css["']/.test(html)) return null;
+  const re = /<script\b[^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const body = m[1] || '';
+    if (body.length < 80 || /\bsrc\s*=/.test(m[0])) continue;
+    const id = body.match(/getElementById\(\s*['"]([a-zA-Z0-9_-]+)['"]\s*\)/)?.[1];
+    if (!id) continue;
+    if (!/questions|appendChild|innerHTML|addBotMessage/i.test(body)) continue;
+    const empty = new RegExp(`<div\\s+id=["']${id}["'][^>]*>\\s*<\\/div>`, 'i');
+    if (!empty.test(html)) continue;
+    return { id, script: body.slice(0, 8000) };
+  }
+  return null;
+}
+
 export async function understandLander(html: string, url = ''): Promise<LanderAgentResult> {
   const healed = healClonedLander(html);
   let outHtml = healed.html;
   let map = buildSwipeAssetMap(outHtml);
   const remaining = readHealStamp(outHtml).remaining;
+  const slot = scriptedEmptySlot(outHtml);
   // Screenshot only when the tool is unsure. Labeling runs on every page.
   const vision = needsVision(map, remaining);
 
@@ -212,9 +239,20 @@ export async function understandLander(html: string, url = ''): Promise<LanderAg
   let snapshot: { mediaType: string; data: string } | null = null;
   if (vision && url) snapshot = await fetchPageSnapshot(url);
   try {
-    parsed = await labelWithClaude({ url, map, snapshot });
+    parsed = await labelWithClaude({
+      url,
+      map,
+      snapshot,
+      script: slot?.script,
+      containerId: slot?.id,
+    });
   } catch {
     parsed = null;
+  }
+
+  if (parsed?.flow?.questions?.length && slot) {
+    const next = applyMessengerFlow(outHtml, { ...parsed.flow, containerId: slot.id });
+    if (next !== outHtml) outHtml = next;
   }
 
   if (parsed) {

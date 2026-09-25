@@ -404,13 +404,99 @@ export function bakeCheckoutChampSnapshot(html: string): string {
   return out;
 }
 
+function escMq(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+export type MessengerFlow = {
+  containerId: string;
+  intros?: string[];
+  startLabel?: string;
+  questions: Array<{ label?: string; question?: string; options?: string[] }>;
+  resultTitle?: string;
+  resultCta?: string;
+  resultHref?: string;
+  avatarSrc?: string;
+};
+
+/** Turn a script-built chat into real steps. Later questions stay hidden until the click before them. */
+export function applyMessengerFlow(html: string, flow: MessengerFlow): string {
+  if (!html || /id=["']wasabi-mq-css["']/.test(html)) return html;
+  const id = String(flow.containerId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const questions = (flow.questions || []).filter((q) => q && (q.question || q.label)).slice(0, 12);
+  if (!id || !questions.length) return html;
+  const avatar = flow.avatarSrc || html.match(/<img\b[^>]*class=["'][^"']*(?:avatar|kate-avatar)[^"']*["'][^>]*src=["']([^"']+)/i)?.[1] || '';
+  const bot = (inner: string, extra = '') =>
+    `<div class="msg-row bot${extra}">${avatar ? `<img class="msg-mini-avatar" src="${escMq(avatar)}" alt="">` : ''}<div class="bubble">${inner}</div></div>`;
+  let steps = (flow.intros || []).slice(0, 8).map((t) => bot(escMq(String(t)))).join('');
+  const start = flow.startLabel || 'Continue';
+  steps += `<input type="checkbox" id="mq-go" class="mq-ctl"><label for="mq-go" class="yes-btn">${escMq(start)}</label>`;
+  const rules = [
+    `#${id} .mq-ctl{position:absolute;opacity:0;pointer-events:none;width:0;height:0}`,
+    `#${id} .mq-q{display:none!important}`,
+    `#mq-go:checked~label.yes-btn{display:none!important}`,
+    `#mq-go:checked~.mq-show-0{display:flex!important}`,
+  ];
+  questions.forEach((q, i) => {
+    const opts = q.options?.length ? q.options.slice(0, 6) : ['Yes', 'No'];
+    steps += bot(
+      `${q.label ? `<div>${escMq(String(q.label))}</div>` : ''}<strong>${escMq(String(q.question || q.label || ''))}</strong>`,
+      ` mq-q mq-show-${i}`,
+    );
+    opts.forEach((label, oi) => {
+      const cid = `mq-a${i}-${oi}`;
+      const tone = String(label).toLowerCase() === 'yes' ? ' answer-yes' : String(label).toLowerCase() === 'no' ? ' answer-no' : '';
+      steps += `<input type="radio" class="mq-ctl" name="mq-a${i}" id="${cid}">`;
+      steps += `<label for="${cid}" class="option-btn mq-q mq-show-${i}${tone}">${escMq(String(label))}</label>`;
+      rules.push(`#${cid}:checked~.mq-show-${i + 1}{display:flex!important}`);
+    });
+  });
+  steps += `<div id="mq-results" class="quiz-panel quiz-results mq-q mq-show-${questions.length}"><h2>${escMq(flow.resultTitle || 'You qualify')}</h2><a class="quiz-results-cta" href="${escMq(flow.resultHref || '#')}">${escMq(flow.resultCta || 'Continue')}</a></div>`;
+  const slot = new RegExp(`<div\\s+id=["']${id}["'][^>]*>\\s*<\\/div>`, 'i');
+  if (!slot.test(html)) return html;
+  let out = html.replace(slot, `<div id="${id}">${steps}</div>`);
+  const style = `<style id="wasabi-mq-css">${rules.join('')}</style>`;
+  out = /<\/head>/i.test(out) ? out.replace(/<\/head>/i, `${style}</head>`) : style + out;
+  return out;
+}
+
+/**
+ * Known shape (questions array + addBotMessage). Anything else is left for
+ * the clone agent, which reads the script and calls applyMessengerFlow.
+ */
+function bakeMessengerSteps(html: string): string {
+  if (!html || /id=["']wasabi-mq-css["']/.test(html)) return html;
+  const block = html.match(/<script\b[^>]*>(?:(?!<\/script>)[\s\S])*?\bvar\s+questions\s*=\s*(\[[\s\S]*?\])\s*;(?:(?!<\/script>)[\s\S])*?<\/script>/i);
+  if (!block) return html;
+  let questions: MessengerFlow['questions'] = [];
+  try { questions = JSON.parse(block[1]); } catch { return html; }
+  const initBody = block[0].match(/function\s+init\s*\(\)\s*\{([\s\S]*?)\n\t\t\}/)?.[1] || block[0];
+  const intros: string[] = [];
+  const introRe = /addBotMessage\(\s*(['"])([\s\S]*?)\1\s*\)/g;
+  let im: RegExpExecArray | null;
+  while ((im = introRe.exec(initBody))) intros.push(im[2]);
+  const containerId = html.match(/id=["']([^"']+)["'][^>]*>\s*<\/div>/i)?.[1] || 'chatbox-content';
+  const out = applyMessengerFlow(html, {
+    containerId: /chatbox-content/.test(html) ? 'chatbox-content' : containerId,
+    intros,
+    startLabel: block[0].match(/addYesButton\(\s*(['"])([\s\S]*?)\1/)?.[2] || 'Continue',
+    questions,
+    resultHref: block[0].match(/\bAFF_URL\s*=\s*(['"])([^'"]+)\1/)?.[2],
+    resultCta: html.match(/id=["']mobile-sticky-bar["'][^>]*>([^<]+)/i)?.[1]?.trim(),
+  });
+  return out === html ? html : out.replace(block[0], '');
+}
+
 export function healClonedLander(html: string): HealResult {
   if (!html) return { html, applied: [], remaining: [] };
-  let out = bakeCheckoutChampSnapshot(html);
+  const stepped = bakeMessengerSteps(html);
+  const messenger = stepped !== html;
+  let out = bakeCheckoutChampSnapshot(stepped);
   const baked = out !== html;
   const beforeVturb = out;
   out = repairVturbPlayer(out);
   const applied: string[] = [];
+  if (messenger) applied.push('messenger-steps');
   if (baked) applied.push('cc-snapshot');
   if (out !== beforeVturb) applied.push('vturb-anchor');
 
