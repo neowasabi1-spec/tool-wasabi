@@ -5102,6 +5102,7 @@ export default function FrontEndFunnel() {
                   jobId: sbJobId,
                   cloneMode: 'rewrite',
                   batchNumber: sbBatch,
+                  batchSize: 4,
                   userId: DEFAULT_USER_ID,
                   // brief / market_research are read by the Edge Function from
                   // the request body of every process call (they're not stored

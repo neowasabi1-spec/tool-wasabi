@@ -740,7 +740,9 @@ serve(async (req) => {
         : SWIPE_MODEL_DEFAULT
     console.log(`🤖 Modello Claude: ${CLAUDE_MODEL_RUNTIME}${modelOverride && modelOverride !== CLAUDE_MODEL_RUNTIME ? ` (richiesto "${modelOverride}" non valido → default)` : ''}`)
 
-    const BATCH_SIZE_DEFAULT = 12
+    // 4 texts per call. 12 made Sonnet 5 sit silent past Netlify's
+    // inactivity timeout, which came back as HTTP 504 HTML on batch 0.
+    const BATCH_SIZE_DEFAULT = 4
     const CLAUDE_TIMEOUT_MS_DEFAULT = 120_000
     const BATCH_SIZE_RUNTIME = Math.max(
       1,
