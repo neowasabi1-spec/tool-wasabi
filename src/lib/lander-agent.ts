@@ -2,13 +2,14 @@
  * Clone-time understand agent.
  *
  * Known families (chat-quiz / hidden-stepper / faq) keep the local heal.
- * Unrecognized pages get a screenshot + Claude pass that:
+ * Every clone gets a Claude pass (same model as swipe, Sonnet 5) that:
  *   1. labels texts / images / videos for swipe
  *   2. picks an interactivity recipe (generic stepper if needed)
  */
 
 import { getAnthropicKey } from './anthropic-key';
 import { healClonedLander, injectGenericStepEngine, readHealStamp } from './lander-heal';
+import { SWIPE_MODEL_DEFAULT } from './swipe-models';
 import {
   buildSwipeAssetMap,
   compactSwipeMap,
@@ -177,8 +178,9 @@ Rules:
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: SWIPE_MODEL_DEFAULT,
       max_tokens: 2500,
+      output_config: { effort: 'low' },
       system,
       messages: [{ role: 'user', content }],
     }),
