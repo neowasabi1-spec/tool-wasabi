@@ -181,6 +181,9 @@ const REINJECT_CLOSE = '<!--/cloned-dynamic-scripts-->';
 export function reattachDynamicScripts(pristine: string, edited: string): string {
   if (!edited) return edited;
   if (!detectDynamicScripts(pristine).functional) return edited;
+  // The editor keeps the page script. Pasting the original clone's script
+  // on save runs a second init and the edited chat stops matching the buttons.
+  if (DOM_MUTATION.test(extractInlineScriptText(edited))) return edited;
   const blocks = extractReinjectableScripts(pristine);
   if (blocks.length === 0) return edited;
 
