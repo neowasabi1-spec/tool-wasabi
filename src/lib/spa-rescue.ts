@@ -477,6 +477,26 @@ function resetAccordionState(html: string): string {
  * Preview. Loses live interactivity on purpose - if the user needs
  * the real runtime they can open "Live navigable".
  */
+/** Drop messages a page script already painted, so preview starts the flow again. */
+export function resetScriptBuiltSlot(html: string): string {
+  if (!html || typeof DOMParser === 'undefined') return html;
+  if (!/id=["']chatbox-content["']/i.test(html)) return html;
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const box = doc.getElementById('chatbox-content');
+    if (!box || !box.childNodes.length) return html;
+    const builds = Array.from(doc.scripts).some((s) => {
+      const t = s.textContent || '';
+      return /chatbox-content/.test(t) && /addBotMessage|var\s+questions\s*=/.test(t);
+    });
+    if (!builds) return html;
+    box.innerHTML = '';
+    return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+  } catch {
+    return html;
+  }
+}
+
 function stripAllScripts(html: string): string {
   let out = html;
   out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');

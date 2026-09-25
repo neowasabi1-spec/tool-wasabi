@@ -29,7 +29,7 @@ import {
   normalizeCheckoutMode,
   type CheckoutMode,
 } from '@/lib/checkout-modes';
-import { stripNonCarouselScripts } from '@/lib/spa-rescue';
+import { stripNonCarouselScripts, resetScriptBuiltSlot } from '@/lib/spa-rescue';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -716,7 +716,19 @@ const EDITOR_SCRIPT = `
     plusBtn.style.display='none';var delVis=delBtn.style.opacity;delBtn.style.opacity='0';
     delBtn.style.display='none';plusBtn.style.display='none';
     var rzVis=[];for(var _rh=0;_rh<rzHandles.length;_rh++){rzVis.push(rzHandles[_rh].style.display);rzHandles[_rh].style.display='none';}
+    var chat=document.getElementById('chatbox-content');
+    var chatStash=null;
+    if(chat&&chat.childNodes.length){
+      var builds=false;
+      var ss=document.scripts;
+      for(var si=0;si<ss.length;si++){
+        var st=ss[si].textContent||'';
+        if(/chatbox-content/.test(st)&&/addBotMessage|var\s+questions\s*=/.test(st)){builds=true;break;}
+      }
+      if(builds){chatStash=chat.innerHTML;chat.innerHTML='';}
+    }
     var h='<!DOCTYPE html>'+document.documentElement.outerHTML;
+    if(chatStash!==null&&chat)chat.innerHTML=chatStash;
     delBtn.style.display='';plusBtn.style.display='';for(var _rh2=0;_rh2<rzHandles.length;_rh2++){rzHandles[_rh2].style.display=rzVis[_rh2];}
     if(sel){sel.style.outline=saved;sel.style.outlineOffset=so;positionPlus();positionResize(sel);}
     delBtn.style.opacity=delVis;
@@ -1123,22 +1135,23 @@ const EDITOR_SCRIPT = `
       selectEl(faqTrig);
       return;
     }
-    /* Buttons, links and fields belong to the page script. Swallowing
-       the click here is why quizzes, bars and menus die in the editor. */
-    var pageCtl=e.target.closest&&e.target.closest('button,a,input,select,textarea,label');
-    if(pageCtl) return;
-    var mqLabel=e.target.closest&&e.target.closest('label[for]');
-    if(mqLabel){
-      var mqInp=document.getElementById(mqLabel.getAttribute('for')||'');
-      if(mqInp&&mqInp.classList&&mqInp.classList.contains('mq-ctl')){
-        e.preventDefault();e.stopPropagation();
-        if(mqInp.type==='radio') mqInp.checked=true;
-        else mqInp.checked=!mqInp.checked;
-        return;
-      }
-    }
     e.preventDefault();e.stopPropagation();
     var el=e.target;if(sk(el))return;
+    if(el.closest){
+      var ctl=el.closest('a,button');
+      if(ctl) el=ctl;
+    }
+    if(sel===el && !editing){
+      editing=true;editEl=el;sel=el;
+      el.contentEditable='true';el.style.outline=ES;el.style.outlineOffset='2px';
+      el.focus();
+      try{
+        var range=document.createRange();range.selectNodeContents(el);
+        var s=window.getSelection();s.removeAllRanges();s.addRange(range);
+      }catch(_ed){}
+      window.parent.postMessage({type:'editing-started',data:gi(el)},'*');
+      return;
+    }
     selectEl(el);
   },true);
 
@@ -1707,7 +1720,7 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
 }
 
 function prepareEditorHtml(html: string, sourceUrl?: string): string {
-  let clean = html;
+  let clean = resetScriptBuiltSlot(html);
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
 
