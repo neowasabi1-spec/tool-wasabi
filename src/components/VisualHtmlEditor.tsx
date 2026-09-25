@@ -30,6 +30,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts, releaseHeldScripts } from '@/lib/spa-rescue';
+import { healClonedLander } from '@/lib/lander-heal';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -1723,6 +1724,9 @@ export function absolutizeClonedUrls(html: string, sourceUrl?: string): string {
 
 function prepareEditorHtml(html: string, sourceUrl?: string): string {
   let clean = releaseHeldScripts(html);
+  if (/var\s+questions\s*=\s*\[/.test(clean) && /id=["']chatbox-content["'][^>]*>\s*<\/div>/i.test(clean)) {
+    clean = healClonedLander(clean).html;
+  }
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
 
@@ -2117,6 +2121,9 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   const script = `<script>${EDITOR_SCRIPT}<\/script>`;
   let inject = editorCss + script;
   if (isChatQuizHtml(clean)) inject = chatQuizEditorRevealCss() + inject;
+  if (/id=["']wasabi-mq-css["']/.test(clean)) {
+    inject = `<style data-editor-override id="wasabi-mq-editor">#chatbox-content .mq-q{display:flex!important}#chatbox-content label.option-btn{display:block!important}</style>` + inject;
+  }
   if (isPopupQuizHtml(clean)) {
     if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
     inject = popupQuizEditorRevealCss() + inject;
