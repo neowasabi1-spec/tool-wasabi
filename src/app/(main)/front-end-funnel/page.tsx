@@ -375,7 +375,7 @@ function clonedPreviewKeepScripts(html: string): boolean {
 }
 
 function runClonedPreviewPipeline(rawHtml: string): string {
-  const healed = bakeCheckoutChampSnapshot(rawHtml);
+  const healed = healClonedLander(rawHtml).html;
   const timed = extractTimedComments(healed);
   const keepLive = clonedPreviewKeepScripts(healed) || timed.length > 0;
   let html = prepareClonedHtmlForPreview(healed, { keepScripts: keepLive });
@@ -938,6 +938,9 @@ function sanitizeClonedHtml(html: string, originalUrl: string, options?: { keepS
     };
 
     let clean = html;
+    if (/var\s+questions\s*=\s*\[/.test(clean) && /id=["']chatbox-content["'][^>]*>\s*<\/div>/i.test(clean)) {
+      clean = healClonedLander(clean).html;
+    }
 
     // 0. BEFORE removing scripts: extract video embed IDs from script tags & markup
     const videoEmbeds: { provider: string; id: string }[] = [];

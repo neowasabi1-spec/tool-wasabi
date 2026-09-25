@@ -588,6 +588,12 @@ export function injectInteractivityRescue(
     commerce ||
     (opts.keepScripts !== false && detectDynamicScripts(html).functional);
 
+  // Write messenger bubbles into the DOM before any script strip. Otherwise
+  // the editor shows Lauren's card with an empty chat.
+  if (/var\s+questions\s*=\s*\[/.test(html) && /id=["']chatbox-content["'][^>]*>\s*<\/div>/i.test(html)) {
+    html = healClonedLander(html).html;
+  }
+
   if (isChatQuizHtml(html)) {
     html = stripAllScripts(html);
     return healClonedLander(html).html;
