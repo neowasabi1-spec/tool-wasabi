@@ -2123,7 +2123,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   let inject = editorCss + script;
   if (isChatQuizHtml(clean)) inject = chatQuizEditorRevealCss() + inject;
   if (/id=["']wasabi-mq-css["']/.test(clean)) {
-    inject = `<style data-editor-override id="wasabi-mq-editor">#chatbox-content>.msg-row.bot,#chatbox-content .mq-q{display:flex!important}#chatbox-content label.option-btn,#chatbox-content>label.yes-btn{display:block!important}#progress-area,#quiz-loading,#quiz-results{display:block!important}</style>` + inject;
+    inject = `<style data-editor-override id="wasabi-mq-editor">#chatbox-content>.msg-row.bot,#chatbox-content .mq-q:not(.quiz-panel){display:flex!important}#chatbox-content label.option-btn,#chatbox-content>label.yes-btn{display:block!important}#progress-area{display:block!important}#chatbox-content #quiz-loading,#chatbox-content #quiz-results{display:block!important;width:auto!important}</style>` + inject;
     clean = clean.replace(/<script\b[^>]*\bid=["']wasabi-mq-pace["'][^>]*>[\s\S]*?<\/script>/gi, '');
   }
   if (isPopupQuizHtml(clean)) {
