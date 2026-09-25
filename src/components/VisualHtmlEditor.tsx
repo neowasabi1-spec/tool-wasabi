@@ -30,7 +30,7 @@ import {
   type CheckoutMode,
 } from '@/lib/checkout-modes';
 import { stripNonCarouselScripts, releaseHeldScripts } from '@/lib/spa-rescue';
-import { healClonedLander } from '@/lib/lander-heal';
+import { healClonedLander, paceMessengerIntros } from '@/lib/lander-heal';
 import { isChatQuizHtml, chatQuizEditorRevealCss } from '@/lib/chat-quiz-engine';
 import { isPopupQuizHtml, popupQuizEditorRevealCss, injectPopupQuizEngine } from '@/lib/popup-quiz-engine';
 import {
@@ -1727,6 +1727,7 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   if (/var\s+questions\s*=\s*\[/.test(clean) && /id=["']chatbox-content["'][^>]*>\s*<\/div>/i.test(clean)) {
     clean = healClonedLander(clean).html;
   }
+  if (/id=["']wasabi-mq-css["']/.test(clean)) clean = paceMessengerIntros(clean);
   clean = clean.replace(/<meta[^>]*content-security-policy[^>]*>/gi, '');
   clean = clean.replace(/loading=["']lazy["']/gi, 'loading="eager"');
 
@@ -2122,7 +2123,8 @@ function prepareEditorHtml(html: string, sourceUrl?: string): string {
   let inject = editorCss + script;
   if (isChatQuizHtml(clean)) inject = chatQuizEditorRevealCss() + inject;
   if (/id=["']wasabi-mq-css["']/.test(clean)) {
-    inject = `<style data-editor-override id="wasabi-mq-editor">#chatbox-content .mq-q{display:flex!important}#chatbox-content label.option-btn{display:block!important}</style>` + inject;
+    inject = `<style data-editor-override id="wasabi-mq-editor">#chatbox-content>.msg-row.bot,#chatbox-content .mq-q{display:flex!important}#chatbox-content label.option-btn,#chatbox-content>label.yes-btn{display:block!important}#progress-area,#quiz-loading,#quiz-results{display:block!important}</style>` + inject;
+    clean = clean.replace(/<script\b[^>]*\bid=["']wasabi-mq-pace["'][^>]*>[\s\S]*?<\/script>/gi, '');
   }
   if (isPopupQuizHtml(clean)) {
     if (!/data-ssq-step=/.test(clean)) clean = injectPopupQuizEngine(clean);
