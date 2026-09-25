@@ -512,7 +512,18 @@ export function exportMessengerHtml(html: string): string {
     steps.push(`${prev.join(',')}{display:flex!important;opacity:1!important}`);
     steps.push(`#chatbox-content #mq-a${i}-0:checked~label.option-btn.mq-show-${i + 1},#chatbox-content #mq-a${i}-1:checked~label.option-btn.mq-show-${i + 1}{display:block!important}`);
     if (i === questions - 1) {
-      steps.push(`#chatbox-content #mq-a${i}-0:checked~#quiz-loading,#chatbox-content #mq-a${i}-1:checked~#quiz-loading,#chatbox-content #mq-a${i}-0:checked~#quiz-results,#chatbox-content #mq-a${i}-1:checked~#quiz-results{display:block!important;width:auto!important}`);
+      const load = [`#chatbox-content #mq-a${i}-0:checked~#quiz-loading`, `#chatbox-content #mq-a${i}-1:checked~#quiz-loading`];
+      const both = (tail: string) => load.map((s) => `${s}${tail}`).join(',');
+      steps.push(`${load.join(',')}{display:block!important;width:auto!important;animation:mqHide .4s 4s forwards}`);
+      steps.push(`#chatbox-content #mq-a${i}-0:checked~#quiz-results,#chatbox-content #mq-a${i}-1:checked~#quiz-results{display:block!important;width:auto!important;opacity:0;max-height:0;overflow:hidden;margin:0;padding:0;animation:mqReveal .45s 4.15s forwards}`);
+      steps.push(`${both(' .quiz-loading-stat')}{opacity:0;animation:mqStat .35s forwards}`);
+      steps.push(`${both(' .quiz-loading-stat:nth-child(1)')}{animation-delay:.6s}`);
+      steps.push(`${both(' .quiz-loading-stat:nth-child(2)')}{animation-delay:1.3s}`);
+      steps.push(`${both(' .quiz-loading-stat:nth-child(3)')}{animation-delay:2s}`);
+      steps.push(`${both(' .quiz-loading-stat:nth-child(4)')}{animation-delay:2.8s}`);
+      steps.push(`${both(' #quiz-loading-bar')}{animation:mqBar 3.6s linear forwards}`);
+      steps.push(`${both(' #quiz-loading-pct')}{font-size:0;animation:mqCount 3.6s linear forwards;counter-reset:pct var(--pct)}`);
+      steps.push(`${both(' #quiz-loading-pct::after')}{content:counter(pct);font-size:2rem}`);
     }
   }
   const css =
@@ -530,6 +541,12 @@ export function exportMessengerHtml(html: string): string {
     `#chatbox-content #mq-go:not(:checked)~.mq-show-0{display:flex!important;opacity:1!important}` +
     `#chatbox-content #mq-go:not(:checked)~label.option-btn.mq-show-0{display:block!important}` +
     `body:has(#mq-go:not(:checked)) #progress-area{display:block!important}` +
+    `@property --pct{syntax:"<integer>";inherits:false;initial-value:0}` +
+    `@keyframes mqBar{to{width:100%}}` +
+    `@keyframes mqCount{to{--pct:100}}` +
+    `@keyframes mqStat{to{opacity:1;transform:none}}` +
+    `@keyframes mqHide{to{opacity:0;visibility:hidden;max-height:0;overflow:hidden;margin:0;padding:0}}` +
+    `@keyframes mqReveal{to{opacity:1;max-height:900px;overflow:visible;margin:10px 18px 24px 57px;padding:24px 18px}}` +
     steps.join('');
   const tag = `<style id="wasabi-mq-export">${css}</style>`;
   if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, `${tag}</body>`);
