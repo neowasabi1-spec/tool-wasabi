@@ -1324,7 +1324,7 @@ html body [style*="aspect-ratio:"]:has(p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl){
 }
 }
 html body [class*="overflow-hidden"]:has(>h1,>h2,>h3,>h4,>h5,>h6,>p,>ul,>ol,>blockquote){overflow:visible !important;}
-html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clamp:unset !important;line-clamp:unset !important;display:block !important;overflow:visible !important;text-overflow:clip !important;white-space:normal !important;}
+html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clamp:unset !important;line-clamp:unset !important;overflow:visible !important;text-overflow:clip !important;white-space:normal !important;}
 </style>`
 
         const styleInjection = fbStyle + layoutOverflowFix
@@ -1376,7 +1376,7 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
     var nodes=document.querySelectorAll(sel);
     for(var i=0;i<nodes.length;i++){
       var el=nodes[i];var tn=el.tagName;
-      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;if(tn==='MAIN'||tn==='HTML'||tn==='BODY')continue;var shellSt=el.getAttribute('style')||'';var shellCl=typeof el.className==='string'?el.className:'';if(/main_wrapper|desktop_grid/.test(shellCl)||/height: *100%|100vh/i.test(shellSt))continue;
+      if(tn==='IMG'||tn==='VIDEO'||tn==='SVG'||tn==='svg'||tn==='CANVAS'||tn==='IFRAME'||tn==='PICTURE')continue;if(tn==='MAIN'||tn==='HTML'||tn==='BODY')continue;var shellSt=el.getAttribute('style')||'';var shellCl=typeof el.className==='string'?el.className:'';if(/main_wrapper|desktop_grid/.test(shellCl)||/height: *100%|100vh/i.test(shellSt))continue;var pos='';try{pos=window.getComputedStyle(el).position;}catch(e){}if(pos==='absolute'||pos==='fixed'||pos==='sticky')continue;
       if(!el.querySelector('p,h1,h2,h3,h4,h5,h6,blockquote,ul,ol,dl'))continue;
       if(el.__fbRelaxed)continue;el.__fbRelaxed=1;
       el.style.setProperty('height','auto','important');
@@ -1390,7 +1390,6 @@ html body [class*="line-clamp-"],html body [class*="truncate"]{-webkit-line-clam
       var c=clamps[j];if(c.__fbClamped)continue;c.__fbClamped=1;
       c.style.setProperty('-webkit-line-clamp','unset','important');
       c.style.setProperty('line-clamp','unset','important');
-      c.style.setProperty('display','block','important');
       c.style.setProperty('overflow','visible','important');
       c.style.setProperty('text-overflow','clip','important');
       c.style.setProperty('white-space','normal','important');
