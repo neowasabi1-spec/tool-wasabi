@@ -241,8 +241,16 @@ export async function runVisualRestyle(opts: {
 
   const paints: PaintedMedia[] = [];
   let replaced = 0;
-  const mockup = firstMockup(pool);
+  const mockups = pool.filter((m) => String(m.id).startsWith('step-mock-') && m.storedUrl);
+  const mockup = mockups[0] || firstMockup(pool);
   const mockupUrl = mockup?.storedUrl ? pinStoredUrl(mockup.storedUrl) : '';
+  let photoCursor = 0;
+  const nextProductPhoto = (): string => {
+    if (!mockups.length) return mockupUrl;
+    const item = mockups[photoCursor % mockups.length];
+    photoCursor += 1;
+    return pinStoredUrl(item.storedUrl);
+  };
 
   for (const slot of slots) {
     const plan = assignments.find((a) => a.slotId === slot.id);
@@ -262,33 +270,40 @@ export async function runVisualRestyle(opts: {
 
     if (swipePack) {
       const qty = parsePackQty(nearby);
-      opts.onProgress?.(
-        qty
-          ? `Recreating the original ${qty}-pack photo with ${opts.productName}…`
-          : `Recreating the original pack photo with ${opts.productName}…`,
-      );
-      try {
-        const made = await fetch('/api/restyle-visual/concept', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            projectId: opts.projectId,
-            productName: opts.productName,
-            nearbyText: slot.context || slot.alt || '',
-            prompt: packSwipePrompt({ productName: opts.productName, nearby, qty }),
-            productImageUrl: opts.productImageUrl || mockupUrl,
-            extraImageUrls: opts.extraImageUrls,
-            sourceImageUrl: sourceUrl,
-            pageType: opts.pageType,
-            pageName: opts.pageName,
-          }),
-        });
-        const data = (await made.json().catch(() => ({}))) as { url?: string };
-        if (data.url) url = pinStoredUrl(data.url);
-      } catch {
-        /* fall through to mockup */
+      const thisPhoto = nextProductPhoto() || mockupUrl;
+      // Several uploaded shots: place a different one on each product slot.
+      // One shot, or a 2/6/3 pack: rebuild that layout so the cards don't match.
+      if (mockups.length > 1 && !qty) {
+        url = thisPhoto;
+      } else {
+        opts.onProgress?.(
+          qty
+            ? `Recreating the original ${qty}-pack photo with ${opts.productName}…`
+            : `Recreating the original pack photo with ${opts.productName}…`,
+        );
+        try {
+          const made = await fetch('/api/restyle-visual/concept', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectId: opts.projectId,
+              productName: opts.productName,
+              nearbyText: slot.context || slot.alt || '',
+              prompt: packSwipePrompt({ productName: opts.productName, nearby, qty }),
+              productImageUrl: thisPhoto,
+              extraImageUrls: mockups.map((m) => pinStoredUrl(m.storedUrl)).filter((u) => u && u !== thisPhoto),
+              sourceImageUrl: sourceUrl,
+              pageType: opts.pageType,
+              pageName: opts.pageName,
+            }),
+          });
+          const data = (await made.json().catch(() => ({}))) as { url?: string };
+          if (data.url) url = pinStoredUrl(data.url);
+        } catch {
+          /* fall through to this slot's photo */
+        }
       }
-      if (!url) url = mockupUrl;
+      if (!url) url = thisPhoto;
       fileKind = mockup?.kind || 'image';
     } else if (plan?.mediaId && byId.get(plan.mediaId)?.storedUrl) {
       const item = byId.get(plan.mediaId)!;

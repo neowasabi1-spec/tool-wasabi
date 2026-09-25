@@ -60,7 +60,9 @@ export async function POST(req: NextRequest) {
           projectId,
           buf: bytes.buf,
           contentType: bytes.mime,
-          sourceUrl: `concept://pack-swipe/${slug(productName)}/${qty || 'n'}`,
+          // Unique per original photo. A shared key made ingest return the
+          // first packshot for every later slot, so the page showed one picture.
+          sourceUrl: `concept://pack-swipe/${slug(productName)}/${qty || 'n'}/${slotKey(packSourceUrl, nearby)}`,
           kind: 'image',
           section: 'product',
         });
@@ -117,6 +119,16 @@ export async function POST(req: NextRequest) {
 
 function slug(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function slotKey(sourceUrl: string, nearby: string): string {
+  const raw = `${sourceUrl}|${nearby}`;
+  let h = 2166136261;
+  for (let i = 0; i < raw.length; i++) {
+    h ^= raw.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0).toString(36);
 }
 
 function httpUrls(raw: unknown): string[] {

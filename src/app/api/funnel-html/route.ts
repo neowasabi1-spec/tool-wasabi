@@ -122,11 +122,24 @@ export async function GET(req: NextRequest) {
       .replace(/<meta[^>]+http-equiv=["']?refresh["'][^>]*>/gi, '');
   }
 
+  let updatedAt = '';
+  try {
+    const { data } = await supabaseAdmin
+      .from('page_html')
+      .select('updated_at')
+      .eq('page_id', pageId)
+      .eq('kind', kind)
+      .eq('variant', variant === 'mobile' && !html ? 'desktop' : variant)
+      .maybeSingle();
+    if (data?.updated_at) updatedAt = String(data.updated_at);
+  } catch { /* header is optional */ }
+
   return new NextResponse(html, {
     status: 200,
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
+      ...(updatedAt ? { 'x-html-updated-at': updatedAt } : {}),
     },
   });
 }

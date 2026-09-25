@@ -1959,12 +1959,12 @@ export default function FrontEndFunnel() {
     const page = (funnelPages || []).find(p => p.id === pid);
     if (!page) return;
     if (htmlPreviewModal.sourceType === 'swiped' && page.swipedData) {
-      void saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
+      await saveHtmlBlob(pid, 'swipedData', html, mobileHtml || page.swipedData.mobileHtml);
       await updateFunnelPage(pid, {
         swipedData: { ...page.swipedData, html, newLength: html.length, editedAt: Date.now() },
       });
     } else if (page.clonedData) {
-      void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
+      await saveHtmlBlob(pid, 'clonedData', html, mobileHtml || page.clonedData.mobileHtml);
       await updateFunnelPage(pid, {
         clonedData: {
           ...page.clonedData,
@@ -1975,7 +1975,7 @@ export default function FrontEndFunnel() {
         },
       });
     } else {
-      void saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
+      await saveHtmlBlob(pid, 'clonedData', html, mobileHtml || undefined);
       await updateFunnelPage(pid, {
         clonedData: {
           html,
@@ -7212,11 +7212,25 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                   }
                                   try {
                                     const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
+                                    const { loadHtmlBlob } = await import('@/lib/html-blob-store');
                                     const base = `/api/funnel-html?pageId=${encodeURIComponent(page.id)}&kind=${kind}`;
-                                    const html = await fetchHtmlFromStorage(`${base}&variant=desktop`);
-                                    if (html) {
+                                    const [serverRes, idb] = await Promise.all([
+                                      fetch(`${base}&variant=desktop`, { cache: 'no-store' }).catch(() => null),
+                                      loadHtmlBlob(page.id, target).catch(() => null),
+                                    ]);
+                                    const serverHtml = serverRes?.ok ? await serverRes.text() : '';
+                                    const serverAt = Date.parse(serverRes?.headers.get('x-html-updated-at') || '') || 0;
+                                    const idbAt = idb?.savedAt || 0;
+                                    // Local edit/swipe/translation wins only when this browser
+                                    // saved it after the server copy (upload failed or the
+                                    // stored file is still the original clone).
+                                    const idbHtml = idb?.html && idb.html.length > 40 ? idb.html : '';
+                                    if (idbHtml && (serverHtml.length < 40 || (serverAt > 0 && idbAt > serverAt))) {
+                                      return { html: idbHtml, mobileHtml: idb.mobileHtml };
+                                    }
+                                    if (serverHtml.length > 40) {
                                       const mobileHtml = await fetchHtmlFromStorage(`${base}&variant=mobile`);
-                                      return { html, mobileHtml: mobileHtml || undefined };
+                                      return { html: serverHtml, mobileHtml: mobileHtml || undefined };
                                     }
                                   } catch { /* fall through */ }
                                   if (blob.htmlUrl) {

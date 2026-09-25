@@ -42,11 +42,16 @@ export async function persistPageHtml(
   const variant = args.variant || 'desktop';
   if (!pageId || !html) return;
 
+  const key = pageHtmlObjectKey(pageId, kind, variant);
   let stored = html;
   if (html.length > INLINE_LIMIT) {
-    const key = pageHtmlObjectKey(pageId, kind, variant);
     await uploadHtmlObject(sb, key, html);
     stored = `${PAGE_HTML_MARKER}${key}`;
+  } else {
+    // A previous large snapshot lives at this same key. If we leave it,
+    // readPageHtml used to return that file and ignore the newer inline row,
+    // so the eye reopened the original clone after an edit or translation.
+    await sb.storage.from(PAGE_HTML_BUCKET).remove([key]).catch(() => undefined);
   }
 
   const row: Record<string, unknown> = {
@@ -83,24 +88,56 @@ export async function readPageHtml(
 ): Promise<string> {
   if (!pageId) return '';
   const key = pageHtmlObjectKey(pageId, kind, variant);
-  const fromStorage = await downloadHtmlObject(sb, key);
-  if (fromStorage.length > 80) return fromStorage;
+  let raw = '';
+  let rowUpdated = 0;
   try {
     const { data, error } = await sb
       .from('page_html')
-      .select('html')
+      .select('html, updated_at')
       .eq('page_id', pageId)
       .eq('kind', kind)
       .eq('variant', variant)
       .maybeSingle();
-    if (error) {
-      console.warn('[page-html] select failed:', error.message);
-      return '';
+    if (error) console.warn('[page-html] select failed:', error.message);
+    else if (data) {
+      raw = typeof data.html === 'string' ? data.html : '';
+      rowUpdated = data.updated_at ? new Date(data.updated_at as string).getTime() || 0 : 0;
     }
-    return expandStoredHtml(sb, typeof data?.html === 'string' ? data.html : '');
   } catch (e) {
     console.warn('[page-html] select failed:', (e as Error).message);
-    return '';
+  }
+  const storageUpdated = await storageObjectUpdatedAt(sb, key);
+  const fromStorage = async () => downloadHtmlObject(sb, key);
+
+  if (isHtmlStoragePointer(raw)) {
+    const expanded = await downloadHtmlObject(sb, htmlStoragePath(raw));
+    if (expanded.length > 80) return expanded;
+  }
+  // Inline row and a storage object can disagree: a large clone stays in
+  // the bucket while a later edit is written inline, or the row upsert
+  // times out after the bucket already has the new HTML. Newer one wins.
+  const storageIsNewer = storageUpdated > rowUpdated;
+  if (storageIsNewer) {
+    const file = await fromStorage();
+    if (file.length > 80) return file;
+  }
+  if (raw && !isHtmlStoragePointer(raw) && raw.length > 80) return raw;
+  const file = await fromStorage();
+  if (file.length > 80) return file;
+  return raw.length > 80 ? raw : '';
+}
+
+async function storageObjectUpdatedAt(sb: SupabaseClient, key: string): Promise<number> {
+  const slash = key.lastIndexOf('/');
+  const folder = slash >= 0 ? key.slice(0, slash) : '';
+  const name = slash >= 0 ? key.slice(slash + 1) : key;
+  try {
+    const { data, error } = await sb.storage.from(PAGE_HTML_BUCKET).list(folder, { search: name, limit: 10 });
+    if (error || !data?.length) return 0;
+    const hit = data.find((f) => f.name === name) || data[0];
+    return hit?.updated_at ? new Date(hit.updated_at).getTime() || 0 : 0;
+  } catch {
+    return 0;
   }
 }
 
