@@ -408,6 +408,29 @@ function escMq(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/** First `[...]` after `from`, respecting strings. A lazy `]` stops inside "options". */
+function balancedArray(source: string, from: number): string | null {
+  const start = source.indexOf('[', from);
+  if (start < 0) return null;
+  let depth = 0;
+  let quote = '';
+  for (let i = start; i < source.length; i++) {
+    const c = source[i];
+    if (quote) {
+      if (c === '\\') { i++; continue; }
+      if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '[') depth++;
+    else if (c === ']') {
+      depth--;
+      if (depth === 0) return source.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 export type MessengerFlow = {
   containerId: string;
   intros?: string[];
@@ -466,11 +489,14 @@ export function applyMessengerFlow(html: string, flow: MessengerFlow): string {
  */
 function bakeMessengerSteps(html: string): string {
   if (!html || /id=["']wasabi-mq-css["']/.test(html)) return html;
-  const block = html.match(/<script\b[^>]*>(?:(?!<\/script>)[\s\S])*?\bvar\s+questions\s*=\s*(\[[\s\S]*?\])\s*;(?:(?!<\/script>)[\s\S])*?<\/script>/i);
+  const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+  const block = scripts.find((s) => /\bvar\s+questions\s*=/.test(s));
   if (!block) return html;
+  const at = block.search(/\bvar\s+questions\s*=\s*/);
+  const json = balancedArray(block, at);
   let questions: MessengerFlow['questions'] = [];
-  try { questions = JSON.parse(block[1]); } catch { return html; }
-  const initBody = block[0].match(/function\s+init\s*\(\)\s*\{([\s\S]*?)\n\t\t\}/)?.[1] || block[0];
+  try { questions = JSON.parse(json); } catch { return html; }
+  const initBody = block.match(/function\s+init\s*\(\)\s*\{([\s\S]*?)\n\s*\}/)?.[1] || block;
   const intros: string[] = [];
   const introRe = /addBotMessage\(\s*(['"])([\s\S]*?)\1\s*\)/g;
   let im: RegExpExecArray | null;
@@ -479,13 +505,13 @@ function bakeMessengerSteps(html: string): string {
   const out = applyMessengerFlow(html, {
     containerId,
     intros,
-    startLabel: block[0].match(/addYesButton\(\s*(['"])([\s\S]*?)\1/)?.[2] || 'Continue',
+    startLabel: block.match(/addYesButton\(\s*(['"])([\s\S]*?)\1/)?.[2] || 'Continue',
     questions,
-    avatarSrc: block[0].match(/src=["']([^"']+)["']/)?.[1],
-    resultHref: block[0].match(/\bAFF_URL\s*=\s*(['"])([^'"]+)\1/)?.[2],
+    avatarSrc: block.match(/src=["']([^"']+)["']/)?.[1],
+    resultHref: block.match(/\bAFF_URL\s*=\s*(['"])([^'"]+)\1/)?.[2],
     resultCta: 'Continue',
   });
-  return out === html ? html : out.replace(block[0], '');
+  return out === html ? html : out.replace(block, '');
 }
 
 export function healClonedLander(html: string): HealResult {
