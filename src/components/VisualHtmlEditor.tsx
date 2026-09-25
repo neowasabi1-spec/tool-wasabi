@@ -894,7 +894,8 @@ const EDITOR_SCRIPT = `
     try{return getComputedStyle(p).display!=='none';}catch(e){return true;}
   }
   function _toggleFaq(target){
-    if(target&&target.closest&&target.closest('#chatbox-content,.chat-card,.quiz-panel'))return null;
+    if(document.getElementById('chatbox-content')||document.getElementById('wasabi-mq-css'))return null;
+    if(target&&target.closest&&target.closest('#chatbox-content,.chat-card,.quiz-panel,.main-wrapper,.header-wrapper'))return null;
     var trigger=_faqTriggerFor(target);
     if(!trigger)return null;
     var item=_findFaqItem(trigger)||trigger.parentElement;
