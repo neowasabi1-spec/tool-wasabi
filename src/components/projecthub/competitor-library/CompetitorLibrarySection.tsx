@@ -293,16 +293,22 @@ function adLibraryUrlForCreative(
   try {
     const u = new URL("https://www.facebook.com/ads/library/");
     u.searchParams.set("id", id);
+    // Always ALL: if we inherit active_status=active from the brand spy URL,
+    // Meta hides inactive ads and the page looks like the creative "doesn't exist".
+    u.searchParams.set("active_status", "all");
+    u.searchParams.set("ad_type", "all");
+    let country = "ALL";
     if (brand) {
-      const b = new URL(brand);
-      const country = (b.searchParams.get("country") || "").toUpperCase();
-      if (country && country !== "ALL") u.searchParams.set("country", country);
-      const active = b.searchParams.get("active_status");
-      if (active) u.searchParams.set("active_status", active);
+      try {
+        const b = new URL(brand);
+        const c = (b.searchParams.get("country") || "").toUpperCase();
+        if (c) country = c;
+      } catch { /* keep ALL */ }
     }
+    u.searchParams.set("country", country);
     return u.toString();
   } catch {
-    return `https://www.facebook.com/ads/library/?id=${encodeURIComponent(id)}`;
+    return `https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&id=${encodeURIComponent(id)}`;
   }
 }
 
@@ -1708,8 +1714,14 @@ function CreativeDetailPanel({
               </div>
               <div>
                 <p className="text-[9px] text-muted-foreground uppercase tracking-wider">Status</p>
-                <p className={`font-medium ${(ad.ad_active === "true" || ad.is_active === "true") ? "text-green-600" : "text-muted-foreground"}`}>
-                  {(ad.ad_active === "true" || ad.is_active === "true") ? "Active" : "Inactive"}
+                <p className={`font-medium ${
+                  (ad.ad_active === "true" || ad.is_active === "true") ? "text-green-600"
+                    : (ad.ad_active === "false" || ad.is_active === "false") ? "text-muted-foreground"
+                      : "text-amber-600"
+                }`}>
+                  {(ad.ad_active === "true" || ad.is_active === "true") ? "Active"
+                    : (ad.ad_active === "false" || ad.is_active === "false") ? "Inactive"
+                      : "Unknown"}
                 </p>
               </div>
               <div>

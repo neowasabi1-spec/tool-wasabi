@@ -514,6 +514,7 @@ export async function ingestDataset(opts: {
         hook: mapped.hook,
         body_text: mapped.bodyText,
         landing_url: mapped.landingUrl || '',
+        ad_active: mapped.adActive || '',
       }))) {
         skipped++;
         continue;

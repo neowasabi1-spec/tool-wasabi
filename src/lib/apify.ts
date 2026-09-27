@@ -459,14 +459,14 @@ export function mapApifyAdItem(raw: unknown): MappedAd | null {
   if (typeof activeRaw === 'boolean') adActive = activeRaw ? 'true' : 'false';
   else {
     const s = str(activeRaw).trim().toLowerCase();
-    if (s === 'true' || s === 'active') adActive = 'true';
-    else if (s === 'false' || s === 'inactive') adActive = 'false';
+    if (s === 'true' || s === 'active' || s === '1') adActive = 'true';
+    else if (s === 'false' || s === 'inactive' || s === '0' || s === 'stopped' || s === 'ended') adActive = 'false';
   }
-  // If no explicit status but there's a start and no end date, treat as active.
-  if (!adActive && adStartedAt) {
-    const hasEnd = toIsoDate(r.endDate, r.end_date, r.ad_delivery_stop_time, snap.end_date);
-    adActive = hasEnd ? 'false' : 'true';
-  }
+  // Prefer an explicit end date over a missing/stale isActive flag.
+  const adEndedAt = toIsoDate(r.endDate, r.end_date, r.ad_delivery_stop_time, snap.end_date);
+  if (adEndedAt) adActive = 'false';
+  // Do NOT default "no end date" → active. Apify often omits status/endDate
+  // for dead ads, which made Wasabi show green Active badges incorrectly.
 
   const adVariants =
     firstNum(r.collationCount, r.collation_count, r.total, r.totalCount, snap.collation_count) ?? 0;
