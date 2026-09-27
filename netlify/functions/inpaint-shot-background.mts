@@ -1840,192 +1840,6 @@ async function falGrokPoll(
   return { url: data.video.url };
 }
 
-type CaptionBand = { y0: number; y1: number; x0: number; x1: number };
-
-/** Horizontal stroke-bands on one frame: top, middle, or bottom. */
-function captionBands(frame: Buffer, w: number, h: number): CaptionBand[] {
-  const n = w * h;
-  const L = new Uint8Array(n);
-  for (let p = 0, i = 0; p < n; p++, i += 3) {
-    L[p] = (frame[i] * 77 + frame[i + 1] * 150 + frame[i + 2] * 29) >> 8;
-  }
-  const colBlack = new Uint16Array(w);
-  for (let y = 0; y < h; y++) {
-    const row = y * w;
-    for (let x = 0; x < w; x++) if (L[row + x] < 8) colBlack[x]++;
-  }
-  const cols: number[] = [];
-  for (let x = 1; x < w - 1; x++) if (colBlack[x] < h * 0.72) cols.push(x);
-  const use = cols.length > w * 0.25 ? cols : Array.from({ length: w - 2 }, (_, i) => i + 1);
-  const rowN = new Uint16Array(h);
-  const rowMin = new Uint16Array(h);
-  const rowMax = new Int16Array(h);
-  rowMin.fill(w);
-  rowMax.fill(-1);
-  for (let c = 0; c < use.length; c++) {
-    const x = use[c];
-    for (let y = 1; y < h - 1; y++) {
-      const i = y * w + x;
-      const e = Math.abs(L[i] - L[i - 1]) + Math.abs(L[i] - L[i + 1]);
-      if (e < 36) continue;
-      rowN[y]++;
-      if (x < rowMin[y]) rowMin[y] = x;
-      if (x > rowMax[y]) rowMax[y] = x;
-    }
-  }
-  const minE = Math.max(10, Math.round(use.length * 0.025));
-  const maxE = Math.round(use.length * 0.82);
-  const bands: CaptionBand[] = [];
-  let y = 0;
-  while (y < h) {
-    if (rowN[y] < minE || rowN[y] > maxE) { y++; continue; }
-    const y0 = y;
-    let x0 = w;
-    let x1 = 0;
-    while (y < h && rowN[y] >= minE * 0.55 && rowN[y] <= maxE) {
-      if (rowMin[y] < x0) x0 = rowMin[y];
-      if (rowMax[y] > x1) x1 = rowMax[y];
-      y++;
-    }
-    const bh = y - y0;
-    const bw = x1 - x0;
-    if (bh >= 5 && bh < h * 0.22 && bw > w * 0.08) {
-      bands.push({
-        y0: Math.max(0, y0 - 2),
-        y1: Math.min(h, y + 2),
-        x0: Math.max(0, x0 - 8),
-        x1: Math.min(w - 1, x1 + 8),
-      });
-    }
-  }
-  return bands;
-}
-
-function bandsMatch(a: CaptionBand, b: CaptionBand): boolean {
-  const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
-  const ah = Math.max(1, a.y1 - a.y0);
-  const bh = Math.max(1, b.y1 - b.y0);
-  if (oy < Math.min(ah, bh) * 0.45) return false;
-  const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
-  return ox > Math.max(1, a.x1 - a.x0) * 0.3;
-}
-
-function paintBands(frame: Buffer, w: number, h: number, bands: CaptionBand[]): number {
-  let painted = 0;
-  for (const b of bands) {
-    const y0 = b.y0;
-    const y1 = b.y1;
-    const up = Math.max(0, y0 - 4);
-    const dn = Math.min(h - 1, y1 + 3);
-    const span = Math.max(1, y1 - y0);
-    for (let x = b.x0; x <= b.x1; x++) {
-      const si = (up * w + x) * 3;
-      const sj = (dn * w + x) * 3;
-      for (let y = y0; y < y1; y++) {
-        const t = (y - y0) / span;
-        const di = (y * w + x) * 3;
-        frame[di] = frame[si] + (frame[sj] - frame[si]) * t;
-        frame[di + 1] = frame[si + 1] + (frame[sj + 1] - frame[si + 1]) * t;
-        frame[di + 2] = frame[si + 2] + (frame[sj + 2] - frame[si + 2]) * t;
-        painted++;
-      }
-    }
-  }
-  return painted;
-}
-
-/**
- * Paint out caption lines Grok left behind, then replace the file.
- * Returns true when the picture was rewritten.
- */
-async function wipeCaptionPixels(
-  file: string, W: number, H: number, len: number, fps: number, workDir: string,
-  log: (...a: unknown[]) => void,
-): Promise<boolean> {
-  try {
-    const rate = Math.max(1, Math.round(fps) || 30);
-    const frames = Math.max(1, Math.round(len * rate));
-    const budget = 180 * 1024 * 1024;
-    let w = Math.max(2, W - (W % 2));
-    let h = Math.max(2, H - (H % 2));
-    while (w > 320 && h > 320 && w * h * 3 * frames > budget) {
-      w = Math.max(2, Math.round((w * 0.85) / 2) * 2);
-      h = Math.max(2, Math.round((h * 0.85) / 2) * 2);
-    }
-    const raw = path.join(workDir, `wipe-in-${path.basename(file)}.raw`);
-    const outRaw = path.join(workDir, `wipe-out-${path.basename(file)}.raw`);
-    await run(FFMPEG, [
-      '-y', '-i', file,
-      '-vf', `scale=${w}:${h}`,
-      '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw,
-    ]);
-    const frameBytes = w * h * 3;
-    const nf = Math.floor(fs.statSync(raw).size / frameBytes);
-    if (nf < 1) return false;
-    const frame = Buffer.allocUnsafe(frameBytes);
-    const found: CaptionBand[][] = [];
-    const fdScan = fs.openSync(raw, 'r');
-    try {
-      for (let f = 0; f < nf; f++) {
-        fs.readSync(fdScan, frame, 0, frameBytes, f * frameBytes);
-        found.push(captionBands(frame, w, h));
-      }
-    } finally {
-      fs.closeSync(fdScan);
-    }
-    const need = nf >= 8 ? 3 : 1;
-    const holds = (i: number, band: CaptionBand) => {
-      let n = 0;
-      const a = Math.max(0, i - 8);
-      const b = Math.min(nf - 1, i + 8);
-      for (let j = a; j <= b; j++) if (found[j].some((o) => bandsMatch(band, o))) n++;
-      return n >= need;
-    };
-    const fdIn = fs.openSync(raw, 'r');
-    const fdOut = fs.openSync(outRaw, 'w');
-    let painted = 0;
-    let framesHit = 0;
-    try {
-      for (let f = 0; f < nf; f++) {
-        fs.readSync(fdIn, frame, 0, frameBytes, f * frameBytes);
-        let bands = found[f].filter((b) => holds(f, b));
-        if (!bands.length) {
-          for (const j of [f - 1, f + 1, f - 2, f + 2]) {
-            if (j < 0 || j >= nf) continue;
-            const extra = found[j].filter((b) => holds(j, b));
-            if (extra.length) { bands = extra; break; }
-          }
-        }
-        const n = paintBands(frame, w, h, bands);
-        if (n) framesHit++;
-        painted += n;
-        fs.writeSync(fdOut, frame);
-      }
-    } finally {
-      fs.closeSync(fdIn);
-      fs.closeSync(fdOut);
-    }
-    if (!painted) return false;
-    log(`caption lines on ${framesHit}/${nf} frames`);
-    const tmp = file.replace(/\.mp4$/i, '') + '-wipe.mp4';
-    await run(FFMPEG, [
-      '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${w}x${h}`, '-r', String(rate),
-      '-i', outRaw,
-      '-vf', `scale=${W}:${H}:flags=lanczos`,
-      '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
-      '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-      tmp,
-    ]);
-    fs.renameSync(tmp, file);
-    try { fs.rmSync(raw, { force: true }); fs.rmSync(outRaw, { force: true }); } catch { /* ignore */ }
-    log(`wiped leftover caption (${painted} px)`);
-    return true;
-  } catch (e) {
-    log(`caption wipe skipped (${(e as Error).message})`);
-    return false;
-  }
-}
-
 /** True when this piece still shows a burned-in caption line. */
 async function pieceHasText(
   file: string, W: number, H: number, len: number, fps: number, workDir: string,
@@ -2181,7 +1995,7 @@ async function cleanWholeAdGrok(
         try {
           await downloadSource(supabase, w.key as string, prev);
           if (await pieceHasText(prev, W, H, pieceLen(i), fps, workDir, log)) {
-            log(`piece ${i + 1}/${nseg}: subtitles still there — painting them out`);
+            log(`piece ${i + 1}/${nseg}: subtitles still there`);
           }
         } catch (e) {
           log(`piece ${i + 1}/${nseg}: leftover check skipped (${(e as Error).message})`);
@@ -2276,7 +2090,7 @@ async function cleanWholeAdGrok(
         w.s = 'clean';
         w.key = winKey;
         if (await pieceHasText(norm, W, H, len, fps, workDir, log)) {
-          log(`piece ${i + 1}/${nseg}: Grok left caption text — it is painted out when the video is joined`);
+          log(`piece ${i + 1}/${nseg}: Grok left caption text`);
         } else {
           log(`piece ${i + 1}/${nseg}: captions cleared`);
         }
@@ -2395,7 +2209,6 @@ async function cleanWholeAdGrok(
           f,
         ]);
       }
-      await wipeCaptionPixels(f, W, H, len, fps, workDir, log);
       localFiles.push(f);
     }
 
