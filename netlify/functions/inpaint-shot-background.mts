@@ -1777,15 +1777,12 @@ type GrokWin = {
   s: 'todo' | 'clean' | 'failed';
   key?: string;
   waits?: number;
-  req?: { kind: 'xai'; id: string } | { kind: 'fal'; statusUrl: string; responseUrl: string };
+  req?: { statusUrl: string; responseUrl: string };
 };
 type GrokProg = { src: string; nseg: number; v: number; wins: GrokWin[] };
 
-function grokCreds() {
-  return {
-    xai: (process.env.XAI_API_KEY || '').trim(),
-    fal: (process.env.FAL_KEY || process.env.FAL_AI_API_KEY || '').trim(),
-  };
+function falKey() {
+  return (process.env.FAL_KEY || process.env.FAL_AI_API_KEY || '').trim();
 }
 
 function fit720(w: number, h: number) {
@@ -1802,35 +1799,6 @@ async function downloadHttp(url: string, dest: string) {
   const resp = await fetch(url);
   if (!resp.ok) throw new Error(`download ${resp.status}`);
   fs.writeFileSync(dest, Buffer.from(await resp.arrayBuffer()));
-}
-
-async function xaiSubmit(apiKey: string, videoUrl: string): Promise<string> {
-  const res = await fetch('https://api.x.ai/v1/videos/edits', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'grok-imagine-video',
-      prompt: GROK_PROMPT,
-      video: { url: videoUrl },
-    }),
-  });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`grok edit ${res.status}: ${text.slice(0, 400)}`);
-  const id = (JSON.parse(text) as { request_id?: string }).request_id;
-  if (!id) throw new Error('grok edit returned no request_id');
-  return id;
-}
-
-async function xaiPoll(apiKey: string, id: string): Promise<{ url?: string; error?: string; pending?: boolean }> {
-  const res = await fetch(`https://api.x.ai/v1/videos/${id}`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
-  const text = await res.text();
-  if (!res.ok) return { error: `grok poll ${res.status}: ${text.slice(0, 300)}` };
-  const data = JSON.parse(text) as { status?: string; video?: { url?: string }; error?: string };
-  if (data.status === 'done' && data.video?.url) return { url: data.video.url };
-  if (data.status === 'failed' || data.status === 'expired') return { error: data.error || `grok ${data.status}` };
-  return { pending: true };
 }
 
 async function falGrokSubmit(apiKey: string, videoUrl: string) {
@@ -1866,7 +1834,7 @@ async function falGrokPoll(
 }
 
 /**
- * Whole-video subtitle removal via Grok video edit.
+ * Whole-video subtitle removal via Grok video edit on fal.ai (FAL_KEY).
  * The clip is split into 7s pieces (under the 8s edit cap). Each piece is one
  * edit that must clear every caption in that window, wherever it sits.
  * A long video needs several background runs; an in-flight request is resumed,
@@ -1887,8 +1855,8 @@ async function cleanWholeAdGrok(
     return new Response('error', { status: 200 });
   };
 
-  const creds = grokCreds();
-  if (!creds.xai && !creds.fal) return fail('Set XAI_API_KEY or FAL_KEY to remove subtitles with Grok');
+  const apiKey = falKey();
+  if (!apiKey) return fail('FAL_KEY is not set in Netlify env vars');
 
   const { data: claimed, error: claimErr } = await supabase
     .from('competitor_ads')
@@ -1952,7 +1920,7 @@ async function cleanWholeAdGrok(
       await uploadFile(supabase, progressKey, f, 'application/json');
     };
     const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
-    log(`grok: ${dur.toFixed(1)}s → ${nseg} call(s) of ${GROK_CHUNK_SEC}s — ${doneCount()}/${nseg} already resolved (${creds.xai ? 'xai' : 'fal'})`);
+    log(`grok via fal: ${dur.toFixed(1)}s → ${nseg} call(s) of ${GROK_CHUNK_SEC}s — ${doneCount()}/${nseg} already resolved`);
 
     const sign = async (key: string) => {
       const { data } = await supabase.storage.from(BUCKET).createSignedUrl(key, 7200);
@@ -1976,6 +1944,7 @@ async function cleanWholeAdGrok(
       const t0 = i * GROK_CHUNK_SEC;
       const len = i === nseg - 1 ? Math.max(0.25, dur - t0) : GROK_CHUNK_SEC;
 
+      if (w.req && !w.req.statusUrl) delete w.req;
       if (!w.req) {
         const segFile = path.join(workDir, `seg_${i}.mp4`);
         await run(FFMPEG, [
@@ -1996,9 +1965,7 @@ async function cleanWholeAdGrok(
           continue;
         }
         try {
-          w.req = creds.xai
-            ? { kind: 'xai', id: await xaiSubmit(creds.xai, videoUrl) }
-            : { kind: 'fal', ...(await falGrokSubmit(creds.fal, videoUrl)) };
+          w.req = await falGrokSubmit(apiKey, videoUrl);
           log(`piece ${i + 1}/${nseg}: Grok edit submitted (${len.toFixed(1)}s)`);
         } catch (e) {
           w.s = 'failed';
@@ -2013,9 +1980,7 @@ async function cleanWholeAdGrok(
         await sleep(POLL_MS);
         let polled: { url?: string; error?: string; pending?: boolean };
         try {
-          polled = w.req.kind === 'xai'
-            ? await xaiPoll(creds.xai, w.req.id)
-            : await falGrokPoll(creds.fal, w.req.statusUrl, w.req.responseUrl);
+          polled = await falGrokPoll(apiKey, w.req.statusUrl, w.req.responseUrl);
         } catch (e) {
           log(`piece ${i + 1}/${nseg} poll error (${(e as Error).message}) — will resume`);
           w.waits = (w.waits || 0) + 1;

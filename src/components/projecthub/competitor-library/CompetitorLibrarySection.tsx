@@ -1503,7 +1503,7 @@ function CreativeDetailPanel({
                 </p>
               )}
               {cleanStatus === "error" && (
-                <p className="text-[10px] text-destructive">{cleanErr || "Cleaning failed — check the Grok key / logs."}</p>
+                <p className="text-[10px] text-destructive">{cleanErr || "Cleaning failed — check the Fal key / logs."}</p>
               )}
             </div>
           )}
