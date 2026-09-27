@@ -1781,9 +1781,46 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
 
   // Direct competitor discovery (multi SEARCH → Apify → judge in webhook)
   const [discovering, setDiscovering] = useState(false);
+  const [refreshingAll, setRefreshingAll] = useState(false);
 
   const directCount = competitors.filter((c) => !isVerticalPeer(c)).length;
   const fewDirects = !loading && directCount < 3;
+  const refreshableCount = competitors.filter((c) => String(c.ads_library_url || "").trim()).length;
+
+  const runRefreshAll = async () => {
+    if (refreshingAll || !refreshableCount) return;
+    setRefreshingAll(true);
+    try {
+      const r = await fetch(
+        `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/refresh-all`,
+        { method: "POST" },
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({
+          title: "Refresh failed",
+          description: String(data.error || `HTTP ${r.status}`),
+          variant: "destructive",
+        });
+        return;
+      }
+      const n = Number(data.started) || 0;
+      toast({
+        title: `Refreshing ${n} page${n === 1 ? "" : "s"}`,
+        description: "New creatives and active/inactive status update as scrapes finish.",
+      });
+      window.setTimeout(() => { void load(true); }, 15_000);
+      window.setTimeout(() => { void load(true); }, 60_000);
+    } catch (e) {
+      toast({
+        title: "Refresh failed",
+        description: e instanceof Error ? e.message : "Network error",
+        variant: "destructive",
+      });
+    } finally {
+      setRefreshingAll(false);
+    }
+  };
 
   const runDiscoverDirect = async () => {
     if (discovering) return;
@@ -1976,6 +2013,16 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <p className="text-sm text-muted-foreground mt-0.5">Monitor competitors and save their templates</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+          <Button
+            variant="outline"
+            onClick={() => void runRefreshAll()}
+            disabled={refreshingAll || !refreshableCount}
+            className="gap-1.5 text-sm"
+            title="Re-scrape every monitored page: new ads + active/inactive"
+          >
+            {refreshingAll ? <RefreshCw className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {refreshingAll ? "Refreshing…" : "Refresh all"}
+          </Button>
           <Button
             variant="outline"
             onClick={() => void runDiscoverDirect()}
