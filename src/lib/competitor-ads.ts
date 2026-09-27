@@ -163,7 +163,14 @@ export async function adExistsByExternalId(
 export async function fillMissingAdCopy(
   brandId: number,
   externalId: string,
-  copy: { headline?: string; hook?: string; body_text?: string; landing_url?: string },
+  copy: {
+    headline?: string;
+    hook?: string;
+    body_text?: string;
+    landing_url?: string;
+    /** Refresh Meta active flag on re-scrape ('' = unknown, omit to leave as-is). */
+    ad_active?: string;
+  },
 ): Promise<boolean> {
   if (!externalId) return false;
   const load = async (cols: string) =>
@@ -174,13 +181,13 @@ export async function fillMissingAdCopy(
       .eq('external_id', externalId)
       .maybeSingle();
 
-  let { data, error } = await load('id, headline, hook, body_text, landing_url');
-  if (error && /landing_url|42703|PGRST204/i.test(error.message)) {
+  let { data, error } = await load('id, headline, hook, body_text, landing_url, ad_active');
+  if (error && /landing_url|ad_active|42703|PGRST204/i.test(error.message)) {
     ({ data, error } = await load('id, headline, hook, body_text'));
   }
   if (error || !data) return false;
   const row = data as {
-    id: number; headline?: string; hook?: string; body_text?: string; landing_url?: string;
+    id: number; headline?: string; hook?: string; body_text?: string; landing_url?: string; ad_active?: string;
   };
 
   const patch: Record<string, unknown> = {};
@@ -188,6 +195,10 @@ export async function fillMissingAdCopy(
   if (!(row.hook || '').trim() && copy.hook) patch.hook = copy.hook.slice(0, 500);
   if (!(row.body_text || '').trim() && copy.body_text) patch.body_text = copy.body_text.slice(0, 4000);
   if (!(row.landing_url || '').trim() && copy.landing_url) patch.landing_url = copy.landing_url.slice(0, 2000);
+  // Always refresh status when the scraper has a clear true/false signal.
+  if (copy.ad_active === 'true' || copy.ad_active === 'false') {
+    if (row.ad_active !== copy.ad_active) patch.ad_active = copy.ad_active;
+  }
   if (Object.keys(patch).length === 0) return true;
 
   let upd = await supabaseAdmin.from('competitor_ads').update(patch).eq('id', row.id);
