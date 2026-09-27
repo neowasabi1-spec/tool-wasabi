@@ -842,22 +842,22 @@ function CreativeDetailPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ad.id]);
   const removeSubtitles = async () => {
-    const deghost = Boolean(cleanPath);
+    const again = Boolean(cleanPath);
     setCleanStatus("pending"); setCleanErr("");
-    if (!deghost) setCleanPath("");
+    if (!again) setCleanPath("");
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/clean-video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(deghost ? { mode: "deghost" } : { mode: "clean" }),
+        body: JSON.stringify(again ? { mode: "again" } : { mode: "clean" }),
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
         toast({
-          title: deghost ? "Checking the clean mark…" : "Removing subtitles…",
-          description: deghost
-            ? "If the captions are still there, the video is unmarked. No new AI charge."
-            : "Grok clears every subtitle in each 7-second piece, top and bottom. One call per piece, then it stops.",
+          title: again ? "Removing the subtitles that are left…" : "Removing subtitles…",
+          description: again
+            ? "Grok only redoes the 7-second pieces that still have subtitles."
+            : "Grok clears every subtitle in each 7-second piece. A piece that still has text is sent once more.",
         });
         if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
       } else {
@@ -1476,8 +1476,8 @@ function CreativeDetailPanel({
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
                 {cleanPath
-                  ? "Checks the file already saved. If the original captions are still there, the clean mark is removed and nothing is sent back to the AI."
-                  : <>Splits the video into 7-second pieces. Grok deletes every subtitle in each piece, wherever it sits, then the original audio is put back.</>}
+                  ? "Sends back only the 7-second pieces that still show subtitles. The pieces already clean are kept."
+                  : <>Splits the video into 7-second pieces. Grok deletes every subtitle in each piece, and if any remain in that piece it is sent once more.</>}
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -1487,7 +1487,7 @@ function CreativeDetailPanel({
                   className="flex-1 gap-2 h-8">
                   {cleanStatus === "pending" || cleanStatus === "processing"
                     ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {cleanStatus === "pending" ? "Queued…" : "Cleaning…"}</>
-                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Check clean mark" : "Remove subtitles"}</>}
+                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Remove remaining" : "Remove subtitles"}</>}
                 </Button>
                 {cleanPath && (
                   <a
