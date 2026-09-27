@@ -84,7 +84,7 @@ export async function POST(
       .eq('id', ad.id));
   }
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ error: error.message, transcript: spoken }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true, transcript: spoken, body_text: ad.body_text || '' });

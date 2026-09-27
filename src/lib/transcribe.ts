@@ -23,10 +23,14 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-/** Whisper accepts audio reliably. Many ad mp4s are rejected as video files. */
+/**
+ * Whisper accepts audio reliably. Many ad mp4s are rejected as video files.
+ * The Next server on Netlify does not ship ffmpeg (it would blow the 250MB
+ * function cap), so this returns null there and the caller goes to Gemini.
+ */
 async function audioForWhisper(video: Buffer): Promise<Buffer | null> {
   const bin = typeof ffmpegStatic === 'string' ? ffmpegStatic : '';
-  if (!bin) return null;
+  if (!bin || !fs.existsSync(bin)) return null;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'whisper-'));
   const src = path.join(dir, 'in.bin');
   const out = path.join(dir, 'audio.mp3');
@@ -34,8 +38,19 @@ async function audioForWhisper(video: Buffer): Promise<Buffer | null> {
     fs.writeFileSync(src, video);
     await new Promise<void>((resolve, reject) => {
       const p = spawn(bin, ['-y', '-i', src, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '64k', out], { stdio: 'ignore' });
-      p.on('error', reject);
-      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg ${code}`))));
+      const timer = setTimeout(() => {
+        p.kill('SIGKILL');
+        reject(new Error('ffmpeg timeout'));
+      }, 25000);
+      p.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      p.on('close', (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve();
+        else reject(new Error(`ffmpeg ${code}`));
+      });
     });
     const audio = fs.readFileSync(out);
     return audio.length > 800 ? audio : null;
@@ -55,11 +70,12 @@ async function transcribeWithWhisper(buffer: Buffer, contentType: string): Promi
   let name = /webm/i.test(type) ? 'clip.webm' : /quicktime|mov/i.test(type) ? 'clip.mov' : 'clip.mp4';
   if (/video/i.test(type) || payload.length > WHISPER_MAX_BYTES) {
     const audio = await audioForWhisper(buffer);
-    if (audio) {
-      payload = audio;
-      type = 'audio/mpeg';
-      name = 'audio.mp3';
-    }
+    // The raw container comes back empty from Whisper and burns the request
+    // before Gemini can read speech or burned-in captions.
+    if (!audio) return '';
+    payload = audio;
+    type = 'audio/mpeg';
+    name = 'audio.mp3';
   }
   if (payload.length > WHISPER_MAX_BYTES) return '';
   try {
@@ -110,7 +126,11 @@ async function transcribeWithGemini(buffer: Buffer, contentType: string): Promis
         generationConfig: { temperature: 0 },
       }),
     });
-    if (!res.ok) return '';
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      console.warn('[transcribe] gemini', res.status, err.slice(0, 300));
+      return '';
+    }
     const data = (await res.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
     };

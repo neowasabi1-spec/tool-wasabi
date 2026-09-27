@@ -729,6 +729,7 @@ function CreativeDetailPanel({
   const [text, setText] = useState(ad.body_text || "");
   const [transcript, setTranscript] = useState(ad.transcript || "");
   const [transcribing, setTranscribing] = useState(false);
+  const autoTried = useRef<number | null>(null);
   const [winner, setWinner] = useState(!!ad.is_winner);
   const [markingWinner, setMarkingWinner] = useState(false);
   // Phase 1 — "same script, new video": rewrite the winning transcript for the
@@ -1080,26 +1081,34 @@ function CreativeDetailPanel({
       setTimeout(() => setCopied(false), 1500);
     } catch { toast({ title: "Copy failed", variant: "destructive" }); }
   };
-  const transcribe = async () => {
+  const transcribe = async (silent = false) => {
     setTranscribing(true);
     try {
       const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/transcribe`, { method: "POST" });
       const j = await r.json().catch(() => ({}));
       const spoken = String(j.transcript || "").trim();
-      if (r.ok && spoken) {
+      if (spoken) {
         setTranscript(spoken);
         onTranscribed?.(ad.id, spoken);
-        toast({ title: "Transcript ready" });
-      } else {
+        if (!silent) toast({ title: r.ok ? "Transcript ready" : (j.error || "Transcript ready") });
+      } else if (!silent) {
         toast({ title: j.error || "Transcription failed", variant: "destructive" });
       }
-    } catch { toast({ title: "Transcription failed", variant: "destructive" }); }
+    } catch { if (!silent) toast({ title: "Transcription failed", variant: "destructive" }); }
     finally { setTranscribing(false); }
   };
   useEffect(() => {
     setText(ad.body_text || "");
     setTranscript(ad.transcript || "");
   }, [ad.id, ad.body_text, ad.transcript]);
+  useEffect(() => {
+    if (ad.media_type !== "video") return;
+    if ((ad.transcript || "").trim()) return;
+    if (autoTried.current === ad.id) return;
+    autoTried.current = ad.id;
+    void transcribe(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ad.id, ad.media_type, ad.transcript]);
   const libraryUrl = adLibraryUrlForCreative(ad, adsLibraryUrl || ad.ads_library_url);
   return (
     <>
