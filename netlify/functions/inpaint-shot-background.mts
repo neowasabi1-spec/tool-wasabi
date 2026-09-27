@@ -1840,149 +1840,93 @@ async function falGrokPoll(
   return { url: data.video.url };
 }
 
-/**
- * Cover burned-in caption lines, including dark gray text on a light picture.
- * The previous colour detector only accepted near-white outlined glyphs, so a
- * line like "picking up little bits of" was left untouched.
- * Returns how many pixels were repainted.
- */
-function paintCaptionLines(frame: Buffer, w: number, h: number): number {
+type CaptionBand = { y0: number; y1: number; x0: number; x1: number };
+
+/** Horizontal stroke-bands on one frame: top, middle, or bottom. */
+function captionBands(frame: Buffer, w: number, h: number): CaptionBand[] {
   const n = w * h;
   const L = new Uint8Array(n);
   for (let p = 0, i = 0; p < n; p++, i += 3) {
     L[p] = (frame[i] * 77 + frame[i + 1] * 150 + frame[i + 2] * 29) >> 8;
   }
-  const isInk = (x: number, y: number) => {
-    if (y < 10 || y >= h - 10) return false;
-    const v = L[y * w + x];
-    for (const dy of [10, 16, 24]) {
-      const up = L[(y - dy) * w + x];
-      const dn = L[(y + dy) * w + x];
-      if ((up > v + 36 && dn > v + 36) || (v > up + 36 && v > dn + 36)) return true;
-    }
-    return false;
-  };
-  const hit = new Uint8Array(n);
-  for (let y = 10; y < h - 10; y++) {
-    for (let x = 0; x < w; x++) if (isInk(x, y)) hit[y * w + x] = 1;
-  }
-  for (let x = 0; x < w; x++) {
-    let c = 0;
-    for (let y = 0; y < h; y++) if (hit[y * w + x]) c++;
-    if (c > h * 0.4) for (let y = 0; y < h; y++) hit[y * w + x] = 0;
-  }
-  const grown = new Uint8Array(n);
-  const gx = 8;
-  const gy = 5;
+  const colBlack = new Uint16Array(w);
   for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!hit[y * w + x]) continue;
-      for (let dy = -gy; dy <= gy; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= h) continue;
-        for (let dx = -gx; dx <= gx; dx++) {
-          const xx = x + dx;
-          if (xx >= 0 && xx < w) grown[yy * w + xx] = 1;
-        }
-      }
+    const row = y * w;
+    for (let x = 0; x < w; x++) if (L[row + x] < 8) colBlack[x]++;
+  }
+  const cols: number[] = [];
+  for (let x = 1; x < w - 1; x++) if (colBlack[x] < h * 0.72) cols.push(x);
+  const use = cols.length > w * 0.25 ? cols : Array.from({ length: w - 2 }, (_, i) => i + 1);
+  const rowN = new Uint16Array(h);
+  const rowMin = new Uint16Array(h);
+  const rowMax = new Int16Array(h);
+  rowMin.fill(w);
+  rowMax.fill(-1);
+  for (let c = 0; c < use.length; c++) {
+    const x = use[c];
+    for (let y = 1; y < h - 1; y++) {
+      const i = y * w + x;
+      const e = Math.abs(L[i] - L[i - 1]) + Math.abs(L[i] - L[i + 1]);
+      if (e < 36) continue;
+      rowN[y]++;
+      if (x < rowMin[y]) rowMin[y] = x;
+      if (x > rowMax[y]) rowMax[y] = x;
     }
   }
-  const label = new Int32Array(n);
-  const blobs: Array<{ x0: number; x1: number; y0: number; y1: number } | null> = [null];
-  const stack: number[] = [];
-  for (let s = 0; s < n; s++) {
-    if (!grown[s] || label[s]) continue;
-    const id = blobs.length;
-    const b = { x0: s % w, x1: s % w, y0: (s / w) | 0, y1: (s / w) | 0 };
-    blobs.push(b);
-    label[s] = id;
-    stack.push(s);
-    while (stack.length) {
-      const p = stack.pop() as number;
-      const py = (p / w) | 0;
-      const px = p - py * w;
-      if (px < b.x0) b.x0 = px;
-      if (px > b.x1) b.x1 = px;
-      if (py < b.y0) b.y0 = py;
-      if (py > b.y1) b.y1 = py;
-      const near = [p + 1, p - 1, p + w, p - w];
-      for (let k = 0; k < 4; k++) {
-        const q = near[k];
-        if (q < 0 || q >= n || !grown[q] || label[q]) continue;
-        const qy = (q / w) | 0;
-        const qx = q - qy * w;
-        if (k === 0 && qx === 0) continue;
-        if (k === 1 && qx === w - 1) continue;
-        label[q] = id;
-        stack.push(q);
-      }
+  const minE = Math.max(10, Math.round(use.length * 0.025));
+  const maxE = Math.round(use.length * 0.82);
+  const bands: CaptionBand[] = [];
+  let y = 0;
+  while (y < h) {
+    if (rowN[y] < minE || rowN[y] > maxE) { y++; continue; }
+    const y0 = y;
+    let x0 = w;
+    let x1 = 0;
+    while (y < h && rowN[y] >= minE * 0.55 && rowN[y] <= maxE) {
+      if (rowMin[y] < x0) x0 = rowMin[y];
+      if (rowMax[y] > x1) x1 = rowMax[y];
+      y++;
+    }
+    const bh = y - y0;
+    const bw = x1 - x0;
+    if (bh >= 5 && bh < h * 0.22 && bw > w * 0.08) {
+      bands.push({
+        y0: Math.max(0, y0 - 2),
+        y1: Math.min(h, y + 2),
+        x0: Math.max(0, x0 - 8),
+        x1: Math.min(w - 1, x1 + 8),
+      });
     }
   }
-  const keep = new Uint8Array(n);
-  let kept = 0;
-  for (let id = 1; id < blobs.length; id++) {
-    const b = blobs[id] as { x0: number; x1: number; y0: number; y1: number };
-    const bw = b.x1 - b.x0 + 1;
-    const bh = b.y1 - b.y0 + 1;
-    if (!(bw > bh * 2.2 && bw > w * 0.1 && bh < h * 0.18 && bh > 8)) continue;
-    if ((bw * bh) / n > 0.2) continue;
-    for (let y = b.y0; y <= b.y1; y++) {
-      for (let x = b.x0; x <= b.x1; x++) {
-        const p = y * w + x;
-        if (label[p] === id) { keep[p] = 1; kept++; }
-      }
-    }
-  }
-  if (!kept) return 0;
-  const mask = new Uint8Array(n);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!keep[y * w + x]) continue;
-      for (let dy = -6; dy <= 6; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= h) continue;
-        for (let dx = -4; dx <= 4; dx++) {
-          const xx = x + dx;
-          if (xx >= 0 && xx < w) mask[yy * w + xx] = 1;
-        }
-      }
-    }
-  }
-  const nearest = (x: number, y0: number, y1: number, dir: number) => {
-    for (let off = 4; off <= 80; off += 4) {
-      const yy = dir < 0 ? y0 - off : y1 + off - 1;
-      if (yy < 10 || yy >= h - 10 || mask[yy * w + x]) continue;
-      if (!isInk(x, yy)) return yy;
-    }
-    return -1;
-  };
+  return bands;
+}
+
+function bandsMatch(a: CaptionBand, b: CaptionBand): boolean {
+  const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+  const ah = Math.max(1, a.y1 - a.y0);
+  const bh = Math.max(1, b.y1 - b.y0);
+  if (oy < Math.min(ah, bh) * 0.45) return false;
+  const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+  return ox > Math.max(1, a.x1 - a.x0) * 0.3;
+}
+
+function paintBands(frame: Buffer, w: number, h: number, bands: CaptionBand[]): number {
   let painted = 0;
-  for (let x = 0; x < w; x++) {
-    let y = 0;
-    while (y < h) {
-      if (!mask[y * w + x]) { y++; continue; }
-      const y0 = y;
-      while (y < h && mask[y * w + x]) y++;
-      const y1 = y;
-      const up = nearest(x, y0, y1, -1);
-      const dn = nearest(x, y0, y1, 1);
-      if (up < 0 && dn < 0) continue;
-      const span = Math.max(1, y1 - y0);
-      for (let yy = y0; yy < y1; yy++) {
-        const di = (yy * w + x) * 3;
-        if (up >= 0 && dn >= 0) {
-          const t = (yy - y0) / span;
-          const si = (up * w + x) * 3;
-          const sj = (dn * w + x) * 3;
-          frame[di] = frame[si] + (frame[sj] - frame[si]) * t;
-          frame[di + 1] = frame[si + 1] + (frame[sj + 1] - frame[si + 1]) * t;
-          frame[di + 2] = frame[si + 2] + (frame[sj + 2] - frame[si + 2]) * t;
-        } else {
-          const si = ((up >= 0 ? up : dn) * w + x) * 3;
-          frame[di] = frame[si];
-          frame[di + 1] = frame[si + 1];
-          frame[di + 2] = frame[si + 2];
-        }
+  for (const b of bands) {
+    const y0 = b.y0;
+    const y1 = b.y1;
+    const up = Math.max(0, y0 - 4);
+    const dn = Math.min(h - 1, y1 + 3);
+    const span = Math.max(1, y1 - y0);
+    for (let x = b.x0; x <= b.x1; x++) {
+      const si = (up * w + x) * 3;
+      const sj = (dn * w + x) * 3;
+      for (let y = y0; y < y1; y++) {
+        const t = (y - y0) / span;
+        const di = (y * w + x) * 3;
+        frame[di] = frame[si] + (frame[sj] - frame[si]) * t;
+        frame[di + 1] = frame[si + 1] + (frame[sj + 1] - frame[si + 1]) * t;
+        frame[di + 2] = frame[si + 2] + (frame[sj + 2] - frame[si + 2]) * t;
         painted++;
       }
     }
@@ -2018,14 +1962,43 @@ async function wipeCaptionPixels(
     const frameBytes = w * h * 3;
     const nf = Math.floor(fs.statSync(raw).size / frameBytes);
     if (nf < 1) return false;
+    const frame = Buffer.allocUnsafe(frameBytes);
+    const found: CaptionBand[][] = [];
+    const fdScan = fs.openSync(raw, 'r');
+    try {
+      for (let f = 0; f < nf; f++) {
+        fs.readSync(fdScan, frame, 0, frameBytes, f * frameBytes);
+        found.push(captionBands(frame, w, h));
+      }
+    } finally {
+      fs.closeSync(fdScan);
+    }
+    const need = nf >= 8 ? 3 : 1;
+    const holds = (i: number, band: CaptionBand) => {
+      let n = 0;
+      const a = Math.max(0, i - 8);
+      const b = Math.min(nf - 1, i + 8);
+      for (let j = a; j <= b; j++) if (found[j].some((o) => bandsMatch(band, o))) n++;
+      return n >= need;
+    };
     const fdIn = fs.openSync(raw, 'r');
     const fdOut = fs.openSync(outRaw, 'w');
-    const frame = Buffer.allocUnsafe(frameBytes);
     let painted = 0;
+    let framesHit = 0;
     try {
       for (let f = 0; f < nf; f++) {
         fs.readSync(fdIn, frame, 0, frameBytes, f * frameBytes);
-        painted += paintCaptionLines(frame, w, h);
+        let bands = found[f].filter((b) => holds(f, b));
+        if (!bands.length) {
+          for (const j of [f - 1, f + 1, f - 2, f + 2]) {
+            if (j < 0 || j >= nf) continue;
+            const extra = found[j].filter((b) => holds(j, b));
+            if (extra.length) { bands = extra; break; }
+          }
+        }
+        const n = paintBands(frame, w, h, bands);
+        if (n) framesHit++;
+        painted += n;
         fs.writeSync(fdOut, frame);
       }
     } finally {
@@ -2033,6 +2006,7 @@ async function wipeCaptionPixels(
       fs.closeSync(fdOut);
     }
     if (!painted) return false;
+    log(`caption lines on ${framesHit}/${nf} frames`);
     const tmp = file.replace(/\.mp4$/i, '') + '-wipe.mp4';
     await run(FFMPEG, [
       '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${w}x${h}`, '-r', String(rate),
