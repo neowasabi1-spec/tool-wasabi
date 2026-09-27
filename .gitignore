@@ -91,3 +91,9 @@ supabase/.temp/
 COMMIT_MSG.tmp.txt
 scripts/tmp-*.js
 tsc-out.txt
+
+# Reel Engine (VideoClaude vendored)
+reel/node_modules/
+reel/.env
+reel/.typo-subtitles-backup-*/
+reel/.footage-montage-backup-*/
