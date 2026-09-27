@@ -856,8 +856,8 @@ function CreativeDetailPanel({
         toast({
           title: again ? "Removing the subtitles that are left…" : "Removing subtitles…",
           description: again
-            ? "Grok only redoes the 7-second pieces that still have subtitles."
-            : "Grok clears every subtitle in each 7-second piece. A piece that still has text is sent once more.",
+            ? "The original video is copied and the caption lines are covered."
+            : "Caption lines are covered on the original video. The rest of the picture stays.",
         });
         if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
       } else {

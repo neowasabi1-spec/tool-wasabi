@@ -1842,11 +1842,10 @@ async function falGrokPoll(
 }
 
 /**
- * Cover a caption line, including the inside of the letters.
- * A letter sits on the picture: it is darker or lighter than the pixels
- * above and below it, and a line of letters flips many times per row.
- * A knife edge or a table rim does not, so those stay.
- * If the mask would cover more than the caption, the frame is left alone.
+ * Cover caption lines, white-with-a-dark-outline and solid dark or light type.
+ * A line of letters flips light/dark many times. A knife edge flips once, so it stays.
+ * The whole letter box is filled, not only the outline. A frame is never skipped
+ * just because more than one line was found.
  */
 export function eraseCaptionGlyphs(frame: Buffer, w: number, h: number): number {
   const n = w * h;
@@ -1854,118 +1853,108 @@ export function eraseCaptionGlyphs(frame: Buffer, w: number, h: number): number 
   for (let p = 0, i = 0; p < n; p++, i += 3) {
     L[p] = (frame[i] * 77 + frame[i + 1] * 150 + frame[i + 2] * 29) >> 8;
   }
-  const stroke = (x: number, y: number) => {
-    if (y < 4 || y >= h - 4) return false;
-    const v = L[y * w + x];
-    for (const dy of [4, 9, 16]) {
-      if (y - dy < 0 || y + dy >= h) continue;
-      const up = L[(y - dy) * w + x];
-      const dn = L[(y + dy) * w + x];
-      if ((up > v + 36 && dn > v + 36) || (v > up + 36 && v > dn + 36)) return true;
-    }
-    return false;
-  };
   const hit = new Uint8Array(n);
-  for (let y = 4; y < h - 4; y++) {
-    for (let x = 0; x < w; x++) if (stroke(x, y)) hit[y * w + x] = 1;
+  const near: Array<[number, number]> = [[1, 0], [-1, 0], [2, 0], [-2, 0], [3, 0], [0, 1], [0, -1], [0, 2], [0, -2], [0, 3], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+  for (let y = 3; y < h - 3; y++) {
+    const row = y * w;
+    for (let x = 3; x < w - 3; x++) {
+      const v = L[row + x];
+      const bright = v >= 168;
+      const dark = v <= 96;
+      if (bright || dark) {
+        for (let k = 0; k < near.length; k++) {
+          const u = L[(y + near[k][1]) * w + (x + near[k][0])];
+          if ((bright && u <= 96) || (dark && u >= 168)) { hit[row + x] = 1; break; }
+        }
+      }
+      if (hit[row + x] || y < 8 || y >= h - 8) continue;
+      for (const dy of [5, 12]) {
+        const up = L[(y - dy) * w + x];
+        const dn = L[(y + dy) * w + x];
+        if ((up > v + 32 && dn > v + 32) || (v > up + 32 && v > dn + 32)) { hit[row + x] = 1; break; }
+      }
+    }
   }
   for (let x = 0; x < w; x++) {
     let c = 0;
     for (let y = 0; y < h; y++) if (hit[y * w + x]) c++;
     if (c > h * 0.35) for (let y = 0; y < h; y++) hit[y * w + x] = 0;
   }
-  const gap = Math.max(10, Math.round(w * 0.022));
-  const grown = new Uint8Array(n);
+  const gap = Math.max(12, Math.round(w * 0.03));
+  const rowBand: Array<{ x0: number; x1: number; flips: number } | null> = new Array(h).fill(null);
   for (let y = 0; y < h; y++) {
     const row = y * w;
     let x = 0;
+    let best: { x0: number; x1: number; flips: number; hits: number } | null = null;
     while (x < w) {
       while (x < w && !hit[row + x]) x++;
       if (x >= w) break;
       const x0 = x;
       let x1 = x;
+      let hits = 0;
+      let flips = 0;
+      let prev = 0;
       let hole = 0;
       while (x < w) {
-        if (hit[row + x]) { x1 = x; hole = 0; x++; }
+        const on = hit[row + x] ? 1 : 0;
+        if (on !== prev) { flips++; prev = on; }
+        if (on) { hits++; hole = 0; x1 = x; x++; }
         else { hole++; if (hole > gap) break; x++; }
       }
-      const yLo = Math.max(0, y - 2);
-      const yHi = Math.min(h - 1, y + 2);
-      for (let yy = yLo; yy <= yHi; yy++) {
-        for (let xx = x0; xx <= x1; xx++) grown[yy * w + xx] = 1;
+      const width = x1 - x0 + 1;
+      if (width > 28 && flips >= 8 && hits / width >= 0.16 && (!best || hits > best.hits)) {
+        best = { x0, x1, flips, hits };
       }
     }
-  }
-  const label = new Int32Array(n);
-  const blobs: Array<{ x0: number; x1: number; y0: number; y1: number } | null> = [null];
-  const stack: number[] = [];
-  for (let s = 0; s < n; s++) {
-    if (!grown[s] || label[s]) continue;
-    const id = blobs.length;
-    const b = { x0: s % w, x1: s % w, y0: (s / w) | 0, y1: (s / w) | 0 };
-    blobs.push(b);
-    label[s] = id;
-    stack.push(s);
-    while (stack.length) {
-      const p = stack.pop() as number;
-      const py = (p / w) | 0;
-      const px = p - py * w;
-      if (px < b.x0) b.x0 = px;
-      if (px > b.x1) b.x1 = px;
-      if (py < b.y0) b.y0 = py;
-      if (py > b.y1) b.y1 = py;
-      const near: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      for (let k = 0; k < 4; k++) {
-        const nx = px + near[k][0];
-        const ny = py + near[k][1];
-        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-        const q = ny * w + nx;
-        if (grown[q] && !label[q]) { label[q] = id; stack.push(q); }
-      }
-    }
+    if (best) rowBand[y] = { x0: best.x0, x1: best.x1, flips: best.flips };
   }
   const mask = new Uint8Array(n);
-  for (let id = 1; id < blobs.length; id++) {
-    const b = blobs[id] as { x0: number; x1: number; y0: number; y1: number };
-    const bw = b.x1 - b.x0 + 1;
-    const bh = b.y1 - b.y0 + 1;
-    if (!(bw > bh * 1.15 && bw > Math.max(18, w * 0.02) && bh < h * 0.14 && bh > 6)) continue;
-    let flips = 0;
-    let rows = 0;
-    for (let y = b.y0; y <= b.y1; y++) {
-      let prev = 0;
-      let any = false;
-      for (let x = b.x0; x <= b.x1; x++) {
-        const on = hit[y * w + x] ? 1 : 0;
-        if (on) any = true;
-        if (on !== prev) { flips++; prev = on; }
+  let covered = 0;
+  let y = 0;
+  while (y < h) {
+    if (!rowBand[y]) { y++; continue; }
+    let y0 = y;
+    let x0 = rowBand[y]!.x0;
+    let x1 = rowBand[y]!.x1;
+    let flips = rowBand[y]!.flips;
+    let rows = 1;
+    y++;
+    let blank = 0;
+    while (y < h && blank <= 1) {
+      const span = rowBand[y];
+      if (!span || span.x1 < x0 - gap || span.x0 > x1 + gap) {
+        blank++;
+        if (blank > 1) break;
+        y++;
+        continue;
       }
-      if (any) rows++;
+      blank = 0;
+      y0 = y0;
+      if (span.x0 < x0) x0 = span.x0;
+      if (span.x1 > x1) x1 = span.x1;
+      flips += span.flips;
+      rows++;
+      y++;
     }
-    if (rows < 4 || flips / rows < 8) continue;
-    for (let y = b.y0; y <= b.y1; y++) {
-      let x0 = -1;
-      let x1 = -1;
-      for (let x = b.x0; x <= b.x1; x++) {
-        if (!hit[y * w + x] && label[y * w + x] !== id) continue;
-        if (hit[y * w + x] || label[y * w + x] === id) {
-          if (x0 < 0) x0 = x;
-          x1 = x;
+    const y1 = y0 + rows - 1;
+    const bh = y1 - y0 + 1;
+    const bw = x1 - x0 + 1;
+    if (bh >= 6 && bh < h * 0.14 && bw > Math.max(28, w * 0.04) && flips / rows >= 8) {
+      const ya = Math.max(0, y0 - 3);
+      const yb = Math.min(h - 1, y1 + 3);
+      const xa = Math.max(0, x0 - 3);
+      const xb = Math.min(w - 1, x1 + 3);
+      const area = (yb - ya + 1) * (xb - xa + 1);
+      if (area < n * 0.05) {
+        covered += area;
+        for (let yy = ya; yy <= yb; yy++) {
+          const row = yy * w;
+          for (let xx = xa; xx <= xb; xx++) mask[row + xx] = 1;
         }
-      }
-      if (x0 < 0) continue;
-      const yLo = Math.max(0, y - 2);
-      const yHi = Math.min(h - 1, y + 2);
-      const xa = Math.max(0, x0 - 2);
-      const xb = Math.min(w - 1, x1 + 2);
-      for (let yy = yLo; yy <= yHi; yy++) {
-        for (let x = xa; x <= xb; x++) mask[yy * w + x] = 1;
       }
     }
   }
-  let covered = 0;
-  for (let i = 0; i < n; i++) if (mask[i]) covered++;
-  if (!covered || covered / n > 0.06) return 0;
+  if (!covered) return 0;
   const sample = (x: number, y: number) => {
     const i = (y * w + x) * 3;
     return [frame[i], frame[i + 1], frame[i + 2]] as const;
