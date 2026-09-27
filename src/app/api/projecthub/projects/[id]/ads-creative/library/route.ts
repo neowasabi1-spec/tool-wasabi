@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { loadDiscoveryLexicon } from '@/lib/discovery-lexicon';
 import { pruneNonSameProductBrands } from '@/lib/competitor-same-product';
-import { dedupeCreatives } from '@/lib/ads-intel/creative-fingerprint';
+import { attachContentHashes, dedupeCreatives } from '@/lib/ads-intel/creative-fingerprint';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -95,12 +95,26 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const { data, error } = await supabaseAdmin
     .from('competitor_ads')
-    .select('id, project_id, brand_id, name, headline, hook, body_text, media_type, file_path, is_winner, ad_active, spend, impressions, created_at')
+    .select('id, project_id, brand_id, name, headline, hook, body_text, media_type, file_path, media_hash, is_winner, ad_active, spend, impressions, created_at')
     .eq('project_id', projectId)
     .in('brand_id', brandIds)
     .order('created_at', { ascending: false })
     .limit(400);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  // media_hash column may be missing until migration — retry without it.
+  let rows = data;
+  let selErr = error;
+  if (selErr && /media_hash/i.test(selErr.message || '')) {
+    const retry = await supabaseAdmin
+      .from('competitor_ads')
+      .select('id, project_id, brand_id, name, headline, hook, body_text, media_type, file_path, is_winner, ad_active, spend, impressions, created_at')
+      .eq('project_id', projectId)
+      .in('brand_id', brandIds)
+      .order('created_at', { ascending: false })
+      .limit(400);
+    rows = retry.data;
+    selErr = retry.error;
+  }
+  if (selErr) return NextResponse.json({ error: selErr.message }, { status: 500 });
 
   const { data: analyses } = await supabaseAdmin
     .from('creative_analyses')
@@ -109,10 +123,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     .eq('ad_source', 'competitor');
 
   const byRef = new Map((analyses || []).map((a: any) => [String(a.ad_ref_id), a]));
-  const mapped = (data || []).map((ad: any) => ({
+  let mapped = (rows || []).map((ad: any) => ({
     ...ad,
     analysis: byRef.get(String(ad.id)) || null,
   }));
+  // Same bytes, different storage paths → one card (hashes computed on the fly).
+  mapped = await attachContentHashes(mapped, { limit: 150, concurrency: 10 });
   const ads = dedupeCreatives(mapped).slice(0, 100);
   const collapsed = mapped.length - ads.length;
 

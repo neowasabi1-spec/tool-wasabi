@@ -5,6 +5,7 @@
  * save-creative endpoint so uploads/insertions behave identically.
  */
 
+import { createHash } from 'crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { autoSplitIfVideo } from '@/lib/segment-enqueue';
 
@@ -285,6 +286,20 @@ export async function insertCompetitorAd(opts: {
     return { ok: false, error: 'No media bytes and no remote URL to store' };
   }
 
+  const mediaHash = buffer && buffer.length > 0
+    ? createHash('sha256').update(buffer).digest('hex')
+    : '';
+  if (mediaHash) {
+    const { data: dup } = await supabaseAdmin
+      .from('competitor_ads')
+      .select('*')
+      .eq('project_id', projectId)
+      .eq('brand_id', brandId)
+      .eq('media_hash', mediaHash)
+      .maybeSingle();
+    if (dup) return { ok: true as const, ad: dup as Record<string, unknown> };
+  }
+
   const insertRow: Record<string, unknown> = {
     project_id: projectId,
     brand_id: brandId,
@@ -304,6 +319,7 @@ export async function insertCompetitorAd(opts: {
   // so track which keys we added and retry without them if the columns don't
   // exist yet — never fail a save because the DB hasn't been migrated.
   const extraKeys: string[] = [];
+  if (mediaHash) { insertRow.media_hash = mediaHash; extraKeys.push('media_hash'); }
   if (opts.adStartedAt) { insertRow.ad_started_at = opts.adStartedAt; extraKeys.push('ad_started_at'); }
   if (opts.adActive !== undefined) { insertRow.ad_active = opts.adActive || ''; extraKeys.push('ad_active'); }
   if (opts.adVariants !== undefined) { insertRow.ad_variants = opts.adVariants || 0; extraKeys.push('ad_variants'); }
