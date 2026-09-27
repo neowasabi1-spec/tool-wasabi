@@ -907,40 +907,18 @@ export function selfOrigin(reqUrl?: string): string {
  * dozens of subtitled shots and Replicate rate-limits a burst that size, so the
  * rest stay queued and the scheduled drain picks them up a few at a time.
  */
-const CLEAN_BURST = 4;
-
 /**
- * Queue AI subtitle removal for shots that came out with burned-in text, so a
- * video is usable in builds without anyone pressing a button. Every shot is
- * marked pending; only the first few are fired now.
- * Returns how many were queued (0 when Replicate isn't configured or the
- * inpaint columns aren't migrated yet — the shots simply stay flagged).
+ * Subtitled shots are flagged by the splitter. They are not sent to Replicate
+ * until someone clicks Remove subtitles — a 30-shot video was queueing a paid
+ * job per shot and the 5-minute cron kept spending.
  */
 export async function autoCleanShots(
-  supabase: SupabaseClient,
-  origin: string,
-  projectId: string,
-  shotIds: number[],
+  _supabase: SupabaseClient,
+  _origin: string,
+  _projectId: string,
+  _shotIds: number[],
 ): Promise<number> {
-  if (shotIds.length === 0) return 0;
-  if (!process.env.REPLICATE_API_TOKEN) return 0;
-
-  const { error } = await supabase
-    .from('competitor_shots')
-    .update({ inpaint_status: 'pending', inpaint_error: null })
-    .in('id', shotIds);
-  if (error) return 0;
-
-  await Promise.allSettled(
-    shotIds.slice(0, CLEAN_BURST).map((shotId) =>
-      fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ shotId, projectId }),
-      }),
-    ),
-  );
-  return shotIds.length;
+  return 0;
 }
 
 export async function loadShotPool(

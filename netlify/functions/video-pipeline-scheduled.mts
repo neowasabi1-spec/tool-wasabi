@@ -16,10 +16,6 @@ import { createClient } from '@supabase/supabase-js';
 const SEGMENT_STALE_MIN = 10;   // a pending job older than this lost its trigger
 const SEGMENT_PER_TICK = 3;
 const BUILD_DEAD_MIN = 20;      // past the 15-min function cap: nothing is coming
-const REQUEUE_PER_TICK = 10;    // rate-limited cleanups put back in line
-const CLEAN_PER_TICK = 6;       // cleanups actually fired per tick
-
-const RATE_LIMIT_RE = /rate.?limit|429|quota|billing|credit/i;
 
 function getSupabase() {
   const url =
@@ -91,40 +87,9 @@ export default async () => {
     .select('id');
   if (dead?.length) log(`gave up on ${dead.length} build job(s) past the function limit`);
 
-  if (!process.env.REPLICATE_API_TOKEN) return void log('no REPLICATE_API_TOKEN; cleanup queue left alone');
-
-  // 3. Cleanups that died on a rate limit go back in line.
-  const { data: failed } = await supabase
-    .from('competitor_shots')
-    .select('id, inpaint_error')
-    .eq('inpaint_status', 'error')
-    .is('clean_path', null)
-    .order('id')
-    .limit(REQUEUE_PER_TICK * 3);
-  const retryable = (failed || []).filter((s) => RATE_LIMIT_RE.test(String(s.inpaint_error || '')));
-  const requeue = retryable.slice(0, REQUEUE_PER_TICK).map((s) => s.id as number);
-  if (requeue.length) {
-    await supabase
-      .from('competitor_shots')
-      .update({ inpaint_status: 'pending', inpaint_error: null })
-      .in('id', requeue);
-    log(`requeued ${requeue.length} rate-limited cleanup(s)`);
-  }
-
-  // 4. Fire a small batch of the cleanups waiting in line. Shots that already
-  // have a cleaned copy count too: marking one pending is how a shot gets
-  // redone with a better method. NEWEST first: what the user just asked for
-  // must never sit behind a stale backlog silently burning Replicate money.
-  const { data: pending } = await supabase
-    .from('competitor_shots')
-    .select('id, project_id')
-    .eq('inpaint_status', 'pending')
-    .order('id', { ascending: false })
-    .limit(CLEAN_PER_TICK);
-  for (const s of pending || []) {
-    await fire('inpaint-shot-background', { shotId: s.id, projectId: s.project_id });
-  }
-  log(`fired ${(pending || []).length} cleanup(s)`);
+  // Subtitle cleanup is not drained from here. A queue of pending shots was
+  // fired every 5 minutes and kept spending after the click.
+  log('subtitle queue left alone');
 };
 
 export const config = { schedule: '*/5 * * * *' };

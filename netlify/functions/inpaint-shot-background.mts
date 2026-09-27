@@ -1826,7 +1826,7 @@ async function cleanWholeAd(
 
     type WinState = { s: 'todo' | 'clean' | 'original' | 'failed'; key?: string; tries?: number };
     // v=12: mask the blurred halo + MiniMax at source fps so moving letters do not ghost.
-    type Progress = { src: string; nseg: number; runs: number; v?: number; wins: WinState[] };
+    type Progress = { src: string; nseg: number; runs: number; paid?: number; v?: number; wins: WinState[] };
     const MASK_PROGRESS_V = 12;
     const progressKey = `${projectId}/ads-clean/${adId}_progress.json`;
     let prog: Progress | null = null;
@@ -1890,8 +1890,9 @@ async function cleanWholeAd(
       log(`deghost done — ${cleanKey}`);
       return new Response('done', { status: 200 });
     } else if (force && prog) {
-      // Paid MiniMax windows stay. Only windows that never cleaned go back.
+      // A deliberate click gets a fresh budget of 4. Automatic continuations do not.
       prog.runs = 0;
+      prog.paid = 0;
       for (const x of prog.wins) {
         if (x.s !== 'clean') { x.s = 'todo'; x.tries = 0; delete x.key; }
       }
@@ -1905,21 +1906,14 @@ async function cleanWholeAd(
         wins: Array.from({ length: nseg }, () => ({ s: 'todo' as const, tries: 0 })),
       };
     }
-    // Continuations reuse paid windows. A local deghost must not turn them
-    // back into model work. A paid retry only re-queues windows that never cleaned.
-    const MAX_RUNS = 20;
-    if (!deghostOnly && !force && !prog.wins.some((x) => x.s === 'todo')) {
-      prog.runs = 0;
-      for (const x of prog.wins) {
-        if (x.s === 'failed' || x.s === 'original') { x.s = 'todo'; x.tries = 0; }
-      }
-    } else if (prog.runs >= MAX_RUNS) {
-      prog.runs = 0;
-    }
+    // One video, one budget. Failed windows are not sent back to the model,
+    // and the run counter is never reset — that reset kept billing for hours.
+    const MAX_RUNS = 2;
+    const MAX_PAID = 4;
     prog.runs += 1;
-    if (prog.runs > MAX_RUNS) {
-      // Keep the ledger: the cleaned windows are paid for — a retry reuses them.
-      return fail(`cleaning did not finish after ${MAX_RUNS} runs — retry to continue from ${prog.wins.filter((x) => x.s !== 'todo').length}/${nseg} windows`);
+    if (prog.runs > MAX_RUNS || (prog.paid || 0) >= MAX_PAID) {
+      for (const x of prog.wins) if (x.s === 'todo') x.s = 'original';
+      log(`budget stop: run ${prog.runs}, paid ${prog.paid || 0}/${MAX_PAID}`);
     }
     const saveProgress = async () => {
       const f = path.join(workDir, 'progress.json');
@@ -1940,6 +1934,9 @@ async function cleanWholeAd(
       label: string,
     ): Promise<{ file: string | null; dirty: boolean }> => {
       if (!fbModel) return { file: null, dirty: false };
+      if ((prog.paid || 0) >= 4) return { file: null, dirty: false };
+      prog.paid = (prog.paid || 0) + 1;
+      await saveProgress();
       try {
         const file = await textMaskReconstruct({
           supabase, token, model: fbModel, srcKey: segKeyFor, srcFile: segFileFor,
@@ -1975,6 +1972,17 @@ async function cleanWholeAd(
     for (let i = 0; i < nseg; i++) {
       const w = prog.wins[i];
       if (w.s !== 'todo') continue;
+
+      if ((prog.paid || 0) >= 4 || prog.runs > 2) {
+        w.s = 'original';
+        continue;
+      }
+      const { data: live } = await supabase.from('competitor_ads').select('clean_status').eq('id', adId).maybeSingle();
+      if ((live as { clean_status?: string } | null)?.clean_status === 'error') {
+        log('stopped: job was marked error — no more model calls');
+        for (let j = i; j < nseg; j++) if (prog.wins[j].s === 'todo') prog.wins[j].s = 'original';
+        break;
+      }
 
       if (Date.now() > deadline - 90000) break;
 
@@ -2050,7 +2058,8 @@ async function cleanWholeAd(
     // Any window still 'todo'? Persist progress, flip back to 'pending' and
     // re-trigger ourselves: the next run continues exactly where this stopped.
     const unresolved = prog.wins.filter((x) => x.s === 'todo').length;
-    if (unresolved > 0) {
+    const overBudget = (prog.paid || 0) >= 4 || prog.runs >= 2;
+    if (unresolved > 0 && !overBudget) {
       await saveProgress();
       await supabase.from('competitor_ads')
         .update({ clean_status: 'pending', clean_error: `__ts:${Date.now()}` })

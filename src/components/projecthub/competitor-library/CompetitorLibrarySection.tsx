@@ -846,7 +846,7 @@ function CreativeDetailPanel({
           title: deghost ? "Checking the clean mark…" : "Removing subtitles…",
           description: deghost
             ? "If the captions are still there, the video is unmarked. No new AI charge."
-            : "Runs on the server — may take a minute or two.",
+            : "Stops after a few paid steps so it does not keep charging.",
         });
         if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
       } else {
