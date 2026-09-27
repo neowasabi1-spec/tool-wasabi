@@ -32,7 +32,10 @@ export const OPENAI_API_KEY = (
   ''
 ).trim();
 
+let supabaseClient: SupabaseClient | null = null;
+
 export function getSupabase(): SupabaseClient {
+  if (supabaseClient) return supabaseClient;
   const url =
     process.env.SUPABASE_URL ||
     process.env.NEXT_PUBLIC_SUPABASE_URL ||
@@ -42,7 +45,16 @@ export function getSupabase(): SupabaseClient {
     process.env.SUPABASE_SERVICE_KEY ||
     '';
   if (!key) throw new Error('SUPABASE_SERVICE_ROLE_KEY missing (needed for storage upload)');
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  supabaseClient = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+  return supabaseClient;
+}
+
+function dbBusy(message: string) {
+  return /too many connections|remaining connection slots|too many clients|53300/i.test(message);
+}
+
+function pause(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export function run(
@@ -524,9 +536,18 @@ export async function downloadSource(
     fs.writeFileSync(tmpFile, Buffer.from(await resp.arrayBuffer()));
     return;
   }
-  const { data, error } = await supabase.storage.from(BUCKET).download(filePath);
-  if (error || !data) throw new Error(`storage download failed: ${error?.message || 'no data'}`);
-  fs.writeFileSync(tmpFile, Buffer.from(await data.arrayBuffer()));
+  let last = 'no data';
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { data, error } = await supabase.storage.from(BUCKET).download(filePath);
+    if (!error && data) {
+      fs.writeFileSync(tmpFile, Buffer.from(await data.arrayBuffer()));
+      return;
+    }
+    last = error?.message || 'no data';
+    if (!dbBusy(last) || attempt === 5) break;
+    await pause(2000 * (attempt + 1));
+  }
+  throw new Error(`storage download failed: ${last}`);
 }
 
 export async function uploadFile(
@@ -536,12 +557,18 @@ export async function uploadFile(
   contentType: string,
 ): Promise<string> {
   const bytes = fs.readFileSync(localFile);
-  const { error } = await supabase.storage.from(BUCKET).upload(objectKey, bytes, {
-    contentType,
-    upsert: true,
-  });
-  if (error) throw new Error(`upload failed: ${error.message}`);
-  return objectKey;
+  let last = 'upload failed';
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const { error } = await supabase.storage.from(BUCKET).upload(objectKey, bytes, {
+      contentType,
+      upsert: true,
+    });
+    if (!error) return objectKey;
+    last = error.message || 'upload failed';
+    if (!dbBusy(last) || attempt === 5) break;
+    await pause(2000 * (attempt + 1));
+  }
+  throw new Error(`upload failed: ${last}`);
 }
 
 export function makeWorkDir(prefix: string): string {
