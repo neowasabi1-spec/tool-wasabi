@@ -1841,23 +1841,164 @@ async function falGrokPoll(
 }
 
 /**
- * Paint out a caption Grok left behind. The letters are replaced with the
- * picture just above or below them, so a line like "picking up little bits of"
- * disappears in seconds instead of another Fal edit that keeps the same words.
- * Returns true when it rewrote the file.
+ * Cover burned-in caption lines, including dark gray text on a light picture.
+ * The previous colour detector only accepted near-white outlined glyphs, so a
+ * line like "picking up little bits of" was left untouched.
+ * Returns how many pixels were repainted.
+ */
+function paintCaptionLines(frame: Buffer, w: number, h: number): number {
+  const n = w * h;
+  const L = new Uint8Array(n);
+  for (let p = 0, i = 0; p < n; p++, i += 3) {
+    L[p] = (frame[i] * 77 + frame[i + 1] * 150 + frame[i + 2] * 29) >> 8;
+  }
+  const isInk = (x: number, y: number) => {
+    if (y < 10 || y >= h - 10) return false;
+    const v = L[y * w + x];
+    for (const dy of [10, 16, 24]) {
+      const up = L[(y - dy) * w + x];
+      const dn = L[(y + dy) * w + x];
+      if ((up > v + 36 && dn > v + 36) || (v > up + 36 && v > dn + 36)) return true;
+    }
+    return false;
+  };
+  const hit = new Uint8Array(n);
+  for (let y = 10; y < h - 10; y++) {
+    for (let x = 0; x < w; x++) if (isInk(x, y)) hit[y * w + x] = 1;
+  }
+  for (let x = 0; x < w; x++) {
+    let c = 0;
+    for (let y = 0; y < h; y++) if (hit[y * w + x]) c++;
+    if (c > h * 0.4) for (let y = 0; y < h; y++) hit[y * w + x] = 0;
+  }
+  const grown = new Uint8Array(n);
+  const gx = 8;
+  const gy = 5;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!hit[y * w + x]) continue;
+      for (let dy = -gy; dy <= gy; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -gx; dx <= gx; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < w) grown[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+  const label = new Int32Array(n);
+  const blobs: Array<{ x0: number; x1: number; y0: number; y1: number } | null> = [null];
+  const stack: number[] = [];
+  for (let s = 0; s < n; s++) {
+    if (!grown[s] || label[s]) continue;
+    const id = blobs.length;
+    const b = { x0: s % w, x1: s % w, y0: (s / w) | 0, y1: (s / w) | 0 };
+    blobs.push(b);
+    label[s] = id;
+    stack.push(s);
+    while (stack.length) {
+      const p = stack.pop() as number;
+      const py = (p / w) | 0;
+      const px = p - py * w;
+      if (px < b.x0) b.x0 = px;
+      if (px > b.x1) b.x1 = px;
+      if (py < b.y0) b.y0 = py;
+      if (py > b.y1) b.y1 = py;
+      const near = [p + 1, p - 1, p + w, p - w];
+      for (let k = 0; k < 4; k++) {
+        const q = near[k];
+        if (q < 0 || q >= n || !grown[q] || label[q]) continue;
+        const qy = (q / w) | 0;
+        const qx = q - qy * w;
+        if (k === 0 && qx === 0) continue;
+        if (k === 1 && qx === w - 1) continue;
+        label[q] = id;
+        stack.push(q);
+      }
+    }
+  }
+  const keep = new Uint8Array(n);
+  let kept = 0;
+  for (let id = 1; id < blobs.length; id++) {
+    const b = blobs[id] as { x0: number; x1: number; y0: number; y1: number };
+    const bw = b.x1 - b.x0 + 1;
+    const bh = b.y1 - b.y0 + 1;
+    if (!(bw > bh * 2.2 && bw > w * 0.1 && bh < h * 0.18 && bh > 8)) continue;
+    if ((bw * bh) / n > 0.2) continue;
+    for (let y = b.y0; y <= b.y1; y++) {
+      for (let x = b.x0; x <= b.x1; x++) {
+        const p = y * w + x;
+        if (label[p] === id) { keep[p] = 1; kept++; }
+      }
+    }
+  }
+  if (!kept) return 0;
+  const mask = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!keep[y * w + x]) continue;
+      for (let dy = -6; dy <= 6; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -4; dx <= 4; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < w) mask[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+  const nearest = (x: number, y0: number, y1: number, dir: number) => {
+    for (let off = 4; off <= 80; off += 4) {
+      const yy = dir < 0 ? y0 - off : y1 + off - 1;
+      if (yy < 10 || yy >= h - 10 || mask[yy * w + x]) continue;
+      if (!isInk(x, yy)) return yy;
+    }
+    return -1;
+  };
+  let painted = 0;
+  for (let x = 0; x < w; x++) {
+    let y = 0;
+    while (y < h) {
+      if (!mask[y * w + x]) { y++; continue; }
+      const y0 = y;
+      while (y < h && mask[y * w + x]) y++;
+      const y1 = y;
+      const up = nearest(x, y0, y1, -1);
+      const dn = nearest(x, y0, y1, 1);
+      if (up < 0 && dn < 0) continue;
+      const span = Math.max(1, y1 - y0);
+      for (let yy = y0; yy < y1; yy++) {
+        const di = (yy * w + x) * 3;
+        if (up >= 0 && dn >= 0) {
+          const t = (yy - y0) / span;
+          const si = (up * w + x) * 3;
+          const sj = (dn * w + x) * 3;
+          frame[di] = frame[si] + (frame[sj] - frame[si]) * t;
+          frame[di + 1] = frame[si + 1] + (frame[sj + 1] - frame[si + 1]) * t;
+          frame[di + 2] = frame[si + 2] + (frame[sj + 2] - frame[si + 2]) * t;
+        } else {
+          const si = ((up >= 0 ? up : dn) * w + x) * 3;
+          frame[di] = frame[si];
+          frame[di + 1] = frame[si + 1];
+          frame[di + 2] = frame[si + 2];
+        }
+        painted++;
+      }
+    }
+  }
+  return painted;
+}
+
+/**
+ * Paint out caption lines Grok left behind, then replace the file.
+ * Returns true when the picture was rewritten.
  */
 async function wipeCaptionPixels(
   file: string, W: number, H: number, len: number, fps: number, workDir: string,
   log: (...a: unknown[]) => void,
 ): Promise<boolean> {
   try {
-    const rgb = await rgbFrames(file, W, H, len, fps, workDir);
-    const nfSmall = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
-    if (nfSmall < 1) return false;
-    const cm = captionMasks(rgb.buf, nfSmall, rgb.w, rgb.h, null);
-    if (!cm || cm.textFrames < 0.05 || cm.pxPerFrame < 12) return false;
-    if (cm.pxPerFrame / (rgb.w * rgb.h) > 0.2) return false;
-
     const rate = Math.max(1, Math.round(fps) || 30);
     const frames = Math.max(1, Math.round(len * rate));
     const budget = 180 * 1024 * 1024;
@@ -1877,9 +2018,6 @@ async function wipeCaptionPixels(
     const frameBytes = w * h * 3;
     const nf = Math.floor(fs.statSync(raw).size / frameBytes);
     if (nf < 1) return false;
-    const sw = rgb.w;
-    const sh = rgb.h;
-    const masks = cm.masks;
     const fdIn = fs.openSync(raw, 'r');
     const fdOut = fs.openSync(outRaw, 'w');
     const frame = Buffer.allocUnsafe(frameBytes);
@@ -1887,36 +2025,7 @@ async function wipeCaptionPixels(
     try {
       for (let f = 0; f < nf; f++) {
         fs.readSync(fdIn, frame, 0, frameBytes, f * frameBytes);
-        const mi = Math.min(masks.length - 1, Math.round((f * (masks.length - 1)) / Math.max(1, nf - 1)));
-        const mask = masks[mi];
-        const masked = (x: number, y: number) => {
-          const sx = Math.min(sw - 1, (x * sw / w) | 0);
-          const sy = Math.min(sh - 1, (y * sh / h) | 0);
-          return mask[sy * sw + sx] === 1;
-        };
-        for (let x = 0; x < w; x++) {
-          let y = 0;
-          while (y < h) {
-            if (!masked(x, y)) { y++; continue; }
-            const y0 = y;
-            while (y < h && masked(x, y)) y++;
-            const y1 = y;
-            const up = y0 > 0 ? y0 - 1 : -1;
-            const dn = y1 < h ? y1 : -1;
-            if (up < 0 && dn < 0) continue;
-            for (let yy = y0; yy < y1; yy++) {
-              const srcY = up >= 0 && dn >= 0
-                ? ((yy - y0) <= (y1 - 1 - yy) ? up : dn)
-                : (up >= 0 ? up : dn);
-              const si = (srcY * w + x) * 3;
-              const di = (yy * w + x) * 3;
-              frame[di] = frame[si];
-              frame[di + 1] = frame[si + 1];
-              frame[di + 2] = frame[si + 2];
-              painted++;
-            }
-          }
-        }
+        painted += paintCaptionLines(frame, w, h);
         fs.writeSync(fdOut, frame);
       }
     } finally {
