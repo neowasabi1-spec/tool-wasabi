@@ -8,8 +8,13 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
-/** Same-product competitor pages only (not vertical peers / inactive / video folders). */
-async function sameProductBrandIds(projectId: string): Promise<number[]> {
+/**
+ * Ads Creative Library sources:
+ * - active competitors kept by same-product discovery/judge
+ * - active vertical peers (inspiration) the user added & evaluated
+ * Never: inactive/pruned junk, video_folder saves.
+ */
+async function libraryBrandIds(projectId: string): Promise<number[]> {
   const { data, error } = await supabaseAdmin
     .from('competitor_brands')
     .select('id, brand_type, is_active')
@@ -17,10 +22,7 @@ async function sameProductBrandIds(projectId: string): Promise<number[]> {
     .neq('is_active', 'false');
   if (error) throw new Error(error.message);
   return ((data || []) as Array<{ id: number; brand_type?: string | null }>)
-    .filter((b) => {
-      const t = String(b.brand_type || '');
-      return t !== 'inspiration' && t !== 'video_folder';
-    })
+    .filter((b) => String(b.brand_type || '') !== 'video_folder')
     .map((b) => b.id);
 }
 
@@ -86,9 +88,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     }
   }
 
-  const brandIds = await sameProductBrandIds(projectId);
+  const brandIds = await libraryBrandIds(projectId);
   if (!brandIds.length) {
-    return NextResponse.json({ source: 'competitor', ads: [], pruned, sameProductOnly: true });
+    return NextResponse.json({ source: 'competitor', ads: [], pruned, curatedOnly: true });
   }
 
   const { data, error } = await supabaseAdmin
@@ -112,5 +114,5 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     analysis: byRef.get(String(ad.id)) || null,
   }));
 
-  return NextResponse.json({ source: 'competitor', ads, pruned, sameProductOnly: true });
+  return NextResponse.json({ source: 'competitor', ads, pruned, curatedOnly: true });
 }

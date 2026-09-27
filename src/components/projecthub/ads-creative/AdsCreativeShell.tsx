@@ -86,8 +86,8 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const loadLibrary = useCallback(async () => {
     setLoading(true);
     try {
-      // Prune off-product pages once per browser session, then only show
-      // same-product competitor ads (vertical peers stay out).
+      // Prune accidental off-product pages once per session. Library then
+      // shows active competitors + vertical peers the user added (not junk).
       const pruneKey = `ads-lib-pruned:${projectId}`;
       const shouldCleanup =
         source === 'competitor' &&
