@@ -1767,16 +1767,23 @@ const GROK_PROGRESS_V = 1;
 const GROK_PROMPT =
   'Remove every burned-in subtitle, caption, lyric line, and on-screen text in this whole clip. ' +
   'Delete all of them, not one line and not one area: text at the top, in the middle, and at the bottom, ' +
-  'including text that jumps between those positions during these seconds. ' +
+  'including text that jumps between those positions and lines that appear one after another during these seconds. ' +
   'Rebuild the real picture under the letters. Leave no boxes, blur bars, halos, or leftover glyphs. ' +
   'Do not add any new text, logo, or watermark. ' +
   'Keep the same people, faces, product, background, camera, motion, and timing. ' +
   'Frames with no text must stay unchanged.';
+const GROK_LEFTOVER_PROMPT =
+  'This clip was already edited and some burned-in subtitles are still visible. ' +
+  'Remove every remaining subtitle, caption, and lyric line, wherever it sits: top, middle, or bottom, ' +
+  'including lines that only show up for part of these seconds. ' +
+  'Do not leave any word or glyph. Do not add new text. ' +
+  'Keep the people, product, background, camera, and motion exactly as they are now.';
 
 type GrokWin = {
   s: 'todo' | 'clean' | 'failed';
   key?: string;
   waits?: number;
+  passes?: number;
   req?: { statusUrl: string; responseUrl: string };
 };
 type GrokProg = { src: string; nseg: number; v: number; wins: GrokWin[] };
@@ -1801,11 +1808,11 @@ async function downloadHttp(url: string, dest: string) {
   fs.writeFileSync(dest, Buffer.from(await resp.arrayBuffer()));
 }
 
-async function falGrokSubmit(apiKey: string, videoUrl: string) {
+async function falGrokSubmit(apiKey: string, videoUrl: string, prompt: string) {
   const res = await fetch('https://queue.fal.run/xai/grok-imagine-video/edit-video', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Key ${apiKey}` },
-    body: JSON.stringify({ prompt: GROK_PROMPT, video_url: videoUrl, resolution: '720p' }),
+    body: JSON.stringify({ prompt, video_url: videoUrl, resolution: '720p' }),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`fal grok ${res.status}: ${text.slice(0, 400)}`);
@@ -1833,6 +1840,24 @@ async function falGrokPoll(
   return { url: data.video.url };
 }
 
+/** True when this piece still shows a burned-in caption line. */
+async function pieceHasText(
+  file: string, W: number, H: number, len: number, fps: number, workDir: string,
+  log: (...a: unknown[]) => void,
+): Promise<boolean> {
+  try {
+    const rgb = await rgbFrames(file, W, H, len, fps, workDir);
+    const nf = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
+    if (nf < 1) return false;
+    const cm = captionMasks(rgb.buf, nf, rgb.w, rgb.h, null);
+    if (!cm) return false;
+    return cm.textFrames >= 0.12 && cm.pxPerFrame >= 30;
+  } catch (e) {
+    log(`caption check skipped (${(e as Error).message})`);
+    return false;
+  }
+}
+
 /**
  * Whole-video subtitle removal via Grok video edit on fal.ai (FAL_KEY).
  * The clip is split into 7s pieces (under the 8s edit cap). Each piece is one
@@ -1846,6 +1871,7 @@ async function cleanWholeAdGrok(
   projectId: string,
   log: (...a: unknown[]) => void,
   force = false,
+  again = false,
 ): Promise<Response> {
   const fail = async (msg: string) => {
     log('error:', msg);
@@ -1901,7 +1927,12 @@ async function cleanWholeAdGrok(
       prog.v === GROK_PROGRESS_V && Array.isArray(prog.wins) && prog.wins.length === nseg
     );
     if (!ledgerOk) prog = null;
-    if (prog && force) {
+    if (prog && again) {
+      for (const x of prog.wins) {
+        if (x.s === 'failed') { x.s = 'todo'; delete x.req; }
+        else if (x.s === 'clean') x.passes = x.passes || 1;
+      }
+    } else if (prog && force) {
       for (const x of prog.wins) {
         if (x.s === 'failed') { x.s = 'todo'; delete x.req; delete x.key; }
       }
@@ -1931,6 +1962,21 @@ async function cleanWholeAdGrok(
     let stopForTime = false;
     for (let i = 0; i < nseg; i++) {
       const w = prog.wins[i];
+      const t0 = i * GROK_CHUNK_SEC;
+      const len = i === nseg - 1 ? Math.max(0.25, dur - t0) : GROK_CHUNK_SEC;
+      if (again && w.s === 'clean' && w.key && (w.passes || 1) < 2) {
+        const prev = path.join(workDir, `chk_${i}.mp4`);
+        try {
+          await downloadSource(supabase, w.key, prev);
+          if (await pieceHasText(prev, W, H, len, fps, workDir, log)) {
+            log(`piece ${i + 1}/${nseg}: subtitles still there — one more Grok pass`);
+            w.s = 'todo';
+            delete w.req;
+          }
+        } catch (e) {
+          log(`piece ${i + 1}/${nseg}: leftover check skipped (${(e as Error).message})`);
+        }
+      }
       if (w.s !== 'todo') continue;
       if (Date.now() > deadline - 90000 && !w.req) { stopForTime = true; break; }
 
@@ -1941,34 +1987,49 @@ async function cleanWholeAdGrok(
         return new Response('stopped', { status: 200 });
       }
 
-      const t0 = i * GROK_CHUNK_SEC;
-      const len = i === nseg - 1 ? Math.max(0.25, dur - t0) : GROK_CHUNK_SEC;
-
       if (w.req && !w.req.statusUrl) delete w.req;
+      const secondPass = (w.passes || 0) >= 1 && !!w.key;
       if (!w.req) {
         const segFile = path.join(workDir, `seg_${i}.mp4`);
-        await run(FFMPEG, [
-          '-y', '-ss', String(t0), '-t', String(len), '-i', srcFile,
-          '-an',
-          '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
-          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-          '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-          segFile,
-        ]);
+        if (secondPass) {
+          const full = path.join(workDir, `full_${i}.mp4`);
+          await downloadSource(supabase, w.key as string, full);
+          await run(FFMPEG, [
+            '-y', '-i', full,
+            '-an',
+            '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+            segFile,
+          ]);
+        } else {
+          await run(FFMPEG, [
+            '-y', '-ss', String(t0), '-t', String(len), '-i', srcFile,
+            '-an',
+            '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+            segFile,
+          ]);
+        }
         const segKey = `${projectId}/ads-clean/${adId}_g${i}.mp4`;
         await uploadFile(supabase, segKey, segFile, 'video/mp4');
         const videoUrl = await sign(segKey);
         if (!videoUrl) {
-          w.s = 'failed';
+          if (secondPass && w.key) w.s = 'clean';
+          else w.s = 'failed';
           log(`piece ${i + 1}/${nseg}: could not sign the clip`);
           await saveProgress();
           continue;
         }
         try {
-          w.req = await falGrokSubmit(apiKey, videoUrl);
-          log(`piece ${i + 1}/${nseg}: Grok edit submitted (${len.toFixed(1)}s)`);
+          const prompt = secondPass ? GROK_LEFTOVER_PROMPT : GROK_PROMPT;
+          w.req = await falGrokSubmit(apiKey, videoUrl, prompt);
+          w.passes = (w.passes || 0) + 1;
+          log(`piece ${i + 1}/${nseg}: Grok edit submitted (${len.toFixed(1)}s, pass ${w.passes})`);
         } catch (e) {
-          w.s = 'failed';
+          if (secondPass && w.key) w.s = 'clean';
+          else w.s = 'failed';
           log(`piece ${i + 1}/${nseg} submit failed (${(e as Error).message})`);
         }
         await saveProgress();
@@ -1985,9 +2046,9 @@ async function cleanWholeAdGrok(
           log(`piece ${i + 1}/${nseg} poll error (${(e as Error).message}) — will resume`);
           w.waits = (w.waits || 0) + 1;
           if (w.waits >= 3) {
-            w.s = 'failed';
             delete w.req;
-            log(`piece ${i + 1}/${nseg}: gave up waiting, no second Grok call`);
+            w.s = secondPass && w.key ? 'clean' : 'failed';
+            log(`piece ${i + 1}/${nseg}: gave up waiting${w.s === 'clean' ? ' — kept the first pass' : ''}`);
           } else {
             stopForTime = true;
           }
@@ -1996,21 +2057,21 @@ async function cleanWholeAdGrok(
         if (polled.pending) continue;
         if (polled.error || !polled.url) {
           log(`piece ${i + 1}/${nseg} failed (${polled.error || 'no video'})`);
-          w.s = 'failed';
           delete w.req;
+          w.s = secondPass && w.key ? 'clean' : 'failed';
           break;
         }
         videoOut = polled.url;
         break;
       }
       if (stopForTime) break;
-      if (w.s === 'failed') { await saveProgress(); continue; }
+      if (!videoOut && (w.s === 'failed' || w.s === 'clean')) { await saveProgress(); continue; }
       if (!videoOut) {
         w.waits = (w.waits || 0) + 1;
         if (w.waits >= 3) {
-          w.s = 'failed';
           delete w.req;
-          log(`piece ${i + 1}/${nseg}: Grok did not finish — kept this piece, no second call`);
+          w.s = secondPass && w.key ? 'clean' : 'failed';
+          log(`piece ${i + 1}/${nseg}: Grok did not finish — ${w.s === 'clean' ? 'kept the first pass' : 'no second call'}`);
           await saveProgress();
           continue;
         }
@@ -2037,22 +2098,32 @@ async function cleanWholeAdGrok(
           '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
           norm,
         ]);
-        const winKey = `${projectId}/ads-clean/${adId}_gr${i}.mp4`;
+        const winKey = `${projectId}/ads-clean/${adId}_gr${i}${w.passes && w.passes > 1 ? 'b' : ''}.mp4`;
         await uploadFile(supabase, winKey, norm, 'video/mp4');
+        delete w.req;
+        const missed = (w.passes || 1) < 2 && await pieceHasText(norm, W, H, len, fps, workDir, log);
+        if (missed) {
+          w.s = 'todo';
+          w.key = winKey;
+          log(`piece ${i + 1}/${nseg}: subtitles still in this piece — sending it again`);
+          await saveProgress();
+          if (Date.now() > deadline - 90000) { stopForTime = true; break; }
+          i -= 1;
+          continue;
+        }
         w.s = 'clean';
         w.key = winKey;
-        delete w.req;
         log(`piece ${i + 1}/${nseg}: captions cleared`);
       } catch (e) {
-        w.s = 'failed';
         delete w.req;
+        w.s = secondPass && w.key ? 'clean' : 'failed';
         log(`piece ${i + 1}/${nseg} save failed (${(e as Error).message})`);
       }
       await saveProgress();
     }
 
     const unresolved = prog.wins.some((x) => x.s === 'todo');
-    if (unresolved && stopForTime) {
+    if (unresolved) {
       await saveProgress();
       await supabase.from('competitor_ads')
         .update({ clean_status: 'pending', clean_error: `__ts:${Date.now()}` })
@@ -2700,6 +2771,7 @@ export default async (req: Request) => {
     tuning?: Record<string, number>;
     adId?: number; // whole-video cleaning (Creative Detail "remove subtitles")
     force?: boolean; // paid retry: redo windows that never cleaned; keep paid ones
+    again?: boolean; // one more Grok pass, only on 7s pieces that still have subtitles
     deghost?: boolean; // free local pass over an already-cleaned video, no model
     audit?: boolean; // free: clear clean marks that still show the original captions
   };
@@ -2725,7 +2797,7 @@ export default async (req: Request) => {
     if (deghost === true) {
       return cleanWholeAd(supabase, process.env.REPLICATE_API_TOKEN || '', adId, projectId, log, false, true);
     }
-    return cleanWholeAdGrok(supabase, adId, projectId, log, force === true);
+    return cleanWholeAdGrok(supabase, adId, projectId, log, force === true, body.again === true);
   }
 
   if (!shotId || !projectId) return new Response('missing fields', { status: 400 });

@@ -34,7 +34,7 @@ function isStale(status: string | null | undefined, cleanError: string | null | 
   return age > (status === 'processing' ? STALE_PROCESSING_MS : STALE_PENDING_MS);
 }
 
-async function triggerBackground(origin: string, payload: { adId: number; projectId: string; force?: boolean; deghost?: boolean }) {
+async function triggerBackground(origin: string, payload: { adId: number; projectId: string; force?: boolean; deghost?: boolean; again?: boolean }) {
   try {
     await fetch(`${origin}/.netlify/functions/inpaint-shot-background`, {
       method: 'POST',
@@ -82,14 +82,15 @@ export async function POST(
 
   const body = await req.json().catch(() => ({} as { mode?: string }));
   const deghost = body?.mode === 'deghost';
+  const again = body?.mode === 'again';
 
   const { error } = await supabaseAdmin
     .from('competitor_ads')
     .update({
       clean_status: 'pending',
       clean_error: `__ts:${Date.now()}`,
-      // A ghost fix reads the cleaned file already paid for. Don't wipe it.
-      ...(deghost ? {} : { clean_full_path: null }),
+      // A leftover pass and a ghost fix both read the file already paid for.
+      ...(deghost || again ? {} : { clean_full_path: null }),
     })
     .eq('id', adIdNum)
     .eq('project_id', id);
@@ -101,14 +102,14 @@ export async function POST(
     );
   }
 
-  // "Fix leftover subtitles" reuses the paid clean and only un-blends ghosts.
-  // The first Remove subtitles is the paid pass. A later paid retry keeps
-  // windows that already cleaned.
+  // The first Remove subtitles is one Grok call per 7s piece. A later click
+  // only resends pieces that still have subtitles.
   await triggerBackground(new URL(req.url).origin, {
     adId: adIdNum,
     projectId: id,
-    force: !deghost,
+    force: !deghost && !again,
     deghost,
+    again,
   });
   return NextResponse.json({ status: 'pending', queued: true });
 }
