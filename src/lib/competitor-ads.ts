@@ -87,12 +87,19 @@ export interface CreativeMeta {
   landing_url?: string;
 }
 
-let transcriptColumnReady: Promise<void> | null = null;
+let transcriptColumnReady: Promise<boolean> | null = null;
+
+function missingTranscriptColumn(message: string): boolean {
+  return /transcript|schema cache|42703|PGRST204/i.test(message || '');
+}
 
 /** Spoken words live in `transcript`, not in `body_text` (that's Meta primary text). */
-export function ensureTranscriptColumn(): Promise<void> {
+export function ensureTranscriptColumn(): Promise<boolean> {
   if (!transcriptColumnReady) {
     transcriptColumnReady = (async () => {
+      const probe = await supabaseAdmin.from('competitor_ads').select('transcript').limit(1);
+      if (!probe.error) return true;
+      if (!missingTranscriptColumn(probe.error.message || '')) return false;
       const statements = [
         'ALTER TABLE public.competitor_ads ADD COLUMN IF NOT EXISTS transcript text;',
         'ALTER TABLE public.competitor_ads ADD COLUMN IF NOT EXISTS transcript_status text;',
@@ -103,11 +110,36 @@ export function ensureTranscriptColumn(): Promise<void> {
         const { error } = await supabaseAdmin.rpc('exec_sql', { sql });
         if (error) console.warn('[competitor-ads] transcript column:', error.message);
       }
+      const again = await supabaseAdmin.from('competitor_ads').select('transcript').limit(1);
+      return !again.error;
     })().catch((e) => {
       console.warn('[competitor-ads] transcript column:', e instanceof Error ? e.message : e);
+      return false;
     });
   }
   return transcriptColumnReady;
+}
+
+/** Storage copy of the spoken script. Works when the transcript column is missing. */
+export function competitorTranscriptKey(projectId: string, adId: number | string): string {
+  return `${projectId}/competitor-transcripts/${adId}.txt`;
+}
+
+export async function writeCompetitorTranscript(projectId: string, adId: number | string, text: string): Promise<void> {
+  const body = text.trim().slice(0, 8000);
+  if (!body) return;
+  const { error } = await supabaseAdmin.storage.from(BUCKET).upload(
+    competitorTranscriptKey(projectId, adId),
+    Buffer.from(body, 'utf8'),
+    { contentType: 'text/plain; charset=utf-8', upsert: true },
+  );
+  if (error) console.warn('[competitor-ads] transcript file:', error.message);
+}
+
+export async function readCompetitorTranscript(projectId: string, adId: number | string): Promise<string> {
+  const { data, error } = await supabaseAdmin.storage.from(BUCKET).download(competitorTranscriptKey(projectId, adId));
+  if (error || !data) return '';
+  return (await data.text()).trim();
 }
 export async function adExistsByExternalId(
   brandId: number,

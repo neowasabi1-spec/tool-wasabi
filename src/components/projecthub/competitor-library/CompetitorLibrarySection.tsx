@@ -1102,8 +1102,11 @@ function CreativeDetailPanel({
         return;
       }
       if (!r.ok || !j.pending) {
-        if (!silent && mine()) toast({ title: j.error || "Transcription failed", variant: "destructive" });
-        return;
+        const schema = /schema cache|Could not find the 'transcript' column/i.test(String(j.error || ""));
+        if (!schema) {
+          if (!silent && mine()) toast({ title: j.error || "Transcription failed", variant: "destructive" });
+          return;
+        }
       }
       const started = Date.now();
       while (mine() && Date.now() - started < 180000) {
@@ -1117,8 +1120,11 @@ function CreativeDetailPanel({
           return;
         }
         if (s.status === "error") {
-          if (!silent) toast({ title: s.error || "Transcription failed", variant: "destructive" });
-          return;
+          const schema = /schema cache|Could not find the 'transcript' column/i.test(String(s.error || ""));
+          if (!schema) {
+            if (!silent) toast({ title: s.error || "Transcription failed", variant: "destructive" });
+            return;
+          }
         }
       }
       if (mine() && !silent) toast({ title: "Transcription timed out", variant: "destructive" });

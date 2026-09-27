@@ -79,8 +79,17 @@ export default async (req: Request) => {
       return new Response(why, { status: 200 });
     }
 
+    const text = spoken.slice(0, 8000);
+    const fileKey = `${projectId}/competitor-transcripts/${adId}.txt`;
+    const up = await supabase.storage.from('project-files').upload(fileKey, Buffer.from(text, 'utf8'), {
+      contentType: 'text/plain; charset=utf-8',
+      upsert: true,
+    });
+    if (up.error) log('file save:', up.error.message);
+    else log('file saved', fileKey);
+
     await mark({
-      transcript: spoken.slice(0, 8000),
+      transcript: text,
       transcript_status: 'ready',
       transcript_error: null,
     });

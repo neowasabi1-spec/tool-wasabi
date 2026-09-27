@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { ensureTranscriptColumn } from '@/lib/competitor-ads';
+import { ensureTranscriptColumn, readCompetitorTranscript, writeCompetitorTranscript } from '@/lib/competitor-ads';
 import { backgroundOrigin } from '@/lib/segment-enqueue';
 import { transcribeVideoAnySize } from '@/lib/transcribe';
 
@@ -68,7 +68,7 @@ export async function POST(
   if (!spoken) {
     return NextResponse.json({ error: 'Transcription produced no text' }, { status: 502 });
   }
-  await saveTranscript(ad.id, spoken);
+  await saveTranscript(id, ad.id, spoken);
   return NextResponse.json({ ok: true, transcript: spoken, body_text: ad.body_text || '' });
 }
 
@@ -88,25 +88,18 @@ export async function GET(
     .eq('brand_id', Number(cid))
     .maybeSingle();
 
-  if (error && /transcript_status|transcript_error|schema cache|42703|PGRST204/i.test(error.message || '')) {
-    const fallback = await supabaseAdmin
-      .from('competitor_ads')
-      .select('transcript')
-      .eq('id', Number(adId))
-      .eq('project_id', id)
-      .eq('brand_id', Number(cid))
-      .maybeSingle();
-    data = fallback.data as typeof data;
-    error = fallback.error;
+  if (error && /transcript|schema cache|42703|PGRST204/i.test(error.message || '')) {
+    data = null;
+    error = null;
   }
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
-
-  const row = data as { transcript?: string | null; transcript_status?: string | null; transcript_error?: string | null };
+  const row = (data || {}) as { transcript?: string | null; transcript_status?: string | null; transcript_error?: string | null };
+  let transcript = String(row.transcript || '').trim();
+  if (!transcript) transcript = await readCompetitorTranscript(id, adId);
+  const schemaNoise = /schema cache|Could not find the 'transcript' column/i.test(row.transcript_error || '');
   return NextResponse.json({
-    transcript: row.transcript || '',
-    status: row.transcript_status || '',
-    error: row.transcript_error || '',
+    transcript,
+    status: transcript ? 'ready' : (schemaNoise ? '' : (row.transcript_status || '')),
+    error: schemaNoise ? '' : (row.transcript_error || ''),
   });
 }
 
@@ -134,13 +127,14 @@ async function transcribeInline(filePath: string): Promise<string> {
   return (await transcribeVideoAnySize(buffer, contentType)).trim();
 }
 
-async function saveTranscript(adId: number, spoken: string) {
+async function saveTranscript(projectId: string, adId: number, spoken: string) {
   const text = spoken.slice(0, 8000);
+  await writeCompetitorTranscript(projectId, adId, text);
   let { error } = await supabaseAdmin
     .from('competitor_ads')
     .update({ transcript: text, transcript_status: 'ready', transcript_error: null })
     .eq('id', adId);
-  if (error && /transcript_status|transcript_error|schema cache|42703|PGRST204/i.test(error.message || '')) {
+  if (error && /transcript|schema cache|42703|PGRST204/i.test(error.message || '')) {
     await supabaseAdmin.from('competitor_ads').update({ transcript: text }).eq('id', adId);
   }
 }
