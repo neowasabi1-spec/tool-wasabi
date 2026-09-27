@@ -1945,10 +1945,15 @@ async function cleanWholeAdGrok(
         wins: Array.from({ length: nseg }, () => ({ s: 'todo' as const })),
       };
     }
-    const saveProgress = async () => {
-      const f = path.join(workDir, 'grok-progress.json');
-      fs.writeFileSync(f, JSON.stringify(prog), 'utf8');
-      await uploadFile(supabase, progressKey, f, 'application/json');
+    let saveChain: Promise<void> = Promise.resolve();
+    const saveProgress = () => {
+      const run = saveChain.then(async () => {
+        const f = path.join(workDir, 'grok-progress.json');
+        fs.writeFileSync(f, JSON.stringify(prog), 'utf8');
+        await uploadFile(supabase, progressKey, f, 'application/json');
+      });
+      saveChain = run.then(() => undefined, () => undefined);
+      return run;
     };
     const doneCount = () => prog!.wins.filter((w) => w.s !== 'todo').length;
     log(`grok via fal: ${dur.toFixed(1)}s → ${nseg} call(s) of ${GROK_CHUNK_SEC}s — ${doneCount()}/${nseg} already resolved`);
@@ -1958,17 +1963,38 @@ async function cleanWholeAdGrok(
       return data?.signedUrl || null;
     };
     const box = fit720(W, H);
+    // Fal edits run at the same time. A 1-minute video is ~9 pieces; waiting
+    // for each one to finish before the next is what stretched the job to ~30 min.
+    const FAL_AT_ONCE = 4;
 
-    let stopForTime = false;
-    for (let i = 0; i < nseg; i++) {
-      const w = prog.wins[i];
+    const pieceLen = (i: number) => {
       const t0 = i * GROK_CHUNK_SEC;
-      const len = i === nseg - 1 ? Math.max(0.25, dur - t0) : GROK_CHUNK_SEC;
-      if (again && w.s === 'clean' && w.key && (w.passes || 1) < 2) {
+      return i === nseg - 1 ? Math.max(0.25, dur - t0) : GROK_CHUNK_SEC;
+    };
+    const keepFirst = (w: GrokWin) => (w.passes || 0) >= 2 && !!w.key;
+
+    async function pool(indexes: number[], limit: number, fn: (i: number) => Promise<void>) {
+      let cursor = 0;
+      const n = Math.min(limit, indexes.length);
+      await Promise.all(Array.from({ length: n }, async () => {
+        while (cursor < indexes.length) {
+          const i = indexes[cursor++];
+          await fn(i);
+        }
+      }));
+    }
+
+    if (again) {
+      const checks = prog.wins
+        .map((w, i) => ({ w, i }))
+        .filter(({ w }) => w.s === 'clean' && w.key && (w.passes || 1) < 2)
+        .map(({ i }) => i);
+      await pool(checks, 3, async (i) => {
+        const w = prog.wins[i];
         const prev = path.join(workDir, `chk_${i}.mp4`);
         try {
-          await downloadSource(supabase, w.key, prev);
-          if (await pieceHasText(prev, W, H, len, fps, workDir, log)) {
+          await downloadSource(supabase, w.key as string, prev);
+          if (await pieceHasText(prev, W, H, pieceLen(i), fps, workDir, log)) {
             log(`piece ${i + 1}/${nseg}: subtitles still there — one more Grok pass`);
             w.s = 'todo';
             delete w.req;
@@ -1976,109 +2002,71 @@ async function cleanWholeAdGrok(
         } catch (e) {
           log(`piece ${i + 1}/${nseg}: leftover check skipped (${(e as Error).message})`);
         }
-      }
-      if (w.s !== 'todo') continue;
-      if (Date.now() > deadline - 90000 && !w.req) { stopForTime = true; break; }
+      });
+    }
 
-      const { data: live } = await supabase.from('competitor_ads').select('clean_status').eq('id', adId).maybeSingle();
-      if ((live as { clean_status?: string } | null)?.clean_status === 'error') {
-        log('stopped: job was marked error — no more Grok calls');
-        await saveProgress();
-        return new Response('stopped', { status: 200 });
-      }
-
+    const submitPiece = async (i: number) => {
+      const w = prog.wins[i];
       if (w.req && !w.req.statusUrl) delete w.req;
+      if (w.s !== 'todo' || w.req) return;
       const secondPass = (w.passes || 0) >= 1 && !!w.key;
-      if (!w.req) {
-        const segFile = path.join(workDir, `seg_${i}.mp4`);
-        if (secondPass) {
-          const full = path.join(workDir, `full_${i}.mp4`);
-          await downloadSource(supabase, w.key as string, full);
-          await run(FFMPEG, [
-            '-y', '-i', full,
-            '-an',
-            '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-            segFile,
-          ]);
-        } else {
-          await run(FFMPEG, [
-            '-y', '-ss', String(t0), '-t', String(len), '-i', srcFile,
-            '-an',
-            '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-            segFile,
-          ]);
-        }
-        const segKey = `${projectId}/ads-clean/${adId}_g${i}.mp4`;
-        await uploadFile(supabase, segKey, segFile, 'video/mp4');
-        const videoUrl = await sign(segKey);
-        if (!videoUrl) {
-          if (secondPass && w.key) w.s = 'clean';
-          else w.s = 'failed';
-          log(`piece ${i + 1}/${nseg}: could not sign the clip`);
-          await saveProgress();
-          continue;
-        }
-        try {
-          const prompt = secondPass ? GROK_LEFTOVER_PROMPT : GROK_PROMPT;
-          w.req = await falGrokSubmit(apiKey, videoUrl, prompt);
-          w.passes = (w.passes || 0) + 1;
-          log(`piece ${i + 1}/${nseg}: Grok edit submitted (${len.toFixed(1)}s, pass ${w.passes})`);
-        } catch (e) {
-          if (secondPass && w.key) w.s = 'clean';
-          else w.s = 'failed';
-          log(`piece ${i + 1}/${nseg} submit failed (${(e as Error).message})`);
-        }
+      try {
+      const t0 = i * GROK_CHUNK_SEC;
+      const len = pieceLen(i);
+      const segFile = path.join(workDir, `seg_${i}.mp4`);
+      if (secondPass) {
+        const full = path.join(workDir, `full_${i}.mp4`);
+        await downloadSource(supabase, w.key as string, full);
+        await run(FFMPEG, [
+          '-y', '-i', full,
+          '-an',
+          '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+          '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+          segFile,
+        ]);
+      } else {
+        await run(FFMPEG, [
+          '-y', '-ss', String(t0), '-t', String(len), '-i', srcFile,
+          '-an',
+          '-vf', `scale=${box.w}:${box.h}:force_original_aspect_ratio=increase,crop=${box.w}:${box.h}`,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+          '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+          segFile,
+        ]);
+      }
+      const segKey = `${projectId}/ads-clean/${adId}_g${i}.mp4`;
+      await uploadFile(supabase, segKey, segFile, 'video/mp4');
+      const videoUrl = await sign(segKey);
+      if (!videoUrl) {
+        if (secondPass && w.key) w.s = 'clean';
+        else w.s = 'failed';
+        log(`piece ${i + 1}/${nseg}: could not sign the clip`);
         await saveProgress();
-        if (w.s === 'failed') continue;
+        return;
       }
+      try {
+        const prompt = secondPass ? GROK_LEFTOVER_PROMPT : GROK_PROMPT;
+        w.req = await falGrokSubmit(apiKey, videoUrl, prompt);
+        w.passes = (w.passes || 0) + 1;
+        log(`piece ${i + 1}/${nseg}: Grok edit submitted (${len.toFixed(1)}s, pass ${w.passes})`);
+      } catch (e) {
+        if (secondPass && w.key) w.s = 'clean';
+        else w.s = 'failed';
+        log(`piece ${i + 1}/${nseg} submit failed (${(e as Error).message})`);
+      }
+      await saveProgress();
+      } catch (e) {
+        if (w.s === 'todo' && !w.req) w.s = secondPass && w.key ? 'clean' : 'failed';
+        log(`piece ${i + 1}/${nseg} prepare failed (${(e as Error).message})`);
+        await saveProgress().catch(() => undefined);
+      }
+    };
 
-      let videoOut: string | null = null;
-      while (w.req && Date.now() < deadline - 20000) {
-        await sleep(POLL_MS);
-        let polled: { url?: string; error?: string; pending?: boolean };
-        try {
-          polled = await falGrokPoll(apiKey, w.req.statusUrl, w.req.responseUrl);
-        } catch (e) {
-          log(`piece ${i + 1}/${nseg} poll error (${(e as Error).message}) — will resume`);
-          w.waits = (w.waits || 0) + 1;
-          if (w.waits >= 3) {
-            delete w.req;
-            w.s = secondPass && w.key ? 'clean' : 'failed';
-            log(`piece ${i + 1}/${nseg}: gave up waiting${w.s === 'clean' ? ' — kept the first pass' : ''}`);
-          } else {
-            stopForTime = true;
-          }
-          break;
-        }
-        if (polled.pending) continue;
-        if (polled.error || !polled.url) {
-          log(`piece ${i + 1}/${nseg} failed (${polled.error || 'no video'})`);
-          delete w.req;
-          w.s = secondPass && w.key ? 'clean' : 'failed';
-          break;
-        }
-        videoOut = polled.url;
-        break;
-      }
-      if (stopForTime) break;
-      if (!videoOut && (w.s === 'failed' || w.s === 'clean')) { await saveProgress(); continue; }
-      if (!videoOut) {
-        w.waits = (w.waits || 0) + 1;
-        if (w.waits >= 3) {
-          delete w.req;
-          w.s = secondPass && w.key ? 'clean' : 'failed';
-          log(`piece ${i + 1}/${nseg}: Grok did not finish — ${w.s === 'clean' ? 'kept the first pass' : 'no second call'}`);
-          await saveProgress();
-          continue;
-        }
-        stopForTime = true;
-        break;
-      }
-
+    const finishPiece = async (i: number, videoOut: string) => {
+      const w = prog.wins[i];
+      const len = pieceLen(i);
+      const secondPass = keepFirst(w);
       try {
         const raw = path.join(workDir, `raw_${i}.mp4`);
         try {
@@ -2106,21 +2094,79 @@ async function cleanWholeAdGrok(
           w.s = 'todo';
           w.key = winKey;
           log(`piece ${i + 1}/${nseg}: subtitles still in this piece — sending it again`);
-          await saveProgress();
-          if (Date.now() > deadline - 90000) { stopForTime = true; break; }
-          i -= 1;
-          continue;
+        } else {
+          w.s = 'clean';
+          w.key = winKey;
+          log(`piece ${i + 1}/${nseg}: captions cleared`);
         }
-        w.s = 'clean';
-        w.key = winKey;
-        log(`piece ${i + 1}/${nseg}: captions cleared`);
       } catch (e) {
         delete w.req;
-        w.s = secondPass && w.key ? 'clean' : 'failed';
+        w.s = secondPass ? 'clean' : 'failed';
         log(`piece ${i + 1}/${nseg} save failed (${(e as Error).message})`);
       }
       await saveProgress();
+    };
+
+    const pollOne = async (i: number) => {
+      const w = prog.wins[i];
+      if (!w.req) return;
+      let polled: { url?: string; error?: string; pending?: boolean };
+      try {
+        polled = await falGrokPoll(apiKey, w.req.statusUrl, w.req.responseUrl);
+      } catch (e) {
+        log(`piece ${i + 1}/${nseg} poll error (${(e as Error).message}) — will retry`);
+        return;
+      }
+      if (polled.pending) return;
+      if (polled.error || !polled.url) {
+        log(`piece ${i + 1}/${nseg} failed (${polled.error || 'no video'})`);
+        delete w.req;
+        w.s = keepFirst(w) ? 'clean' : 'failed';
+        await saveProgress();
+        return;
+      }
+      await finishPiece(i, polled.url);
+    };
+
+    log(`grok: up to ${FAL_AT_ONCE} pieces at once`);
+    while (Date.now() < deadline - 20000) {
+      const { data: live } = await supabase.from('competitor_ads').select('clean_status').eq('id', adId).maybeSingle();
+      if ((live as { clean_status?: string } | null)?.clean_status === 'error') {
+        log('stopped: job was marked error — no more Grok calls');
+        await saveProgress();
+        return new Response('stopped', { status: 200 });
+      }
+
+      const inflight = prog.wins.map((w, i) => i).filter((i) => prog.wins[i].req);
+      const room = FAL_AT_ONCE - inflight.length;
+      if (room > 0 && Date.now() < deadline - 90000) {
+        const ready = prog.wins
+          .map((w, i) => i)
+          .filter((i) => prog.wins[i].s === 'todo' && !prog.wins[i].req)
+          .slice(0, room);
+        if (ready.length) await pool(ready, room, submitPiece);
+      }
+
+      const stillFlying = prog.wins.some((w) => w.req);
+      const stillTodo = prog.wins.some((w) => w.s === 'todo' && !w.req);
+      if (!stillFlying && !stillTodo) break;
+      if (!stillFlying) break;
+
+      await sleep(POLL_MS);
+      const polling = prog.wins.map((w, i) => i).filter((i) => prog.wins[i].req);
+      await Promise.all(polling.map((i) => pollOne(i)));
     }
+
+    for (const w of prog.wins) {
+      if (!w.req) continue;
+      w.waits = (w.waits || 0) + 1;
+      if (w.waits >= 3) {
+        delete w.req;
+        w.s = keepFirst(w) ? 'clean' : 'failed';
+        log(`piece gave up after waiting — ${w.s === 'clean' ? 'kept the first pass' : 'no second call'}`);
+      }
+    }
+    await saveProgress();
 
     const unresolved = prog.wins.some((x) => x.s === 'todo');
     if (unresolved) {
