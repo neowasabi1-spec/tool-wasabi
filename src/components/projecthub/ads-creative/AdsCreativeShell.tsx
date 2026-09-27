@@ -6,13 +6,14 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
   Loader2, Link2, RefreshCw, Sparkles, CheckCircle2, Image as ImageIcon,
-  Library, Wand2, Eye, LayoutTemplate, Flame,
+  Library, Wand2, Eye, LayoutTemplate, Flame, Layers,
 } from 'lucide-react';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import { daysRunning, sortByWinnerTier, winnerTier, type WinnerTier } from '@/lib/competitor-winner';
 import { CreativesTab } from '@/components/projecthub/creative/CreativesTab';
 import { TemplatesStylesSection } from './TemplatesStylesSection';
 import { AutoImagesCard } from './AutoImagesCard';
+import { StylesFamiliesSection } from './StylesFamiliesSection';
 
 type Step = 'connect' | 'library' | 'analyze' | 'generate' | 'styles' | 'review';
 
@@ -60,6 +61,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [winnersOnly, setWinnersOnly] = useState(false);
+  const [libView, setLibView] = useState<'list' | 'templates' | 'styles'>('list');
   const [concepts, setConcepts] = useState<any[]>([]);
   const [outputs, setOutputs] = useState<any[]>([]);
 
@@ -284,6 +286,45 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
     }
   }
 
+  /** Ingest selected competitor ads into Jev, then build template + style groups. */
+  async function prepareJevGroups() {
+    const ids = selectedList.length ? selectedList.map((a) => a.id) : rankedAds.slice(0, 40).map((a) => a.id);
+    if (!ids.length) {
+      toast.error('Nessuna ad da preparare');
+      return;
+    }
+    setBusy(true);
+    try {
+      let ok = 0;
+      for (const id of ids) {
+        const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'ingest_from_competitor_ad',
+            payload: { competitorAdId: id },
+            wait: true,
+          }),
+        });
+        if (res.ok) ok += 1;
+      }
+      toast.message(`Ingest ${ok}/${ids.length} → calcolo template…`);
+      const t = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'build_templates', payload: {} }),
+      });
+      const td = await t.json();
+      if (!t.ok) throw new Error(td.error || 'build_templates failed');
+      toast.message('Template in coda — puoi aprire la vista Template');
+      setLibView('templates');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Prepare failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function recreateSelected() {
     if (!selectedList.length) {
       toast.error('Select at least one ad to recreate');
@@ -427,46 +468,74 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       {step === 'library' && (
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2 items-center">
-            <Button
-              size="sm"
-              variant={source === 'competitor' ? 'default' : 'outline'}
-              onClick={() => setSource('competitor')}
-            >
-              Competitors
+            <Button size="sm" variant={libView === 'list' ? 'default' : 'outline'} onClick={() => setLibView('list')}>
+              Lista
             </Button>
-            <Button
-              size="sm"
-              variant={source === 'own' ? 'default' : 'outline'}
-              onClick={() => setSource('own')}
-            >
-              My ads
+            <Button size="sm" variant={libView === 'templates' ? 'default' : 'outline'} onClick={() => setLibView('templates')}>
+              <LayoutTemplate className="w-3.5 h-3.5 mr-1" /> Template
             </Button>
-            <Button
-              size="sm"
-              variant={winnersOnly ? 'default' : 'outline'}
-              onClick={() => setWinnersOnly((v) => !v)}
-              className={winnersOnly ? 'bg-amber-400 text-amber-950 hover:bg-amber-400/90 border-amber-400' : ''}
-            >
-              <Flame className="w-3.5 h-3.5 mr-1" />
-              Winners{winnerCount ? ` (${winnerCount})` : ''}
+            <Button size="sm" variant={libView === 'styles' ? 'default' : 'outline'} onClick={() => setLibView('styles')}>
+              <Layers className="w-3.5 h-3.5 mr-1" /> Stili
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => void loadLibrary()} disabled={loading}>
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </Button>
+            <span className="text-border px-1">|</span>
+            {libView === 'list' && (
+              <>
+                <Button
+                  size="sm"
+                  variant={source === 'competitor' ? 'default' : 'outline'}
+                  onClick={() => setSource('competitor')}
+                >
+                  Competitors
+                </Button>
+                <Button
+                  size="sm"
+                  variant={source === 'own' ? 'default' : 'outline'}
+                  onClick={() => setSource('own')}
+                >
+                  My ads
+                </Button>
+                <Button
+                  size="sm"
+                  variant={winnersOnly ? 'default' : 'outline'}
+                  onClick={() => setWinnersOnly((v) => !v)}
+                  className={winnersOnly ? 'bg-amber-400 text-amber-950 hover:bg-amber-400/90 border-amber-400' : ''}
+                >
+                  <Flame className="w-3.5 h-3.5 mr-1" />
+                  Winners{winnerCount ? ` (${winnerCount})` : ''}
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => void loadLibrary()} disabled={loading}>
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                </Button>
+              </>
+            )}
             <div className="flex-1" />
-            <Button size="sm" variant="outline" onClick={() => void analyzeSelected()} disabled={busy || !selected.size}>
-              Analyze ({selected.size})
-            </Button>
-            <Button size="sm" onClick={() => void recreateSelected()} disabled={busy || !selected.size}>
-              {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
-              Ricrea selezionate ({selected.size})
-            </Button>
+            {libView === 'list' && (
+              <>
+                <Button size="sm" variant="outline" onClick={() => void prepareJevGroups()} disabled={busy || loading}>
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Layers className="w-4 h-4 mr-2" />}
+                  Prepara gruppi Jev
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => void analyzeSelected()} disabled={busy || !selected.size}>
+                  Analyze ({selected.size})
+                </Button>
+                <Button size="sm" onClick={() => void recreateSelected()} disabled={busy || !selected.size}>
+                  {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+                  Ricrea selezionate ({selected.size})
+                </Button>
+              </>
+            )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            Ordered like Competitor Library: WINNER → PROMISING → others (by days live). Select rows to analyze / recreate.
-          </p>
+          {libView === 'list' && (
+            <p className="text-xs text-muted-foreground">
+              Come in Jev: stessa creatività = copie raggruppate (×N). Ordine WINNER → PROMISING.
+              Usa <b>Prepara gruppi Jev</b> poi le viste Template / Stili per il clustering grafico.
+            </p>
+          )}
 
-          {loading ? (
+          {libView === 'templates' && <TemplatesStylesSection projectId={projectId} />}
+          {libView === 'styles' && <StylesFamiliesSection projectId={projectId} />}
+
+          {libView === 'list' && (loading ? (
             <div className="text-sm text-muted-foreground flex items-center gap-2 py-8">
               <Loader2 className="w-4 h-4 animate-spin" /> Loading…
             </div>
@@ -561,7 +630,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                 </tbody>
               </table>
             </div>
-          )}
+          ))}
         </div>
       )}
 

@@ -27,6 +27,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   // Template groups for "Template e stili" (best-effort; empty if migration not applied yet)
   let templateGroups: unknown[] = [];
   let templateStats: { images: number; withTemplate: number } = { images: 0, withTemplate: 0 };
+  let styleFamilies: unknown[] = [];
   try {
     const productId = (products.data || [])[0]?.id as string | undefined;
     if (productId) {
@@ -46,6 +47,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
           ...g,
           spec: specMap.get(g.anchor.templateId)?.spec ?? null,
         }));
+      }
+      try {
+        const { imageFamilies } = await import('@/lib/ads-intel/jev/pipeline/families');
+        styleFamilies = await imageFamilies(productId);
+      } catch (fe) {
+        console.warn('[jev] style families:', fe instanceof Error ? fe.message : fe);
       }
     }
   } catch (e) {
@@ -82,6 +89,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     jobs: jobs.data || [],
     templateGroups,
     templateStats,
+    styleFamilies,
     errors: {
       products: products.error?.message,
       creatives: creatives.error?.message,
