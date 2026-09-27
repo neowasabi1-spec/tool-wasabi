@@ -2136,6 +2136,16 @@ async function cleanWholeAdGrok(
   if (!claimed) { log('ad not pending — skipping'); return new Response('skip', { status: 200 }); }
   if ((claimed as { media_type?: string }).media_type !== 'video') return fail('only video creatives can be cleaned');
 
+  log('subtitle removal stopped — it was erasing the picture');
+  await supabase.from('competitor_ads')
+    .update({
+      clean_status: 'error',
+      clean_full_path: null,
+      clean_error: 'Subtitle removal is off. It was erasing the picture and leaving the text.',
+    })
+    .eq('id', adId);
+  return new Response('stopped', { status: 200 });
+
   const workDir = makeWorkDir('wgrok-');
   try {
     const srcFile = path.join(workDir, 'src.mp4');

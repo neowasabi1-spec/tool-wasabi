@@ -854,10 +854,8 @@ function CreativeDetailPanel({
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
         toast({
-          title: again ? "Removing the subtitles that are left…" : "Removing subtitles…",
-          description: again
-            ? "The original video is copied and the caption lines are covered."
-            : "Caption lines are covered on the original video. The rest of the picture stays.",
+          title: "Subtitle removal is off",
+          description: "It was erasing the picture and leaving the text. This drops the damaged file.",
         });
         if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
       } else {
@@ -1472,22 +1470,20 @@ function CreativeDetailPanel({
             <div className="pt-2 border-t border-border space-y-2">
               <div className="flex items-center gap-1.5">
                 <Eraser className="w-3.5 h-3.5 text-primary" />
-                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Remove subtitles (whole video)</p>
+                <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Subtitles</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                {cleanPath
-                  ? "Sends back only the 7-second pieces that still show subtitles. The pieces already clean are kept."
-                  : <>Splits the video into 7-second pieces. Grok deletes every subtitle in each piece, and if any remain in that piece it is sent once more.</>}
+                Subtitle removal is off. It was erasing the picture and leaving the text.
               </p>
               <div className="flex items-center gap-2">
                 <Button
                   onClick={removeSubtitles}
-                  disabled={cleanStatus === "pending" || cleanStatus === "processing"}
+                  disabled={cleanStatus === "pending" || cleanStatus === "processing" || !cleanPath}
                   variant="outline"
                   className="flex-1 gap-2 h-8">
                   {cleanStatus === "pending" || cleanStatus === "processing"
                     ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> {cleanStatus === "pending" ? "Queued…" : "Cleaning…"}</>
-                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Remove remaining" : "Remove subtitles"}</>}
+                    : <><Eraser className="w-3.5 h-3.5" /> {cleanPath ? "Drop damaged file" : "Off"}</>}
                 </Button>
                 {cleanPath && (
                   <a
