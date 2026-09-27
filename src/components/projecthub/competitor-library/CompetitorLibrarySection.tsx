@@ -28,11 +28,16 @@ import { hostOfUrl, LANDING_SECTION_LABEL, type LandingSection } from "@/lib/lan
 import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client";
 import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 import CachedScreenshot from "@/components/CachedScreenshot";
+import { fbAdLibrarySearchUrl } from "@/lib/ads-library-url";
 
 const BASE_URL = "";
 
 function isVideoSaveFolder(b: { brand_type?: string | null }): boolean {
   return String(b.brand_type || "") === "video_folder";
+}
+
+function isVerticalPeer(b: { brand_type?: string | null }): boolean {
+  return String(b.brand_type || "") === "inspiration";
 }
 
 type CompetitorWithStats = {
@@ -1752,6 +1757,19 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   const [form, setForm] = useState({ name: "", ads_library_url: "", scrape_count: "20", frequency: "every_7_days" });
   const [adding, setAdding] = useState(false);
 
+  // Same-vertical peers (non-direct) spy
+  const [peersOpen, setPeersOpen] = useState(false);
+  const [peerSuggestions, setPeerSuggestions] = useState<Array<{ name: string; why: string }>>([]);
+  const [peerSelected, setPeerSelected] = useState<Set<string>>(new Set());
+  const [peerCustom, setPeerCustom] = useState("");
+  const [peerCountry, setPeerCountry] = useState("IT");
+  const [peerLoading, setPeerLoading] = useState(false);
+  const [peerAdding, setPeerAdding] = useState(false);
+  const [peerError, setPeerError] = useState("");
+
+  const directCount = competitors.filter((c) => !isVerticalPeer(c)).length;
+  const fewDirects = !loading && directCount < 3;
+
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
     try {
@@ -1765,6 +1783,111 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
 
   useEffect(() => { load(); }, [projectId]);
   useLiveReload(() => { void load(true); });
+
+  const openPeers = async () => {
+    setPeersOpen(true);
+    setPeerError("");
+    setPeerSuggestions([]);
+    setPeerSelected(new Set());
+    setPeerCustom("");
+    setPeerLoading(true);
+    try {
+      const r = await fetch(
+        `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/suggest-vertical-peers`,
+        { method: "POST" },
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setPeerError(typeof data.error === "string" ? data.error : "Could not load suggestions");
+        return;
+      }
+      const list = Array.isArray(data.suggestions) ? data.suggestions : [];
+      setPeerSuggestions(list);
+      setPeerCountry(typeof data.country === "string" && data.country ? data.country : "IT");
+      // Pre-select all suggestions so the user can deselect.
+      setPeerSelected(new Set(list.map((s: { name: string }) => s.name)));
+    } catch {
+      setPeerError("Could not load suggestions");
+    } finally {
+      setPeerLoading(false);
+    }
+  };
+
+  const togglePeer = (name: string) => {
+    setPeerSelected((prev) => {
+      const n = new Set(prev);
+      if (n.has(name)) n.delete(name);
+      else n.add(name);
+      return n;
+    });
+  };
+
+  const addPeers = async () => {
+    const names = [
+      ...peerSelected,
+      ...peerCustom
+        .split(/[\n,;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ];
+    // Dedupe case-insensitively, skip already-monitored names.
+    const existing = new Set(competitors.map((c) => c.name.trim().toLowerCase()));
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const n of names) {
+      const k = n.toLowerCase();
+      if (seen.has(k) || existing.has(k)) continue;
+      seen.add(k);
+      unique.push(n);
+    }
+    if (!unique.length) {
+      toast({ title: "Select or type at least one product name", variant: "destructive" });
+      return;
+    }
+    setPeerAdding(true);
+    let added = 0;
+    let scraped = 0;
+    try {
+      for (const name of unique) {
+        const ads_library_url = fbAdLibrarySearchUrl(name, peerCountry);
+        const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name,
+            ads_library_url,
+            scrape_count: 20,
+            frequency: "every_7_days",
+            brand_type: "inspiration",
+            notes: "vertical_peer",
+          }),
+        });
+        if (!r.ok) continue;
+        const brand = await r.json();
+        added++;
+        if (brand?.id) {
+          const sr = await fetch(
+            `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${brand.id}/scrape`,
+            { method: "POST" },
+          );
+          if (sr.ok) scraped++;
+        }
+      }
+      await load();
+      setPeersOpen(false);
+      if (added) {
+        toast({
+          title: `Added ${added} vertical peer${added === 1 ? "" : "s"}${scraped ? ` · scrape started for ${scraped}` : ""}`,
+        });
+      } else {
+        toast({ title: "Nothing added", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "Error adding peers", variant: "destructive" });
+    } finally {
+      setPeerAdding(false);
+    }
+  };
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1793,15 +1916,34 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-foreground">Competitor Library</h2>
           <p className="text-sm text-muted-foreground mt-0.5">Monitor competitors and save their templates</p>
         </div>
-        <Button onClick={() => setAddOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
-          <Plus className="w-4 h-4" /> Add Competitor
-        </Button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Button variant="outline" onClick={() => void openPeers()} className="gap-1.5 text-sm">
+            <Sparkles className="w-4 h-4" /> Add vertical peers
+          </Button>
+          <Button onClick={() => setAddOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
+            <Plus className="w-4 h-4" /> Add Competitor
+          </Button>
+        </div>
       </div>
+
+      {fewDirects && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">Few direct competitors</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Spy other products in the same vertical to expand creative research.
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void openPeers()} className="gap-1.5 flex-shrink-0">
+            <Sparkles className="w-3.5 h-3.5" /> Suggest peers
+          </Button>
+        </div>
+      )}
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
@@ -1810,9 +1952,14 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <Globe className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-base font-semibold text-foreground mb-1">No competitors monitored</p>
           <p className="text-sm text-muted-foreground mb-4">Add a competitor by entering its domain or ads library URL.</p>
-          <Button onClick={() => setAddOpen(true)} className="bg-primary text-white gap-1.5">
-            <Plus className="w-4 h-4" /> Add Competitor
-          </Button>
+          <div className="flex items-center justify-center gap-2">
+            <Button variant="outline" onClick={() => void openPeers()} className="gap-1.5">
+              <Sparkles className="w-4 h-4" /> Add vertical peers
+            </Button>
+            <Button onClick={() => setAddOpen(true)} className="bg-primary text-white gap-1.5">
+              <Plus className="w-4 h-4" /> Add Competitor
+            </Button>
+          </div>
         </div>
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
@@ -1835,6 +1982,11 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
                     {c.monitoring_status === "attivo" ? "Active" : "Analyzing"}
                   </span>
                 </div>
+                {isVerticalPeer(c) && (
+                  <div className="absolute bottom-2 right-2 bg-slate-900/55 backdrop-blur-sm rounded-md px-1.5 py-0.5">
+                    <span className="text-[9px] font-bold text-white uppercase tracking-wide">Vertical</span>
+                  </div>
+                )}
                 {/* Actions */}
                 <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   {c.ads_library_url && (
@@ -1906,6 +2058,81 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
               </Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={peersOpen} onOpenChange={setPeersOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add vertical peers</DialogTitle>
+            <DialogDescription>
+              Same vertical, different products — suggested names for Meta Ad Library spy ({peerCountry}).
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 mt-1">
+            {peerLoading ? (
+              <div className="py-10 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Suggesting product names…
+              </div>
+            ) : peerError ? (
+              <div className="space-y-3">
+                <p className="text-sm text-destructive">{peerError}</p>
+                <Button variant="outline" size="sm" onClick={() => void openPeers()} className="gap-1.5">
+                  <RefreshCw className="w-3.5 h-3.5" /> Retry
+                </Button>
+              </div>
+            ) : (
+              <>
+                {peerSuggestions.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {peerSuggestions.map((s) => {
+                      const on = peerSelected.has(s.name);
+                      return (
+                        <button
+                          key={s.name}
+                          type="button"
+                          title={s.why || undefined}
+                          onClick={() => togglePeer(s.name)}
+                          className={`text-left rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+                            on
+                              ? "border-primary bg-primary/10 text-foreground"
+                              : "border-border bg-background text-muted-foreground hover:border-primary/40"
+                          }`}
+                        >
+                          <span className="font-medium text-foreground">{s.name}</span>
+                          {s.why ? <span className="block text-[10px] text-muted-foreground mt-0.5">{s.why}</span> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No suggestions — type product names below.</p>
+                )}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-foreground">Other product names</label>
+                  <Input
+                    value={peerCustom}
+                    onChange={(e) => setPeerCustom(e.target.value)}
+                    placeholder="Comma-separated, e.g. Brand X, Product Y"
+                    className="text-sm"
+                  />
+                </div>
+              </>
+            )}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setPeersOpen(false)}>Cancel</Button>
+              <Button
+                type="button"
+                disabled={peerLoading || peerAdding || (!peerSelected.size && !peerCustom.trim())}
+                onClick={() => void addPeers()}
+                className="bg-primary text-white gap-1.5"
+              >
+                {peerAdding
+                  ? <><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Adding & scraping…</>
+                  : <><Zap className="w-3.5 h-3.5" /> Add & scrape</>}
+              </Button>
+            </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </div>
@@ -3471,6 +3698,77 @@ function ShotsLibraryView({
   const [showCreate, setShowCreate] = useState(false);
   const [recutting, setRecutting] = useState(false);
   const [unmarking, setUnmarking] = useState(false);
+  const [reelFootage, setReelFootage] = useState<{
+    usableShots: number;
+    cleanedShots: number;
+    fullCleanedAds: number;
+  } | null>(null);
+  const [reelFootageLoading, setReelFootageLoading] = useState(true);
+  const [reelPreparing, setReelPreparing] = useState(false);
+
+  const loadReelFootage = async () => {
+    setReelFootageLoading(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/reel/footage`, { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && typeof j.usableShots === "number") {
+        setReelFootage({
+          usableShots: j.usableShots,
+          cleanedShots: j.cleanedShots,
+          fullCleanedAds: j.fullCleanedAds,
+        });
+      } else {
+        setReelFootage(null);
+      }
+    } catch {
+      setReelFootage(null);
+    } finally {
+      setReelFootageLoading(false);
+    }
+  };
+
+  const prepareReelFootage = async () => {
+    setReelPreparing(true);
+    try {
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/reel/footage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ includeFullAds: true }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: j.error || "Prepare failed", variant: "destructive" });
+        return;
+      }
+      toast({
+        title: "Reel inventory ready",
+        description: `projectId: ${projectId} — use MCP wasabi-reel reel_import_cleaned_shots with this projectId (downloads locally). Optional b-roll: reel_generate_clip.`,
+      });
+    } catch {
+      toast({ title: "Prepare failed", variant: "destructive" });
+    } finally {
+      setReelPreparing(false);
+    }
+  };
+
+  const copyProjectId = async () => {
+    try {
+      await navigator.clipboard.writeText(projectId);
+      toast({ title: "Project ID copied" });
+    } catch {
+      toast({ title: "Copy failed", variant: "destructive" });
+    }
+  };
+
+  const copyMcpImportCommand = async () => {
+    const prompt = `Import cleaned reel footage for projectId ${projectId} (includeFullAds), then follow reel-director gates, then reel_publish_to_wasabi with the same projectId and final reelDir.`;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      toast({ title: "MCP prompt copied", description: "Paste in Claude/Cursor with wasabi-reel enabled." });
+    } catch {
+      toast({ title: "Copy failed", variant: "destructive" });
+    }
+  };
 
   const load = async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -3490,8 +3788,8 @@ function ShotsLibraryView({
     } catch { if (!quiet) setShots([]); }
     finally { if (!quiet) setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
-  useLiveReload(() => { void load(true); });
+  useEffect(() => { load(); void loadReelFootage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useLiveReload(() => { void load(true); void loadReelFootage(); });
 
   // While AI subtitle removal is running, refresh quietly until it settles.
   const cleaningCount = shots.filter(
@@ -3765,6 +4063,72 @@ function ShotsLibraryView({
               <RefreshCw className="w-3.5 h-3.5" /> Re-clean all
             </button>
           ) : null}
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-border bg-muted/30 px-3 py-3 space-y-2.5">
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Film className="w-4 h-4 shrink-0 text-muted-foreground" />
+            <div>
+              <p className="text-xs font-semibold text-foreground">Reel Engine (local MCP + Wasabi inventory)</p>
+              <p className="text-[10px] text-muted-foreground leading-snug max-w-lg">
+                Setup: <b>scripts/setup-reel-mediabuyer.sh</b> · Guida: <b>reel/MEDIABUYER-SETUP.md</b>
+              </p>
+            </div>
+          </div>
+          {reelFootageLoading ? (
+            <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" /> Loading counts…
+            </span>
+          ) : reelFootage ? (
+            <div className="flex flex-wrap gap-2 text-[10px]">
+              <span className="px-2 py-0.5 rounded-md bg-background border border-border">
+                <b>{reelFootage.usableShots}</b> usable shots
+              </span>
+              <span className="px-2 py-0.5 rounded-md bg-background border border-border">
+                <b>{reelFootage.cleanedShots}</b> CLEANED
+              </span>
+              <span className="px-2 py-0.5 rounded-md bg-background border border-border">
+                <b>{reelFootage.fullCleanedAds}</b> full cleaned videos
+              </span>
+            </div>
+          ) : null}
+        </div>
+        <ol className="text-[10px] text-muted-foreground space-y-0.5 list-decimal list-inside max-w-2xl">
+          <li>Clean / split footage in this tab (Remove subs with AI when needed).</li>
+          <li><b>Prepare for Reel Engine</b> — inventory JSON on server (download happens locally via MCP).</li>
+          <li>Copy <b>projectId</b> for MCP <code className="text-[9px]">reel_import_cleaned_shots</code>.</li>
+          <li>In Claude/Cursor: import → skill <b>reel-director</b> (gates) → <code className="text-[9px]">reel_publish_to_wasabi</code>.</li>
+          <li>Finished video appears under project tab <b>Created videos</b>.</li>
+        </ol>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void prepareReelFootage()}
+            disabled={reelPreparing}
+            className="h-7 text-xs gap-1">
+            {reelPreparing
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Preparing…</>
+              : "2. Prepare for Reel Engine"}
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void copyProjectId()}
+            className="h-7 text-xs gap-1"
+            title="Copy projectId for MCP">
+            <Copy className="w-3 h-3" /> 3. projectId
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => void copyMcpImportCommand()}
+            className="h-7 text-xs gap-1"
+            title="Copy ready prompt for Claude">
+            <Copy className="w-3 h-3" /> Copy MCP import command
+          </Button>
         </div>
       </div>
 

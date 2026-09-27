@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { FunnelTab } from '@/components/projecthub/funnel-builder/FunnelTab';
 import { GeneralBriefSection } from '@/components/projecthub/general-brief/GeneralBriefSection';
-import { CreativeSection } from '@/components/projecthub/creative/CreativeSection';
+import { AdsCreativeShell } from '@/components/projecthub/ads-creative/AdsCreativeShell';
+import { BrandRulesSection } from '@/components/projecthub/ads-creative/BrandRulesSection';
 import { AnalyticsSection } from '@/components/projecthub/analytics/AnalyticsSection';
 import { CompetitorLibrarySection } from '@/components/projecthub/competitor-library/CompetitorLibrarySection';
 import { AutopilotSection } from '@/components/projecthub/autopilot/AutopilotSection';
@@ -18,10 +19,10 @@ import { Button } from '@/components/ui/button';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import {
   ArrowLeft, FileText, Layers, Palette, BarChart2,
-  ChevronLeft, ChevronRight, Globe2, Rocket, LayoutDashboard,
+  ChevronLeft, ChevronRight, Globe2, Rocket, LayoutDashboard, Shield,
 } from 'lucide-react';
 
-type Section = 'dashboard' | 'autopilot' | 'brief' | 'funnel' | 'competitor-library' | 'creative' | 'chief' | 'analytics';
+type Section = 'dashboard' | 'autopilot' | 'brief' | 'funnel' | 'competitor-library' | 'brand-rules' | 'creative' | 'chief' | 'analytics';
 
 type ProjectFile = {
   id: number;
@@ -37,7 +38,8 @@ const SECTIONS = [
   { id: 'brief' as Section, label: 'General Brief', icon: FileText },
   { id: 'funnel' as Section, label: 'Funnel', icon: Layers },
   { id: 'competitor-library' as Section, label: 'Competitor Library', icon: Globe2 },
-  { id: 'creative' as Section, label: 'Creative', icon: Palette },
+  { id: 'brand-rules' as Section, label: 'Brand rules', icon: Shield },
+  { id: 'creative' as Section, label: 'Ads Creative', icon: Palette },
   { id: 'analytics' as Section, label: 'Analytics', icon: BarChart2 },
 ];
 
@@ -203,8 +205,11 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
             {activeSection === 'competitor-library' && (
               <CompetitorLibrarySection projectId={projectId} />
             )}
+            {activeSection === 'brand-rules' && (
+              <BrandRulesSection projectId={projectId} />
+            )}
             {activeSection === 'creative' && (
-              <CreativeSection projectId={projectId} />
+              <AdsCreativeShell projectId={projectId} />
             )}
             {activeSection === 'analytics' && (
               <AnalyticsSection projectId={projectId} />
