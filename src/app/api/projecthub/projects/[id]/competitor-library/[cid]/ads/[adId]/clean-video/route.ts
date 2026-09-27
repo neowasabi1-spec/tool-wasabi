@@ -9,7 +9,7 @@ export const runtime = 'nodejs';
  * Whole-video subtitle removal for a competitor creative.
  *
  * POST → mark the ad clean_status='pending' and fire inpaint-shot-background
- *        with { adId }. Grok edits the video in 7s pieces (one call per piece,
+ *        with { adId }. Fal runs Grok on 7s pieces (one call per piece,
  *        every caption in that piece), then the original audio is muxed back.
  *        The result is stored in competitor_ads.clean_full_path.
  * GET  → current clean_status + cleaned path.
