@@ -14,6 +14,7 @@ import {
   visionModel,
   writerModel,
 } from './openrouter';
+import { creativeFingerprint } from './creative-fingerprint';
 
 export type AnalyzeTarget = {
   adSource: 'competitor' | 'own';
@@ -129,9 +130,85 @@ export async function analyzeCompetitorAd(
   projectId: string,
   adRefId: string,
   onProgress?: (msg: string) => Promise<void> | void,
-): Promise<{ analysisId: number; extraction: Record<string, unknown> }> {
+): Promise<{ analysisId: number; extraction: Record<string, unknown>; skipped?: boolean; reusedFrom?: string }> {
   await onProgress?.('Loading ad…');
   const ad = await loadCompetitorAd(projectId, adRefId);
+
+  // Already analyzed — do not spend another LLM call.
+  const { data: existing } = await supabaseAdmin
+    .from('creative_analyses')
+    .select('id, status, extraction')
+    .eq('project_id', projectId)
+    .eq('ad_source', 'competitor')
+    .eq('ad_ref_id', String(adRefId))
+    .eq('status', 'ready')
+    .maybeSingle();
+  if (existing?.id) {
+    await onProgress?.('Already analyzed — skipped');
+    return {
+      analysisId: Number(existing.id),
+      extraction: (existing.extraction as Record<string, unknown>) || {},
+      skipped: true,
+    };
+  }
+
+  // Same creative already analyzed under another ad row — copy result.
+  const fp = creativeFingerprint(ad as { id: number; file_path?: string; headline?: string; hook?: string; body_text?: string; name?: string });
+  if (!fp.startsWith('id:')) {
+    const { data: siblings } = await supabaseAdmin
+      .from('competitor_ads')
+      .select('id, file_path, headline, hook, body_text, name')
+      .eq('project_id', projectId)
+      .neq('id', Number(adRefId))
+      .limit(250);
+    const twinIds = (siblings || [])
+      .filter((s) => creativeFingerprint(s as { id: number; file_path?: string; headline?: string; hook?: string; body_text?: string; name?: string }) === fp)
+      .map((s) => String(s.id));
+    if (twinIds.length) {
+      const { data: twinAnalysis } = await supabaseAdmin
+        .from('creative_analyses')
+        .select('id, extraction, ranking, status')
+        .eq('project_id', projectId)
+        .eq('ad_source', 'competitor')
+        .eq('status', 'ready')
+        .in('ad_ref_id', twinIds)
+        .limit(1)
+        .maybeSingle();
+      if (twinAnalysis?.extraction) {
+        await onProgress?.(`Reused analysis from twin #${twinIds[0]}`);
+        const { data, error } = await supabaseAdmin
+          .from('creative_analyses')
+          .upsert(
+            {
+              project_id: projectId,
+              ad_source: 'competitor',
+              ad_ref_id: String(adRefId),
+              status: 'ready',
+              extraction: twinAnalysis.extraction,
+              ranking: {
+                ...(typeof twinAnalysis.ranking === 'object' && twinAnalysis.ranking ? twinAnalysis.ranking : {}),
+                reused_from: twinIds[0],
+                analyzed_at: new Date().toISOString(),
+              },
+              error: '',
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'project_id,ad_source,ad_ref_id' },
+          )
+          .select('id')
+          .single();
+        if (!error && data) {
+          return {
+            analysisId: Number(data.id),
+            extraction: twinAnalysis.extraction as Record<string, unknown>,
+            skipped: true,
+            reusedFrom: twinIds[0],
+          };
+        }
+      }
+    }
+  }
+
   const brand = await loadBrand(projectId);
 
   await onProgress?.('Extracting…');

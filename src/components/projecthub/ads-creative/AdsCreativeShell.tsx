@@ -26,6 +26,7 @@ const STEPS: { id: Step; label: string; icon: typeof Link2 }[] = [
 
 type AdRow = {
   id: number;
+  duplicateCount?: number;
   headline?: string;
   hook?: string;
   body_text?: string;
@@ -108,6 +109,9 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       }
       if (source === 'competitor' && Number(data.pruned) > 0) {
         toast.message(`Removed ${data.pruned} off-product page${data.pruned === 1 ? '' : 's'} from library`);
+      }
+      if (source === 'competitor' && Number(data.collapsed) > 0) {
+        toast.message(`Hid ${data.collapsed} duplicate creative${data.collapsed === 1 ? '' : 's'}`);
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to load library');
@@ -212,21 +216,29 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       toast.error('Select at least one ad');
       return;
     }
+    const todo = selectedList.filter((a) => a.analysis?.status !== 'ready');
+    const already = selectedList.length - todo.length;
+    if (!todo.length) {
+      toast.message(`Already analyzed (${already}) — nothing to run`);
+      return;
+    }
     setBusy(true);
     setStep('analyze');
     let ok = 0;
+    let skipped = already;
     try {
-      for (const ad of selectedList) {
+      for (const ad of todo) {
         const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/analyze`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ adSource: source, adRefId: String(ad.id) }),
         });
         const data = await res.json();
-        if (res.ok && (data.status === 'completed' || data.analysis)) ok += 1;
+        if (res.ok && data.skipped) skipped += 1;
+        else if (res.ok && (data.status === 'completed' || data.analysis)) ok += 1;
         else if (!res.ok) toast.error(data.error || `Analyze failed for #${ad.id}`);
       }
-      toast.success(`Analyzed ${ok}/${selectedList.length}`);
+      toast.success(`Analyzed ${ok} · skipped ${skipped} duplicate/already done`);
       await loadLibrary();
     } finally {
       setBusy(false);
@@ -425,6 +437,9 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                     <div className="mt-1 flex flex-wrap gap-1">
                       {ad.analysis?.status === 'ready' && (
                         <Badge variant="secondary" className="text-[10px]">Analyzed</Badge>
+                      )}
+                      {(ad.duplicateCount || 0) > 1 && (
+                        <Badge variant="outline" className="text-[10px]">×{ad.duplicateCount}</Badge>
                       )}
                       {(ad.is_winner === true || ad.is_winner === 'true') && (
                         <Badge className="text-[10px]">Winner</Badge>

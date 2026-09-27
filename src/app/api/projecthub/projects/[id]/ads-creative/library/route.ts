@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { loadDiscoveryLexicon } from '@/lib/discovery-lexicon';
 import { pruneNonSameProductBrands } from '@/lib/competitor-same-product';
+import { dedupeCreatives } from '@/lib/ads-intel/creative-fingerprint';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -63,7 +64,6 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
           market: product.market || '',
           affiliate: true,
           hosts: product.hosts || [],
-          offerUrl: product.offerUrl || undefined,
           names: product.names?.length ? product.names : [product.name],
         });
         pruned = r.removed;
@@ -99,7 +99,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     .eq('project_id', projectId)
     .in('brand_id', brandIds)
     .order('created_at', { ascending: false })
-    .limit(100);
+    .limit(400);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   const { data: analyses } = await supabaseAdmin
@@ -109,10 +109,18 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     .eq('ad_source', 'competitor');
 
   const byRef = new Map((analyses || []).map((a: any) => [String(a.ad_ref_id), a]));
-  const ads = (data || []).map((ad: any) => ({
+  const mapped = (data || []).map((ad: any) => ({
     ...ad,
     analysis: byRef.get(String(ad.id)) || null,
   }));
+  const ads = dedupeCreatives(mapped).slice(0, 100);
+  const collapsed = mapped.length - ads.length;
 
-  return NextResponse.json({ source: 'competitor', ads, pruned, curatedOnly: true });
+  return NextResponse.json({
+    source: 'competitor',
+    ads,
+    pruned,
+    collapsed,
+    curatedOnly: true,
+  });
 }

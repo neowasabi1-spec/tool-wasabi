@@ -26,6 +26,25 @@ export async function POST(
     return NextResponse.json({ error: 'adRefId is required' }, { status: 400 });
   }
 
+  // Skip enqueue when this ad (or we will reuse) already has a ready analysis.
+  {
+    const { data: existing } = await supabaseAdmin
+      .from('creative_analyses')
+      .select('id, status, extraction, ranking')
+      .eq('project_id', projectId)
+      .eq('ad_source', adSource)
+      .eq('ad_ref_id', adRefId)
+      .eq('status', 'ready')
+      .maybeSingle();
+    if (existing) {
+      return NextResponse.json({
+        status: 'completed',
+        skipped: true,
+        analysis: existing,
+      });
+    }
+  }
+
   try {
     const { jobId, ranInline } = await enqueueAdsIntelJob({
       projectId,
