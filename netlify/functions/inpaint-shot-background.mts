@@ -1840,6 +1840,109 @@ async function falGrokPoll(
   return { url: data.video.url };
 }
 
+/**
+ * Paint out a caption Grok left behind. The letters are replaced with the
+ * picture just above or below them, so a line like "picking up little bits of"
+ * disappears in seconds instead of another Fal edit that keeps the same words.
+ * Returns true when it rewrote the file.
+ */
+async function wipeCaptionPixels(
+  file: string, W: number, H: number, len: number, fps: number, workDir: string,
+  log: (...a: unknown[]) => void,
+): Promise<boolean> {
+  try {
+    const rgb = await rgbFrames(file, W, H, len, fps, workDir);
+    const nfSmall = Math.floor(rgb.buf.length / (rgb.w * rgb.h * 3));
+    if (nfSmall < 1) return false;
+    const cm = captionMasks(rgb.buf, nfSmall, rgb.w, rgb.h, null);
+    if (!cm || cm.textFrames < 0.05 || cm.pxPerFrame < 12) return false;
+    if (cm.pxPerFrame / (rgb.w * rgb.h) > 0.2) return false;
+
+    const rate = Math.max(1, Math.round(fps) || 30);
+    const frames = Math.max(1, Math.round(len * rate));
+    const budget = 180 * 1024 * 1024;
+    let w = Math.max(2, W - (W % 2));
+    let h = Math.max(2, H - (H % 2));
+    while (w > 320 && h > 320 && w * h * 3 * frames > budget) {
+      w = Math.max(2, Math.round((w * 0.85) / 2) * 2);
+      h = Math.max(2, Math.round((h * 0.85) / 2) * 2);
+    }
+    const raw = path.join(workDir, `wipe-in-${path.basename(file)}.raw`);
+    const outRaw = path.join(workDir, `wipe-out-${path.basename(file)}.raw`);
+    await run(FFMPEG, [
+      '-y', '-i', file,
+      '-vf', `scale=${w}:${h}`,
+      '-f', 'rawvideo', '-pix_fmt', 'rgb24', raw,
+    ]);
+    const frameBytes = w * h * 3;
+    const nf = Math.floor(fs.statSync(raw).size / frameBytes);
+    if (nf < 1) return false;
+    const sw = rgb.w;
+    const sh = rgb.h;
+    const masks = cm.masks;
+    const fdIn = fs.openSync(raw, 'r');
+    const fdOut = fs.openSync(outRaw, 'w');
+    const frame = Buffer.allocUnsafe(frameBytes);
+    let painted = 0;
+    try {
+      for (let f = 0; f < nf; f++) {
+        fs.readSync(fdIn, frame, 0, frameBytes, f * frameBytes);
+        const mi = Math.min(masks.length - 1, Math.round((f * (masks.length - 1)) / Math.max(1, nf - 1)));
+        const mask = masks[mi];
+        const masked = (x: number, y: number) => {
+          const sx = Math.min(sw - 1, (x * sw / w) | 0);
+          const sy = Math.min(sh - 1, (y * sh / h) | 0);
+          return mask[sy * sw + sx] === 1;
+        };
+        for (let x = 0; x < w; x++) {
+          let y = 0;
+          while (y < h) {
+            if (!masked(x, y)) { y++; continue; }
+            const y0 = y;
+            while (y < h && masked(x, y)) y++;
+            const y1 = y;
+            const up = y0 > 0 ? y0 - 1 : -1;
+            const dn = y1 < h ? y1 : -1;
+            if (up < 0 && dn < 0) continue;
+            for (let yy = y0; yy < y1; yy++) {
+              const srcY = up >= 0 && dn >= 0
+                ? ((yy - y0) <= (y1 - 1 - yy) ? up : dn)
+                : (up >= 0 ? up : dn);
+              const si = (srcY * w + x) * 3;
+              const di = (yy * w + x) * 3;
+              frame[di] = frame[si];
+              frame[di + 1] = frame[si + 1];
+              frame[di + 2] = frame[si + 2];
+              painted++;
+            }
+          }
+        }
+        fs.writeSync(fdOut, frame);
+      }
+    } finally {
+      fs.closeSync(fdIn);
+      fs.closeSync(fdOut);
+    }
+    if (!painted) return false;
+    const tmp = file.replace(/\.mp4$/i, '') + '-wipe.mp4';
+    await run(FFMPEG, [
+      '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${w}x${h}`, '-r', String(rate),
+      '-i', outRaw,
+      '-vf', `scale=${W}:${H}:flags=lanczos`,
+      '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+      '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+      tmp,
+    ]);
+    fs.renameSync(tmp, file);
+    try { fs.rmSync(raw, { force: true }); fs.rmSync(outRaw, { force: true }); } catch { /* ignore */ }
+    log(`wiped leftover caption (${painted} px)`);
+    return true;
+  } catch (e) {
+    log(`caption wipe skipped (${(e as Error).message})`);
+    return false;
+  }
+}
+
 /** True when this piece still shows a burned-in caption line. */
 async function pieceHasText(
   file: string, W: number, H: number, len: number, fps: number, workDir: string,
@@ -1995,9 +2098,7 @@ async function cleanWholeAdGrok(
         try {
           await downloadSource(supabase, w.key as string, prev);
           if (await pieceHasText(prev, W, H, pieceLen(i), fps, workDir, log)) {
-            log(`piece ${i + 1}/${nseg}: subtitles still there — one more Grok pass`);
-            w.s = 'todo';
-            delete w.req;
+            log(`piece ${i + 1}/${nseg}: subtitles still there — painting them out`);
           }
         } catch (e) {
           log(`piece ${i + 1}/${nseg}: leftover check skipped (${(e as Error).message})`);
@@ -2089,14 +2190,11 @@ async function cleanWholeAdGrok(
         const winKey = `${projectId}/ads-clean/${adId}_gr${i}${w.passes && w.passes > 1 ? 'b' : ''}.mp4`;
         await uploadFile(supabase, winKey, norm, 'video/mp4');
         delete w.req;
-        const missed = (w.passes || 1) < 2 && await pieceHasText(norm, W, H, len, fps, workDir, log);
-        if (missed) {
-          w.s = 'todo';
-          w.key = winKey;
-          log(`piece ${i + 1}/${nseg}: subtitles still in this piece — sending it again`);
+        w.s = 'clean';
+        w.key = winKey;
+        if (await pieceHasText(norm, W, H, len, fps, workDir, log)) {
+          log(`piece ${i + 1}/${nseg}: Grok left caption text — it is painted out when the video is joined`);
         } else {
-          w.s = 'clean';
-          w.key = winKey;
           log(`piece ${i + 1}/${nseg}: captions cleared`);
         }
       } catch (e) {
@@ -2214,6 +2312,7 @@ async function cleanWholeAdGrok(
           f,
         ]);
       }
+      await wipeCaptionPixels(f, W, H, len, fps, workDir, log);
       localFiles.push(f);
     }
 
