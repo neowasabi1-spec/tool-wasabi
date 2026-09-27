@@ -61,6 +61,7 @@
     "node-fetch": "^2.7.0",
     "node-html-parser": "^7.1.0",
     "openai": "^6.22.0",
+    "papaparse": "^5.7.0",
     "pdfjs-dist": "^5.5.207",
     "playwright-core": "^1.50.1",
     "react": "^18.2.0",
@@ -83,6 +84,7 @@
   "devDependencies": {
     "@netlify/functions": "^5.3.0",
     "@types/node": "^20.10.0",
+    "@types/papaparse": "^5.5.2",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "autoprefixer": "^10.4.16",

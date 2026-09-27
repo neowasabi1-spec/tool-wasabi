@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getCoreKnowledge, getKnowledgeForTask } from '../../src/knowledge/copywriting';
 import { fold, parseDiscoveryLexicon, parseTermList } from '../../src/lib/competitor-relevance';
 import { loadDiscoveryLexicon, saveDiscoveryLexicon, shortApifyWebhookUrl } from '../../src/lib/discovery-lexicon';
+import { fbAdLibrarySearchUrl } from '../../src/lib/ads-library-url';
 import { parseSectionData } from '../../src/lib/project-sections';
 import { extractLandingMediaFromUrl, listLandingMedia, offerIdentityFromHtml } from '../../src/lib/landing-media';
 import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
@@ -331,13 +332,6 @@ function countryFromMarket(input: PipelineInput): string {
   ];
   for (const [re, cc] of table) if (re.test(s)) return cc;
   return 'IT';
-}
-
-function fbAdLibrarySearchUrl(keyword: string, country: string): string {
-  const q = encodeURIComponent(keyword.trim());
-  // keyword_exact: the phrase must appear. keyword_unordered matches ANY
-  // word ("coffee" → coffee shops, machines, grocery).
-  return `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=${country}&q=${q}&search_type=keyword_exact&media_type=all`;
 }
 
 /** Start an Apify FB Ad Library run (mirrors src/lib/apify.ts startAdsLibraryRun).
