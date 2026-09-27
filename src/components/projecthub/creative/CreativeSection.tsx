@@ -967,7 +967,10 @@ function SwipeTab({ projectId }: { projectId: string }) {
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/competitor-ads`),
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/creative/swipes`),
       ]);
-      if (rb.ok) { const all: CompetitorBrand[] = await rb.json(); setBrands(all.filter(b => b.brand_type === "competitor")); }
+      if (rb.ok) {
+        const all: CompetitorBrand[] = await rb.json();
+        setBrands(all.filter(b => b.brand_type === "competitor" && b.is_active !== "false"));
+      }
       if (ra.ok) setAllAds(await ra.json());
       if (rs.ok) setAllSwipes(await rs.json());
     } finally { if (!silent) { setLoadingBrands(false); setLoadingSwipes(false); } }

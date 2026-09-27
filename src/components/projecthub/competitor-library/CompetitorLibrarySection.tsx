@@ -1840,11 +1840,14 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       }
       const terms = Array.isArray(data.searchTerms) ? data.searchTerms as string[] : [];
       const n = Array.isArray(data.started) ? data.started.length : 0;
+      const pruned = Number(data.pruned) || 0;
       toast({
-        title: `Discovery started (${n} Meta search${n === 1 ? "" : "es"})`,
-        description: terms.length
-          ? `Terms: ${terms.slice(0, 4).join(" · ")}${terms.length > 4 ? "…" : ""}. Ads appear as scrapes finish; the judge keeps only real direct competitors.`
-          : "Ads appear as scrapes finish.",
+        title: `Same-product discovery (${n} search${n === 1 ? "" : "es"})`,
+        description: [
+          terms.length ? `Terms: ${terms.slice(0, 4).join(" · ")}${terms.length > 4 ? "…" : ""}` : null,
+          pruned ? `Removed ${pruned} off-product page${pruned === 1 ? "" : "s"}` : null,
+          "Only the same offer is kept — use Add vertical peers for other products.",
+        ].filter(Boolean).join(". "),
       });
       // Reload shortly — brands land asynchronously via webhook.
       window.setTimeout(() => { void load(true); }, 12_000);
@@ -1866,7 +1869,9 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`);
       if (r.ok) {
         const all = await r.json();
-        setCompetitors(Array.isArray(all) ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c)) : []);
+        setCompetitors(Array.isArray(all)
+          ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c) && c.is_active !== "false")
+          : []);
       }
     } finally { if (!silent) setLoading(false); }
   };

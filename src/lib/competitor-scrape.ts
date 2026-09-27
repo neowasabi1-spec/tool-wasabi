@@ -412,46 +412,49 @@ export async function ingestDataset(opts: {
     isOnNiche([m.pageName, m.headline, m.hook, m.bodyText, m.landingUrl], includeTerms, excludeTerms);
   // Landing pages fetched for the judge are reused when saving landings.
   const htmlCache = new Map<string, { html: string; finalUrl: string }>();
-  if (discovery && opts.product?.name) {
+  // Discovery = same product / same offer only. Different products in the
+  // vertical are added via "Add vertical peers", not keyword discovery.
+  const productForJudge: ProductProfile | null =
+    discovery && opts.product?.name
+      ? {
+          ...opts.product,
+          affiliate: true,
+          names: (opts.product.names?.length ? opts.product.names : [opts.product.name]).filter(Boolean),
+        }
+      : null;
+
+  if (productForJudge) {
     try {
       const cards = advertiserCards(mappedItems);
       // Affiliates keep the brand out of the ad and name it on the pre-lander:
       // the judge must read the landing page, not just the ad copy.
       await enrichCardsWithLandings(cards, mappedItems, htmlCache, Math.min(150_000, Math.round(budget * 0.15)));
-      const verdicts = await judgeAdvertisers(opts.product, cards);
-      const affiliate = opts.product.affiliate === true;
-      // Model verdict when it answered. Affiliate never falls through to a
-      // category keyword match — an unanswered card is dropped. Other modes
-      // still use keywords for the batch the model did not answer.
+      const verdicts = await judgeAdvertisers(productForJudge, cards);
+      // Model verdict only — never fall through to category keyword match
+      // (that pulls other brands of the same kind).
       keep = (m) => {
         const v = verdicts.get(advertiserKey(m));
-        if (v) return v.competitor;
-        if (affiliate) return false;
-        return includeTerms.length ? byKeywords(m) : true;
+        return v ? v.competitor : false;
       };
       const yes = [...verdicts.values()].filter((v) => v.competitor).length;
-      console.log(`[ingestDataset] ${platform}: model kept ${yes}/${verdicts.size} advertisers for "${opts.product.name}"`);
+      console.log(`[ingestDataset] ${platform}: same-product kept ${yes}/${verdicts.size} for "${productForJudge.name}"`);
     } catch (e) {
-      console.warn('[ingestDataset] competitor judge failed, keyword fallback:', (e as Error).message);
-      if (opts.product?.affiliate) {
-        keep = (m) => !!sameOfferEvidence(opts.product as ProductProfile, {
-          id: advertiserKey(m),
-          name: m.pageName || '',
-          samples: [m.headline, m.hook, m.bodyText].filter((s): s is string => !!s),
-          landingHost: hostOf(m.landingUrl),
-        });
-      }
+      console.warn('[ingestDataset] competitor judge failed, same-offer evidence fallback:', (e as Error).message);
+      keep = (m) => !!sameOfferEvidence(productForJudge, {
+        id: advertiserKey(m),
+        name: m.pageName || '',
+        samples: [m.headline, m.hook, m.bodyText].filter((s): s is string => !!s),
+        landingHost: hostOf(m.landingUrl),
+      });
     }
   }
-  if (!keep && discovery && opts.product?.affiliate) {
-    keep = (m) => !!sameOfferEvidence(opts.product as ProductProfile, {
+  if (!keep && discovery && productForJudge) {
+    keep = (m) => !!sameOfferEvidence(productForJudge, {
       id: advertiserKey(m),
       name: m.pageName || '',
       samples: [m.headline, m.hook, m.bodyText].filter((s): s is string => !!s),
       landingHost: hostOf(m.landingUrl),
     });
-  } else if (!keep && discovery && includeTerms.length > 0) {
-    keep = byKeywords;
   }
 
   // Pass 1 — decide what to store. Ads are grouped per advertiser: the goal is

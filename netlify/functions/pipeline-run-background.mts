@@ -1515,10 +1515,10 @@ function affiliateSearchTerms(claudeTerms: string[], offer: OfferInfo, productNa
 
 async function runCompetitor(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
   const link = await resolveOfferLink(supabase, projectId, input);
-  const affiliate = input.imageMode === 'affiliate';
-  const offer: OfferInfo = affiliate
-    ? await loadOfferMedia(supabase, projectId, link)
-    : { note: '', names: [], hosts: [], blurb: '' };
+  // Always same-product discovery. Other products in the vertical belong under
+  // Competitor Library → Add vertical peers (brand_type=inspiration).
+  const affiliate = true;
+  const offer: OfferInfo = await loadOfferMedia(supabase, projectId, link);
   const offerNote = offer.note;
   const project = await loadProject(supabase, projectId);
   const research = sectionContentFrom(project.market_research);
