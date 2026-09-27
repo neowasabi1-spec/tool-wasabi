@@ -4,21 +4,21 @@ import { canAccessProject } from '@/lib/auth/project-access';
 import { getAnthropicKey } from '@/lib/anthropic-key';
 import { wellFormed, sliceWellFormed } from '@/lib/well-formed';
 import { countryFromMarketHint, fbAdLibrarySearchUrl } from '@/lib/ads-library-url';
-import { parseTermList } from '@/lib/competitor-relevance';
+import { parseDiscoveryLexicon, parseTermList } from '@/lib/competitor-relevance';
 import { loadDiscoveryLexicon, saveDiscoveryLexicon, shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 import { apifyConfigured, startAdsLibraryRun } from '@/lib/apify';
 import { siteBaseUrl, webhookSecret } from '@/lib/competitor-scrape';
-import { pruneNonSameProductBrands } from '@/lib/competitor-same-product';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 /**
- * Discover SAME-PRODUCT advertisers (brand + affiliates of OUR offer).
- * Adjacent / different products → use "Add vertical peers".
+ * Discover competitors and add them. Existing pages are never removed.
  *
- *   POST /api/projecthub/projects/:id/competitor-library/discover-direct
+ *   POST { mode?: "category" | "same" }
+ *   category (default) — every advertiser of the same kind of product
+ *   same — this offer only (affiliates / brand pages), added beside the rest
  */
 
 const MODEL = 'claude-sonnet-4-6';
@@ -35,6 +35,33 @@ function briefSnippet(val: unknown, max = 2000): string {
   }
 }
 
+/** Prefer short 2–3 word phrases — long exact queries often return ~0–1 Meta ads. */
+function preferYieldTerms(terms: string[], max = MAX_TERMS): string[] {
+  const scored = terms.map((t) => {
+    const words = t.trim().split(/\s+/).filter(Boolean).length;
+    const len = t.trim().length;
+    let score = 0;
+    if (words >= 2 && words <= 3) score += 4;
+    if (words === 4) score += 1;
+    if (words >= 5) score -= 3;
+    if (len <= 22) score += 3;
+    else if (len <= 30) score += 1;
+    else score -= 2;
+    return { t: t.trim(), score };
+  });
+  scored.sort((a, b) => b.score - a.score || a.t.length - b.t.length);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const { t } of scored) {
+    const k = t.toLowerCase();
+    if (!t || seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 export async function POST(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
   const { allowed } = await canAccessProject(req, id);
@@ -47,6 +74,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   if (!base) {
     return NextResponse.json({ error: 'Site base URL not configured' }, { status: 400 });
   }
+
+  let mode: 'category' | 'same' = 'category';
+  try {
+    const body = await req.json().catch(() => ({}));
+    if (body && body.mode === 'same') mode = 'same';
+  } catch {
+    mode = 'category';
+  }
+  const sameProduct = mode === 'same';
 
   const key = getAnthropicKey();
   if (!key) return NextResponse.json({ error: 'ANTHROPIC_API_KEY is not configured' }, { status: 503 });
@@ -82,7 +118,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const country = countryFromMarketHint(market, description, productName);
   const offerNames = [productName, ...(product?.names || [])].map((n) => String(n || '').trim()).filter(Boolean);
 
-  const kwInstructions = wellFormed(`You help find advertisers of THIS SAME offer (affiliates / brand pages), not other products in the category.
+  const kwInstructions = sameProduct
+    ? wellFormed(`You help find advertisers of THIS SAME offer (affiliates / brand pages), not other products in the category.
 
 Output EXACTLY this format (no extra text):
 
@@ -99,7 +136,28 @@ CRITICAL RULES:
 - First SEARCH lines = bare brand name, then product name, brand+product, spelling variants, "<product> review".
 - NEVER category phrases ("slim coffee", "fiber supplement", "caffè dimagrante") — those pull OTHER products.
 - No competitor brand names.
-- Names searched as-is (do not invent unrelated category keywords).`);
+- Names searched as-is (do not invent unrelated category keywords).`)
+    : wellFormed(`You are a media buyer doing competitor research for the ${country} market.
+Goal: surface EVERY advertiser selling the same kind of product as ours — all brands, formats, clones and affiliates. Noise is removed later by a model that reads each ad.
+
+Output EXACTLY this format (no extra text):
+
+SEARCH
+<10 phrases, one per line>
+
+INCLUDE
+<8-12 short category phrases>
+
+EXCLUDE
+<6-10 off-niche traps this search often pulls>
+
+CRITICAL RULES:
+- SEARCH phrases MUST be 2-3 words when possible (max 4). Short phrases find more ads than long exact sentences.
+- Cover form, mechanism, problem, outcome, buyer nicknames. STYLE: "slim coffee", "caffè dimagrante", "fat burning coffee" — NOT our brand, NOT a single generic word.
+- 10 genuinely DIFFERENT searches. Local language of ${country} PLUS English when locals also see English ads.
+- INCLUDE = category signals. Never our brand name.
+- EXCLUDE = coffee shops, machines, retail, jobs, SaaS, unrelated verticals.
+- Do NOT output brand or company names.`);
 
   const kwUser = wellFormed(
     `Product: ${productName}\nAlso known as: ${offerNames.join(', ')}\nMarket: ${market || country}\n${description ? `Description: ${sliceWellFormed(description, 2000)}\n` : ''}\nGive SEARCH / INCLUDE / EXCLUDE now.`,
@@ -131,21 +189,32 @@ CRITICAL RULES:
     );
   }
 
-  const rawSearch = parseTermList(
-    kwRaw.match(/SEARCH\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:INCLUDE|EXCLUDE)\s*:?\s*\n|$)/i)?.[1] || kwRaw,
-  );
-  const merged = [...offerNames, ...rawSearch];
-  const seen = new Set<string>();
-  const searchTerms: string[] = [];
-  for (const t of merged) {
-    const k = t.trim().toLowerCase();
-    if (!k || seen.has(k)) continue;
-    seen.add(k);
-    searchTerms.push(t.trim());
-    if (searchTerms.length >= MAX_TERMS) break;
+  let searchTerms: string[];
+  let includeTerms: string[];
+  let excludeTerms: string[];
+
+  if (sameProduct) {
+    const rawSearch = parseTermList(
+      kwRaw.match(/SEARCH\s*:?\s*\n([\s\S]*?)(?=\n\s*(?:INCLUDE|EXCLUDE)\s*:?\s*\n|$)/i)?.[1] || kwRaw,
+    );
+    const merged = [...offerNames, ...rawSearch];
+    const seen = new Set<string>();
+    searchTerms = [];
+    for (const t of merged) {
+      const k = t.trim().toLowerCase();
+      if (!k || seen.has(k)) continue;
+      seen.add(k);
+      searchTerms.push(t.trim());
+      if (searchTerms.length >= MAX_TERMS) break;
+    }
+    includeTerms = searchTerms.slice();
+    excludeTerms = [];
+  } else {
+    const lex = parseDiscoveryLexicon(kwRaw, productName);
+    searchTerms = preferYieldTerms(lex.search, MAX_TERMS);
+    includeTerms = lex.include;
+    excludeTerms = lex.exclude;
   }
-  const includeTerms = searchTerms.slice();
-  const excludeTerms: string[] = [];
 
   if (!searchTerms.length) {
     return NextResponse.json({ error: 'No usable SEARCH terms generated' }, { status: 502 });
@@ -156,25 +225,16 @@ CRITICAL RULES:
     name: productName,
     description: descr,
     market: market || country,
-    affiliate: true as const,
+    affiliate: sameProduct,
     hosts: product?.hosts || [],
     offerUrl: product?.offerUrl || undefined,
-    names: offerNames,
+    names: sameProduct ? offerNames : undefined,
   };
 
   try {
     await saveDiscoveryLexicon(supabaseAdmin, id, includeTerms, excludeTerms, productProfile);
   } catch (e) {
     console.warn('[discover-direct] lexicon save:', (e as Error).message);
-  }
-
-  // Drop category brands already saved (keep vertical peers / inspiration).
-  let pruned = 0;
-  try {
-    const prune = await pruneNonSameProductBrands(id, productProfile);
-    pruned = prune.removed;
-  } catch (e) {
-    console.warn('[discover-direct] prune:', (e as Error).message);
   }
 
   const webhookUrl = shortApifyWebhookUrl({
@@ -202,7 +262,7 @@ CRITICAL RULES:
 
   if (!started.length) {
     return NextResponse.json(
-      { error: errors[0] || 'No Apify runs started', searchTerms, errors, pruned },
+      { error: errors[0] || 'No Apify runs started', searchTerms, errors },
       { status: 502 },
     );
   }
@@ -210,15 +270,15 @@ CRITICAL RULES:
   return NextResponse.json({
     ok: true,
     country,
-    affiliate: true,
-    sameProductOnly: true,
+    affiliate: sameProduct,
+    sameProductOnly: sameProduct,
     searchTerms,
     include: includeTerms,
     exclude: excludeTerms,
     started,
     errors,
-    pruned,
-    message:
-      'Same-product discovery started. Other brands in the niche belong under Add vertical peers.',
+    message: sameProduct
+      ? 'Same-product search started. Existing pages stay; only this offer is added.'
+      : 'Discovery started. Existing pages stay; category advertisers are added as scrapes finish.',
   });
 }

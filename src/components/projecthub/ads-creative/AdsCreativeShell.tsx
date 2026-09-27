@@ -95,16 +95,8 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const loadLibrary = useCallback(async () => {
     setLoading(true);
     try {
-      // Prune accidental off-product pages once per session. Library then
-      // shows active competitors + vertical peers the user added (not junk).
-      const pruneKey = `ads-lib-pruned:${projectId}`;
-      const shouldCleanup =
-        source === 'competitor' &&
-        typeof window !== 'undefined' &&
-        !sessionStorage.getItem(pruneKey);
-      const cleanup = shouldCleanup ? '&cleanup=1' : '&cleanup=0';
       const res = await fetch(
-        `/api/projecthub/projects/${projectId}/ads-creative/library?source=${source}${cleanup}`,
+        `/api/projecthub/projects/${projectId}/ads-creative/library?source=${source}`,
       );
       const data = await res.json();
       if (!res.ok && data.error && !(data.ads || []).length) {
@@ -112,12 +104,6 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       }
       setAds(data.ads || []);
       setSelected(new Set());
-      if (shouldCleanup && typeof window !== 'undefined') {
-        sessionStorage.setItem(pruneKey, '1');
-      }
-      if (source === 'competitor' && Number(data.pruned) > 0) {
-        toast.message(`Removed ${data.pruned} off-product page${data.pruned === 1 ? '' : 's'} from library`);
-      }
       if (source === 'competitor' && Number(data.collapsed) > 0) {
         toast.message(`Hid ${data.collapsed} duplicate creative${data.collapsed === 1 ? '' : 's'}`);
       }

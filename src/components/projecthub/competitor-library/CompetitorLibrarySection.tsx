@@ -1821,13 +1821,17 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
     }
   };
 
-  const runDiscoverDirect = async () => {
+  const runDiscoverDirect = async (mode: "category" | "same" = "category") => {
     if (discovering) return;
     setDiscovering(true);
     try {
       const r = await fetch(
         `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/discover-direct`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode }),
+        },
       );
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -1840,14 +1844,17 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       }
       const terms = Array.isArray(data.searchTerms) ? data.searchTerms as string[] : [];
       const n = Array.isArray(data.started) ? data.started.length : 0;
-      const pruned = Number(data.pruned) || 0;
+      const same = mode === "same";
       toast({
-        title: `Same-product discovery (${n} search${n === 1 ? "" : "es"})`,
+        title: same
+          ? `Same-product search (${n} search${n === 1 ? "" : "es"})`
+          : `Discovery started (${n} search${n === 1 ? "" : "es"})`,
         description: [
           terms.length ? `Terms: ${terms.slice(0, 4).join(" · ")}${terms.length > 4 ? "…" : ""}` : null,
-          pruned ? `Removed ${pruned} off-product page${pruned === 1 ? "" : "s"}` : null,
-          "Only the same offer is kept — use Add vertical peers for other products.",
-        ].filter(Boolean).join(". "),
+          same
+            ? "Adds advertisers of this offer. Pages already in the library stay."
+            : "Adds category competitors. Pages already in the library stay.",
+        ].filter(Boolean).join(" "),
       });
       // Reload shortly — brands land asynchronously via webhook.
       window.setTimeout(() => { void load(true); }, 12_000);
@@ -1870,7 +1877,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       if (r.ok) {
         const all = await r.json();
         setCompetitors(Array.isArray(all)
-          ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c) && c.is_active !== "false")
+          ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c))
           : []);
       }
     } finally { if (!silent) setLoading(false); }
@@ -2029,12 +2036,22 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           </Button>
           <Button
             variant="outline"
-            onClick={() => void runDiscoverDirect()}
+            onClick={() => void runDiscoverDirect("category")}
             disabled={discovering}
             className="gap-1.5 text-sm"
+            title="Add advertisers of the same kind of product. Existing pages stay."
           >
             {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
             {discovering ? "Discovering…" : "Discover direct"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void runDiscoverDirect("same")}
+            disabled={discovering}
+            className="gap-1.5 text-sm"
+            title="Add advertisers of this exact offer. Does not remove other pages."
+          >
+            Same product
           </Button>
           <Button variant="outline" onClick={() => void openPeers()} className="gap-1.5 text-sm">
             <Sparkles className="w-4 h-4" /> Add vertical peers
@@ -2050,13 +2067,16 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground">Few direct competitors</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Run multi-term Meta search + AI filter for same-product rivals, or add vertical peers for adjacent products.
+              Discover direct adds the category. Same product adds this offer only. Vertical peers stay a separate add. Nothing already saved is removed.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            <Button size="sm" onClick={() => void runDiscoverDirect()} disabled={discovering} className="gap-1.5">
+            <Button size="sm" onClick={() => void runDiscoverDirect("category")} disabled={discovering} className="gap-1.5">
               {discovering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
               Discover direct
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => void runDiscoverDirect("same")} disabled={discovering}>
+              Same product
             </Button>
             <Button variant="outline" size="sm" onClick={() => void openPeers()} className="gap-1.5">
               <Sparkles className="w-3.5 h-3.5" /> Suggest peers
@@ -2073,9 +2093,12 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <p className="text-base font-semibold text-foreground mb-1">No competitors monitored</p>
           <p className="text-sm text-muted-foreground mb-4">Add a competitor by entering its domain or ads library URL.</p>
           <div className="flex items-center justify-center gap-2 flex-wrap">
-            <Button variant="outline" onClick={() => void runDiscoverDirect()} disabled={discovering} className="gap-1.5">
+            <Button variant="outline" onClick={() => void runDiscoverDirect("category")} disabled={discovering} className="gap-1.5">
               {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
               Discover direct
+            </Button>
+            <Button variant="outline" onClick={() => void runDiscoverDirect("same")} disabled={discovering}>
+              Same product
             </Button>
             <Button variant="outline" onClick={() => void openPeers()} className="gap-1.5">
               <Sparkles className="w-4 h-4" /> Add vertical peers

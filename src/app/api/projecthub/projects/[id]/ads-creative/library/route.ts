@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { loadDiscoveryLexicon } from '@/lib/discovery-lexicon';
-import { pruneNonSameProductBrands } from '@/lib/competitor-same-product';
+import { restoreAutoPrunedBrands } from '@/lib/competitor-same-product';
 import { attachContentHashes, dedupeCreatives } from '@/lib/ads-intel/creative-fingerprint';
 import { sortByWinnerTier } from '@/lib/competitor-winner';
 
@@ -12,9 +11,10 @@ export const maxDuration = 60;
 
 /**
  * Ads Creative Library sources:
- * - active competitors kept by same-product discovery/judge
- * - active vertical peers (inspiration) the user added & evaluated
- * Never: inactive/pruned junk, video_folder saves.
+ * - competitor pages already in the library (including ones a same-product
+ *   pass had hidden — those are restored on load)
+ * - vertical peers the user added
+ * Never: video_folder saves.
  */
 async function libraryBrandIds(projectId: string): Promise<number[]> {
   const { data, error } = await supabaseAdmin
@@ -35,7 +35,6 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const url = new URL(req.url);
   const source = url.searchParams.get('source') || 'competitor';
-  const cleanup = url.searchParams.get('cleanup') !== '0';
 
   if (source === 'own') {
     const { data, error } = await supabaseAdmin
@@ -53,45 +52,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ source: 'own', ads: data || [] });
   }
 
-  let pruned = 0;
-  if (cleanup) {
-    try {
-      const lexicon = await loadDiscoveryLexicon(supabaseAdmin, projectId);
-      const product = lexicon.product;
-      if (product?.name) {
-        const r = await pruneNonSameProductBrands(projectId, {
-          name: product.name,
-          description: product.description || '',
-          market: product.market || '',
-          affiliate: true,
-          hosts: product.hosts || [],
-          names: product.names?.length ? product.names : [product.name],
-        });
-        pruned = r.removed;
-      } else {
-        const { data: project } = await supabaseAdmin
-          .from('projects')
-          .select('name, description')
-          .eq('id', projectId)
-          .maybeSingle();
-        if (project?.name) {
-          const r = await pruneNonSameProductBrands(projectId, {
-            name: String(project.name),
-            description: String(project.description || '').slice(0, 900),
-            affiliate: true,
-            names: [String(project.name)],
-          });
-          pruned = r.removed;
-        }
-      }
-    } catch (e) {
-      console.warn('[ads-creative/library] prune:', (e as Error).message);
-    }
+  let restored = 0;
+  try {
+    restored = await restoreAutoPrunedBrands(projectId);
+  } catch (e) {
+    console.warn('[ads-creative/library] restore pruned brands:', (e as Error).message);
   }
 
   const brandIds = await libraryBrandIds(projectId);
   if (!brandIds.length) {
-    return NextResponse.json({ source: 'competitor', ads: [], pruned, curatedOnly: true });
+    return NextResponse.json({ source: 'competitor', ads: [], restored, curatedOnly: true });
   }
 
   const { data, error } = await supabaseAdmin
@@ -150,7 +120,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   return NextResponse.json({
     source: 'competitor',
     ads: withBrand,
-    pruned,
+    restored,
     collapsed,
     curatedOnly: true,
   });

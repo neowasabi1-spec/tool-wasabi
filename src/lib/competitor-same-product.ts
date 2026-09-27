@@ -1,6 +1,6 @@
 /**
- * Re-judge existing competitor_brands and deactivate those that are not the
- * same product/offer. Vertical peers (brand_type=inspiration) are never touched.
+ * Same-product helpers. Discovery must add pages, not hide ones already saved.
+ * restoreAutoPrunedBrands puts back brands a previous cleanup had deactivated.
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -10,6 +10,31 @@ import {
   type AdvertiserCard,
   type ProductProfile,
 } from '@/lib/competitor-judge';
+
+/** Put back pages that same-product cleanup had soft-disabled. */
+export async function restoreAutoPrunedBrands(projectId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .from('competitor_brands')
+    .select('id, notes, is_active')
+    .eq('project_id', projectId);
+
+  if (error) throw new Error(error.message);
+
+  const ids = ((data || []) as Array<{ id: number; notes?: string | null; is_active?: string | null }>)
+    .filter((b) => String(b.notes || '').startsWith('auto_pruned_not_same_product'))
+    .map((b) => b.id);
+
+  if (!ids.length) return 0;
+
+  const { error: updErr } = await supabaseAdmin
+    .from('competitor_brands')
+    .update({ is_active: 'true', notes: '' })
+    .in('id', ids)
+    .eq('project_id', projectId);
+
+  if (updErr) throw new Error(updErr.message);
+  return ids.length;
+}
 
 export async function pruneNonSameProductBrands(
   projectId: string,

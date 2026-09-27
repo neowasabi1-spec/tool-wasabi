@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { isNewAd, loadSeenAt } from '@/lib/competitor-seen';
+import { restoreAutoPrunedBrands } from '@/lib/competitor-same-product';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -46,6 +47,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const { id } = params;
   const { allowed } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+
+  try {
+    await restoreAutoPrunedBrands(id);
+  } catch (e) {
+    console.warn('[competitor-library] restore pruned brands:', (e as Error).message);
+  }
 
   const { data: brands, error } = await supabaseAdmin
     .from('competitor_brands')
