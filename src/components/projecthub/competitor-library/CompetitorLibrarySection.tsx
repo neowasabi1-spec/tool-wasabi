@@ -1785,10 +1785,9 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
 
   const directCount = competitors.filter((c) => !isVerticalPeer(c)).length;
   const fewDirects = !loading && directCount < 3;
-  const refreshableCount = competitors.filter((c) => String(c.ads_library_url || "").trim()).length;
 
   const runRefreshAll = async () => {
-    if (refreshingAll || !refreshableCount) return;
+    if (refreshingAll || !competitors.length) return;
     setRefreshingAll(true);
     try {
       const r = await fetch(
@@ -2016,7 +2015,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <Button
             variant="outline"
             onClick={() => void runRefreshAll()}
-            disabled={refreshingAll || !refreshableCount}
+            disabled={refreshingAll || !competitors.length}
             className="gap-1.5 text-sm"
             title="Re-scrape every monitored page: new ads + active/inactive"
           >

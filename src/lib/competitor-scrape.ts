@@ -21,6 +21,7 @@ import { isOnNiche } from '@/lib/competitor-relevance';
 import { hostOf, judgeAdvertisers, sameOfferEvidence, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 import { htmlToReadableText } from '@/lib/page-text';
+import { fbAdLibrarySearchUrl } from '@/lib/ads-library-url';
 
 // Download cap for a single creative. Generous so even long VSL-style videos
 // get stored permanently (the Supabase bucket file-size limit must allow it).
@@ -493,7 +494,10 @@ export async function ingestDataset(opts: {
   // it concurrently for the same name would create duplicates).
   for (const { brandName } of queue) {
     if (fixedBrandId || !brandName || brandCache.has(brandName)) continue;
-    const resolved = await ensureBrand(projectId, brandName);
+    // Discovery brands need an Ad Library URL so "Refresh all" / Scrape now work.
+    const pageQ = brandName.replace(/\s*\((Meta|TikTok|Google)\)\s*$/i, '').trim();
+    const libraryUrl = platform === 'meta' && pageQ ? fbAdLibrarySearchUrl(pageQ, 'IT') : '';
+    const resolved = await ensureBrand(projectId, brandName, libraryUrl);
     if (resolved) brandCache.set(brandName, resolved);
   }
 

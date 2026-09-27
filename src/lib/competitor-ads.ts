@@ -57,11 +57,20 @@ export async function ensureBrand(
 
   const { data: existing } = await supabaseAdmin
     .from('competitor_brands')
-    .select('id')
+    .select('id, ads_library_url')
     .eq('project_id', projectId)
     .eq('name', clean)
     .maybeSingle();
-  if (existing?.id) return existing.id as number;
+  if (existing?.id) {
+    // Backfill Ad Library URL when discovery created the brand without one.
+    if (adsLibraryUrl && !(existing as { ads_library_url?: string }).ads_library_url) {
+      await supabaseAdmin
+        .from('competitor_brands')
+        .update({ ads_library_url: adsLibraryUrl })
+        .eq('id', existing.id);
+    }
+    return existing.id as number;
+  }
 
   const { data: created, error } = await supabaseAdmin
     .from('competitor_brands')
