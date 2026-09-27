@@ -846,7 +846,7 @@ function CreativeDetailPanel({
           title: deghost ? "Checking the clean mark…" : "Removing subtitles…",
           description: deghost
             ? "If the captions are still there, the video is unmarked. No new AI charge."
-            : "Stops after a few paid steps so it does not keep charging.",
+            : "Grok clears every subtitle in each 7-second piece, top and bottom. One call per piece, then it stops.",
         });
         if (!cleanPoll.current) cleanPoll.current = setInterval(loadCleanStatus, 5000);
       } else {
@@ -1466,7 +1466,7 @@ function CreativeDetailPanel({
               <p className="text-[10px] text-muted-foreground leading-snug">
                 {cleanPath
                   ? "Checks the file already saved. If the original captions are still there, the clean mark is removed and nothing is sent back to the AI."
-                  : <>Erases burned-in captions from the <b>entire</b> video while keeping the original audio. The first pass uses AI. A result that still has the captions is not marked clean.</>}
+                  : <>Splits the video into 7-second pieces. Grok deletes every subtitle in each piece, wherever it sits, then the original audio is put back.</>}
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -1503,7 +1503,7 @@ function CreativeDetailPanel({
                 </p>
               )}
               {cleanStatus === "error" && (
-                <p className="text-[10px] text-destructive">{cleanErr || "Cleaning failed — check the Replicate key / logs."}</p>
+                <p className="text-[10px] text-destructive">{cleanErr || "Cleaning failed — check the Grok key / logs."}</p>
               )}
             </div>
           )}

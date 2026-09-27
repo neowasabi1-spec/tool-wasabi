@@ -9,8 +9,9 @@ export const runtime = 'nodejs';
  * Whole-video subtitle removal for a competitor creative.
  *
  * POST → mark the ad clean_status='pending' and fire inpaint-shot-background
- *        with { adId } so it cleans the FULL video (captions removed, original
- *        audio kept) and stores the result in competitor_ads.clean_full_path.
+ *        with { adId }. Grok edits the video in 7s pieces (one call per piece,
+ *        every caption in that piece), then the original audio is muxed back.
+ *        The result is stored in competitor_ads.clean_full_path.
  * GET  → current clean_status + cleaned path.
  */
 
