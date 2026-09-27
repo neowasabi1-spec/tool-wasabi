@@ -1779,8 +1779,50 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   const [peerAdding, setPeerAdding] = useState(false);
   const [peerError, setPeerError] = useState("");
 
+  // Direct competitor discovery (multi SEARCH → Apify → judge in webhook)
+  const [discovering, setDiscovering] = useState(false);
+
   const directCount = competitors.filter((c) => !isVerticalPeer(c)).length;
   const fewDirects = !loading && directCount < 3;
+
+  const runDiscoverDirect = async () => {
+    if (discovering) return;
+    setDiscovering(true);
+    try {
+      const r = await fetch(
+        `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/discover-direct`,
+        { method: "POST" },
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({
+          title: "Discovery failed",
+          description: String(data.error || `HTTP ${r.status}`),
+          variant: "destructive",
+        });
+        return;
+      }
+      const terms = Array.isArray(data.searchTerms) ? data.searchTerms as string[] : [];
+      const n = Array.isArray(data.started) ? data.started.length : 0;
+      toast({
+        title: `Discovery started (${n} Meta search${n === 1 ? "" : "es"})`,
+        description: terms.length
+          ? `Terms: ${terms.slice(0, 4).join(" · ")}${terms.length > 4 ? "…" : ""}. Ads appear as scrapes finish; the judge keeps only real direct competitors.`
+          : "Ads appear as scrapes finish.",
+      });
+      // Reload shortly — brands land asynchronously via webhook.
+      window.setTimeout(() => { void load(true); }, 12_000);
+      window.setTimeout(() => { void load(true); }, 45_000);
+    } catch (e) {
+      toast({
+        title: "Discovery failed",
+        description: e instanceof Error ? e.message : "Network error",
+        variant: "destructive",
+      });
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   const load = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -1933,7 +1975,16 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <h2 className="text-2xl font-bold text-foreground">Competitor Library</h2>
           <p className="text-sm text-muted-foreground mt-0.5">Monitor competitors and save their templates</p>
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+          <Button
+            variant="outline"
+            onClick={() => void runDiscoverDirect()}
+            disabled={discovering}
+            className="gap-1.5 text-sm"
+          >
+            {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+            {discovering ? "Discovering…" : "Discover direct"}
+          </Button>
           <Button variant="outline" onClick={() => void openPeers()} className="gap-1.5 text-sm">
             <Sparkles className="w-4 h-4" /> Add vertical peers
           </Button>
@@ -1948,12 +1999,18 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <div className="min-w-0">
             <p className="text-sm font-medium text-foreground">Few direct competitors</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Spy other products in the same vertical to expand creative research.
+              Run multi-term Meta search + AI filter for same-product rivals, or add vertical peers for adjacent products.
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={() => void openPeers()} className="gap-1.5 flex-shrink-0">
-            <Sparkles className="w-3.5 h-3.5" /> Suggest peers
-          </Button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Button size="sm" onClick={() => void runDiscoverDirect()} disabled={discovering} className="gap-1.5">
+              {discovering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+              Discover direct
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => void openPeers()} className="gap-1.5">
+              <Sparkles className="w-3.5 h-3.5" /> Suggest peers
+            </Button>
+          </div>
         </div>
       )}
 
@@ -1964,7 +2021,11 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <Globe className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-base font-semibold text-foreground mb-1">No competitors monitored</p>
           <p className="text-sm text-muted-foreground mb-4">Add a competitor by entering its domain or ads library URL.</p>
-          <div className="flex items-center justify-center gap-2">
+          <div className="flex items-center justify-center gap-2 flex-wrap">
+            <Button variant="outline" onClick={() => void runDiscoverDirect()} disabled={discovering} className="gap-1.5">
+              {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+              Discover direct
+            </Button>
             <Button variant="outline" onClick={() => void openPeers()} className="gap-1.5">
               <Sparkles className="w-4 h-4" /> Add vertical peers
             </Button>
