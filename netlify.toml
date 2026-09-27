@@ -44,6 +44,12 @@
   external_node_modules = ["ffmpeg-static"]
   included_files = ["node_modules/ffmpeg-static/ffmpeg"]
 
+# Estrae l'audio del video competitor e lo manda a Whisper. Deve stare qui,
+# non nella function Next: quella non può includere ffmpeg (sfora i 250 MB).
+[functions."transcribe-video-background"]
+  external_node_modules = ["ffmpeg-static"]
+  included_files = ["node_modules/ffmpeg-static/ffmpeg"]
+
 [functions."build-video-background"]
   external_node_modules = ["ffmpeg-static"]
   # caption.ttf è il font passato a libass per il burn dei sottotitoli: senza un

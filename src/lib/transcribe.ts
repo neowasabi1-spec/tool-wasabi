@@ -117,7 +117,7 @@ async function transcribeWithGemini(buffer: Buffer, contentType: string): Promis
             role: 'user',
             parts: [
               {
-                text: 'Transcribe this ad. Prefer the spoken words, verbatim. If speech is missing or there is only music, transcribe the burned-in on-screen captions in order instead. Return ONLY that text, no timestamps, no commentary. Return an empty string only when there is neither speech nor on-screen captions.',
+                text: 'Transcribe the spoken voiceover verbatim, in the language being spoken. This clip often has NO subtitles: the words are only in the audio. Ignore background music. Return ONLY the words that are said, no timestamps, no commentary. If you hear speech, return it. Return an empty string only when there is no speech at all.',
               },
               { inline_data: { mime_type: contentType || 'video/mp4', data: buffer.toString('base64') } },
             ],
@@ -142,7 +142,7 @@ async function transcribeWithGemini(buffer: Buffer, contentType: string): Promis
 }
 
 const TRANSCRIBE_PROMPT =
-  'Transcribe this ad. Prefer the spoken words, verbatim. If speech is missing or there is only music, transcribe the burned-in on-screen captions in order instead. Return ONLY that text, no timestamps, no commentary. Return an empty string only when there is neither speech nor on-screen captions.';
+  'Transcribe the spoken voiceover verbatim, in the language being spoken. This clip often has NO subtitles: the words are only in the audio. Ignore background music. Return ONLY the words that are said, no timestamps, no commentary. If you hear speech, return it. Return an empty string only when there is no speech at all.';
 
 function geminiKey(): string {
   return (process.env.GOOGLE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim();

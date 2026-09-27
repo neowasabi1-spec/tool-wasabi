@@ -4,4 +4,10 @@
 ALTER TABLE public.competitor_ads
   ADD COLUMN IF NOT EXISTS transcript text;
 
+ALTER TABLE public.competitor_ads
+  ADD COLUMN IF NOT EXISTS transcript_status text;
+
+ALTER TABLE public.competitor_ads
+  ADD COLUMN IF NOT EXISTS transcript_error text;
+
 NOTIFY pgrst, 'reload schema';

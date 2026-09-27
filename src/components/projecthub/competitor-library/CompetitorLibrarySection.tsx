@@ -730,6 +730,7 @@ function CreativeDetailPanel({
   const [transcript, setTranscript] = useState(ad.transcript || "");
   const [transcribing, setTranscribing] = useState(false);
   const autoTried = useRef<number | null>(null);
+  const txGen = useRef(0);
   const [winner, setWinner] = useState(!!ad.is_winner);
   const [markingWinner, setMarkingWinner] = useState(false);
   // Phase 1 — "same script, new video": rewrite the winning transcript for the
@@ -1081,21 +1082,51 @@ function CreativeDetailPanel({
       setTimeout(() => setCopied(false), 1500);
     } catch { toast({ title: "Copy failed", variant: "destructive" }); }
   };
+  const transcribeUrl = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/transcribe`;
   const transcribe = async (silent = false) => {
+    const gen = ++txGen.current;
+    const before = (ad.transcript || "").trim();
     setTranscribing(true);
+    const mine = () => txGen.current === gen;
     try {
-      const r = await fetch(`/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/transcribe`, { method: "POST" });
+      const r = await fetch(transcribeUrl, { method: "POST" });
       const j = await r.json().catch(() => ({}));
-      const spoken = String(j.transcript || "").trim();
-      if (spoken) {
+      const apply = (spoken: string) => {
         setTranscript(spoken);
         onTranscribed?.(ad.id, spoken);
-        if (!silent) toast({ title: r.ok ? "Transcript ready" : (j.error || "Transcript ready") });
-      } else if (!silent) {
-        toast({ title: j.error || "Transcription failed", variant: "destructive" });
+        if (!silent) toast({ title: "Transcript ready" });
+      };
+      const spoken = String(j.transcript || "").trim();
+      if (spoken) {
+        apply(spoken);
+        return;
       }
-    } catch { if (!silent) toast({ title: "Transcription failed", variant: "destructive" }); }
-    finally { setTranscribing(false); }
+      if (!r.ok || !j.pending) {
+        if (!silent && mine()) toast({ title: j.error || "Transcription failed", variant: "destructive" });
+        return;
+      }
+      const started = Date.now();
+      while (mine() && Date.now() - started < 180000) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        if (!mine()) return;
+        const g = await fetch(transcribeUrl);
+        const s = await g.json().catch(() => ({}));
+        const text = String(s.transcript || "").trim();
+        if (text && (s.status === "ready" || text !== before)) {
+          apply(text);
+          return;
+        }
+        if (s.status === "error") {
+          if (!silent) toast({ title: s.error || "Transcription failed", variant: "destructive" });
+          return;
+        }
+      }
+      if (mine() && !silent) toast({ title: "Transcription timed out", variant: "destructive" });
+    } catch {
+      if (mine() && !silent) toast({ title: "Transcription failed", variant: "destructive" });
+    } finally {
+      if (mine()) setTranscribing(false);
+    }
   };
   useEffect(() => {
     setText(ad.body_text || "");
