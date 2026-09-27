@@ -6,9 +6,10 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
   Loader2, Link2, RefreshCw, Sparkles, CheckCircle2, Image as ImageIcon,
-  Library, Wand2, Eye, LayoutTemplate,
+  Library, Wand2, Eye, LayoutTemplate, Flame,
 } from 'lucide-react';
 import { getUploadUrl } from '@/lib/projecthub-storage';
+import { daysRunning, sortByWinnerTier, winnerTier, type WinnerTier } from '@/lib/competitor-winner';
 import { CreativesTab } from '@/components/projecthub/creative/CreativesTab';
 import { TemplatesStylesSection } from './TemplatesStylesSection';
 import { AutoImagesCard } from './AutoImagesCard';
@@ -27,6 +28,8 @@ const STEPS: { id: Step; label: string; icon: typeof Link2 }[] = [
 type AdRow = {
   id: number;
   duplicateCount?: number;
+  brand_id?: number;
+  brand_name?: string;
   headline?: string;
   hook?: string;
   body_text?: string;
@@ -36,6 +39,8 @@ type AdRow = {
   file_path?: string;
   media_url?: string;
   is_winner?: string | boolean;
+  ad_active?: string;
+  ad_started_at?: string | null;
   analysis?: { id: number; status: string } | null;
   spend?: string | number;
   impressions?: string | number;
@@ -54,6 +59,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   });
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [winnersOnly, setWinnersOnly] = useState(false);
   const [concepts, setConcepts] = useState<any[]>([]);
   const [outputs, setOutputs] = useState<any[]>([]);
 
@@ -152,6 +158,39 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
 
   const selectedList = useMemo(() => ads.filter((a) => selected.has(a.id)), [ads, selected]);
 
+  const rankedAds = useMemo(() => {
+    const sorted = sortByWinnerTier(ads);
+    return winnersOnly ? sorted.filter((a) => winnerTier(a) !== null) : sorted;
+  }, [ads, winnersOnly]);
+
+  const winnerCount = useMemo(() => ads.filter((a) => winnerTier(a) !== null).length, [ads]);
+
+  const allVisibleSelected =
+    rankedAds.length > 0 && rankedAds.every((a) => selected.has(a.id));
+
+  function toggleAllVisible() {
+    if (allVisibleSelected) setSelected(new Set());
+    else setSelected(new Set(rankedAds.map((a) => a.id)));
+  }
+
+  function tierBadge(tier: WinnerTier, days: number | null) {
+    if (!tier) return <span className="text-muted-foreground text-xs">—</span>;
+    const label = tier === 'winner' ? 'WINNER' : 'PROMISING';
+    const cls =
+      tier === 'winner'
+        ? 'bg-amber-400 text-amber-950'
+        : 'bg-sky-400 text-sky-950';
+    return (
+      <span
+        title={days != null ? `Running ${days} day${days === 1 ? '' : 's'}` : undefined}
+        className={`inline-flex items-center gap-0.5 text-[10px] font-black px-1.5 py-0.5 rounded-full ${cls}`}
+      >
+        {tier === 'winner' ? '🔥' : '⭐'} {label}
+        {days != null ? ` · ${days}d` : ''}
+      </span>
+    );
+  }
+
   function toggle(id: number) {
     setSelected((prev) => {
       const n = new Set(prev);
@@ -243,6 +282,17 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function recreateSelected() {
+    if (!selectedList.length) {
+      toast.error('Select at least one ad to recreate');
+      return;
+    }
+    // Analyze anything not ready, then generate concepts from the selection.
+    const todo = selectedList.filter((a) => a.analysis?.status !== 'ready');
+    if (todo.length) await analyzeSelected();
+    await generateConcepts();
   }
 
   async function generateConcepts() {
@@ -391,63 +441,125 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
             >
               My ads
             </Button>
+            <Button
+              size="sm"
+              variant={winnersOnly ? 'default' : 'outline'}
+              onClick={() => setWinnersOnly((v) => !v)}
+              className={winnersOnly ? 'bg-amber-400 text-amber-950 hover:bg-amber-400/90 border-amber-400' : ''}
+            >
+              <Flame className="w-3.5 h-3.5 mr-1" />
+              Winners{winnerCount ? ` (${winnerCount})` : ''}
+            </Button>
             <Button size="sm" variant="ghost" onClick={() => void loadLibrary()} disabled={loading}>
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>
             <div className="flex-1" />
-            <Button size="sm" onClick={() => void analyzeSelected()} disabled={busy || !selected.size}>
-              Analyze selected ({selected.size})
+            <Button size="sm" variant="outline" onClick={() => void analyzeSelected()} disabled={busy || !selected.size}>
+              Analyze ({selected.size})
+            </Button>
+            <Button size="sm" onClick={() => void recreateSelected()} disabled={busy || !selected.size}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
+              Ricrea selezionate ({selected.size})
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Ordered like Competitor Library: WINNER → PROMISING → others (by days live). Select rows to analyze / recreate.
+          </p>
 
           {loading ? (
             <div className="text-sm text-muted-foreground flex items-center gap-2 py-8">
               <Loader2 className="w-4 h-4 animate-spin" /> Loading…
             </div>
-          ) : !ads.length ? (
+          ) : !rankedAds.length ? (
             <p className="text-sm text-muted-foreground py-8">
-              {source === 'own'
-                ? 'No own ads yet — use Connect → Sync My ads (or META_ACCESS_TOKEN locally).'
-                : 'No competitor ads — scrape via Competitor Library first.'}
+              {winnersOnly
+                ? 'No winners/promising ads in this set — turn off the Winners filter.'
+                : source === 'own'
+                  ? 'No own ads yet — use Connect → Sync My ads (or META_ACCESS_TOKEN locally).'
+                  : 'No competitor ads — scrape via Competitor Library first.'}
             </p>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {ads.map((ad) => {
-                const title = ad.headline || ad.ad_name || ad.name || ad.hook || `Ad #${ad.id}`;
-                const img = ad.file_path ? getUploadUrl(ad.file_path) : ad.media_url || '';
-                const on = selected.has(ad.id);
-                return (
-                  <button
-                    key={ad.id}
-                    type="button"
-                    onClick={() => toggle(ad.id)}
-                    className={`text-left rounded-xl border p-3 bg-card transition-colors ${
-                      on ? 'border-primary ring-1 ring-primary' : 'border-border hover:border-foreground/30'
-                    }`}
-                  >
-                    <div className="aspect-square rounded-lg bg-muted mb-2 overflow-hidden flex items-center justify-center">
-                      {img ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={img} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <ImageIcon className="w-8 h-8 text-muted-foreground" />
-                      )}
-                    </div>
-                    <p className="text-sm font-medium line-clamp-2">{title}</p>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {ad.analysis?.status === 'ready' && (
-                        <Badge variant="secondary" className="text-[10px]">Analyzed</Badge>
-                      )}
-                      {(ad.duplicateCount || 0) > 1 && (
-                        <Badge variant="outline" className="text-[10px]">×{ad.duplicateCount}</Badge>
-                      )}
-                      {(ad.is_winner === true || ad.is_winner === 'true') && (
-                        <Badge className="text-[10px]">Winner</Badge>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+            <div className="overflow-x-auto rounded-xl border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="p-2 w-10">
+                      <input
+                        type="checkbox"
+                        checked={allVisibleSelected}
+                        onChange={toggleAllVisible}
+                        aria-label="Select all"
+                      />
+                    </th>
+                    <th className="p-2 w-14">Preview</th>
+                    <th className="p-2">Tier</th>
+                    <th className="p-2">Page</th>
+                    <th className="p-2">Hook / headline</th>
+                    <th className="p-2">Type</th>
+                    <th className="p-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankedAds.map((ad) => {
+                    const title = ad.headline || ad.ad_name || ad.name || ad.hook || `Ad #${ad.id}`;
+                    const img = ad.file_path ? getUploadUrl(ad.file_path) : ad.media_url || '';
+                    const on = selected.has(ad.id);
+                    const tier = winnerTier(ad);
+                    const days = daysRunning(ad);
+                    return (
+                      <tr
+                        key={ad.id}
+                        onClick={() => toggle(ad.id)}
+                        className={`border-t border-border cursor-pointer ${
+                          on ? 'bg-primary/5' : 'hover:bg-muted/40'
+                        }`}
+                      >
+                        <td className="p-2 align-middle" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            onChange={() => toggle(ad.id)}
+                            aria-label={`Select ${title}`}
+                          />
+                        </td>
+                        <td className="p-2 align-middle">
+                          <div className="w-12 h-12 rounded-md bg-muted overflow-hidden flex items-center justify-center">
+                            {img ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={img} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <ImageIcon className="w-4 h-4 text-muted-foreground" />
+                            )}
+                          </div>
+                        </td>
+                        <td className="p-2 align-middle whitespace-nowrap">{tierBadge(tier, days)}</td>
+                        <td className="p-2 align-middle max-w-[140px]">
+                          <span className="line-clamp-2 text-xs">{ad.brand_name || '—'}</span>
+                        </td>
+                        <td className="p-2 align-middle max-w-[280px]">
+                          <p className="font-medium line-clamp-2">{title}</p>
+                          {ad.hook && ad.hook !== title && (
+                            <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{ad.hook}</p>
+                          )}
+                        </td>
+                        <td className="p-2 align-middle text-xs text-muted-foreground">
+                          {ad.media_type || '—'}
+                        </td>
+                        <td className="p-2 align-middle">
+                          <div className="flex flex-wrap gap-1">
+                            {ad.analysis?.status === 'ready' && (
+                              <Badge variant="secondary" className="text-[10px]">Analyzed</Badge>
+                            )}
+                            {(ad.duplicateCount || 0) > 1 && (
+                              <Badge variant="outline" className="text-[10px]">×{ad.duplicateCount}</Badge>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>
