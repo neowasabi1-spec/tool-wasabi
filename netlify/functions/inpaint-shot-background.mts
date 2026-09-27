@@ -1,3 +1,4 @@
+import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -1840,6 +1841,230 @@ async function falGrokPoll(
   return { url: data.video.url };
 }
 
+/**
+ * Cover leftover caption strokes only. A line of letters flips light/dark many
+ * times per row; a knife edge or a table rim does not, so those stay.
+ * If the mask would cover more than a small strip, the frame is left alone.
+ */
+export function eraseCaptionGlyphs(frame: Buffer, w: number, h: number): number {
+  const n = w * h;
+  const L = new Uint8Array(n);
+  for (let p = 0, i = 0; p < n; p++, i += 3) {
+    L[p] = (frame[i] * 77 + frame[i + 1] * 150 + frame[i + 2] * 29) >> 8;
+  }
+  const isInk = (x: number, y: number) => {
+    if (y < 8 || y >= h - 8) return false;
+    const v = L[y * w + x];
+    for (const dy of [8, 14, 22]) {
+      const up = L[(y - dy) * w + x];
+      const dn = L[(y + dy) * w + x];
+      if ((up > v + 40 && dn > v + 40) || (v > up + 40 && v > dn + 40)) return true;
+    }
+    return false;
+  };
+  const hit = new Uint8Array(n);
+  for (let y = 8; y < h - 8; y++) {
+    for (let x = 0; x < w; x++) if (isInk(x, y)) hit[y * w + x] = 1;
+  }
+  for (let x = 0; x < w; x++) {
+    let c = 0;
+    for (let y = 0; y < h; y++) if (hit[y * w + x]) c++;
+    if (c > h * 0.35) for (let y = 0; y < h; y++) hit[y * w + x] = 0;
+  }
+  let hits = 0;
+  for (let i = 0; i < n; i++) if (hit[i]) hits++;
+  if (hits < 20 || hits > n * 0.08) return 0;
+  const grown = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!hit[y * w + x]) continue;
+      for (let dy = -2; dy <= 2; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -3; dx <= 3; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < w) grown[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+  const label = new Int32Array(n);
+  const blobs: Array<{ x0: number; x1: number; y0: number; y1: number } | null> = [null];
+  const stack: number[] = [];
+  for (let s = 0; s < n; s++) {
+    if (!grown[s] || label[s]) continue;
+    const id = blobs.length;
+    const b = { x0: s % w, x1: s % w, y0: (s / w) | 0, y1: (s / w) | 0 };
+    blobs.push(b);
+    label[s] = id;
+    stack.push(s);
+    while (stack.length) {
+      const p = stack.pop() as number;
+      const py = (p / w) | 0;
+      const px = p - py * w;
+      if (px < b.x0) b.x0 = px;
+      if (px > b.x1) b.x1 = px;
+      if (py < b.y0) b.y0 = py;
+      if (py > b.y1) b.y1 = py;
+      const near: Array<[number, number]> = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      for (let k = 0; k < 4; k++) {
+        const nx = px + near[k][0];
+        const ny = py + near[k][1];
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        const q = ny * w + nx;
+        if (grown[q] && !label[q]) { label[q] = id; stack.push(q); }
+      }
+    }
+  }
+  const keep = new Uint8Array(n);
+  for (let id = 1; id < blobs.length; id++) {
+    const b = blobs[id] as { x0: number; x1: number; y0: number; y1: number };
+    const bw = b.x1 - b.x0 + 1;
+    const bh = b.y1 - b.y0 + 1;
+    if (!(bw > bh * 2.4 && bw > Math.max(28, w * 0.05) && bh < h * 0.1 && bh > 6)) continue;
+    let flips = 0;
+    for (let y = b.y0; y <= b.y1; y++) {
+      let prev = 0;
+      for (let x = b.x0; x <= b.x1; x++) {
+        const on = hit[y * w + x] ? 1 : 0;
+        if (on !== prev) { flips++; prev = on; }
+      }
+    }
+    if (flips / bh < 10) continue;
+    for (let y = b.y0; y <= b.y1; y++) {
+      for (let x = b.x0; x <= b.x1; x++) if (label[y * w + x] === id) keep[y * w + x] = 1;
+    }
+  }
+  const mask = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!keep[y * w + x]) continue;
+      for (let dy = -2; dy <= 2; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -2; dx <= 2; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < w) mask[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+  let covered = 0;
+  for (let i = 0; i < n; i++) if (mask[i]) covered++;
+  if (!covered || covered / n > 0.04) return 0;
+  let painted = 0;
+  for (let x = 0; x < w; x++) {
+    let y = 0;
+    while (y < h) {
+      if (!mask[y * w + x]) { y++; continue; }
+      const y0 = y;
+      while (y < h && mask[y * w + x]) y++;
+      const y1 = y;
+      let src = -1;
+      for (let off = 3; off <= 36 && src < 0; off += 3) {
+        for (const yy of [y0 - off, y1 + off - 1]) {
+          if (yy < 2 || yy >= h - 2 || mask[yy * w + x]) continue;
+          if (!isInk(x, yy)) { src = yy; break; }
+        }
+      }
+      if (src < 0) continue;
+      const si = (src * w + x) * 3;
+      for (let yy = y0; yy < y1; yy++) {
+        const di = (yy * w + x) * 3;
+        frame[di] = frame[si];
+        frame[di + 1] = frame[si + 1];
+        frame[di + 2] = frame[si + 2];
+        painted++;
+      }
+    }
+  }
+  return painted;
+}
+
+/** Repaint leftover caption strokes on every frame. Pixels outside those strokes stay. */
+async function wipeCaptionGlyphs(
+  file: string, W: number, H: number, len: number, fps: number, workDir: string,
+  log: (...a: unknown[]) => void,
+): Promise<void> {
+  const tmp = path.join(workDir, `${path.basename(file, '.mp4')}-glyph.mp4`);
+  try {
+    const info = await ffprobeInfo(file);
+    const w = Math.max(2, (info.width || W) - ((info.width || W) % 2));
+    const h = Math.max(2, (info.height || H) - ((info.height || H) % 2));
+    const rate = Math.max(1, Math.round((info.fps && info.fps > 1 ? info.fps : fps) || 30));
+    const frameBytes = w * h * 3;
+    const sameSize = info.width === w && info.height === h;
+    const decArgs = ['-an', '-i', file];
+    if (!sameSize) decArgs.push('-vf', `scale=${w}:${h}:flags=neighbor`);
+    decArgs.push('-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1');
+    const dec = spawn(FFMPEG, decArgs);
+    const enc = spawn(FFMPEG, [
+      '-y', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${w}x${h}`, '-r', String(rate),
+      '-i', 'pipe:0',
+      '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+      '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+      tmp,
+    ]);
+    let decErr = '';
+    let encErr = '';
+    dec.stderr.on('data', (d) => { decErr = (decErr + d.toString()).slice(-4000); });
+    enc.stderr.on('data', (d) => { encErr = (encErr + d.toString()).slice(-4000); });
+    const frame = Buffer.allocUnsafe(frameBytes);
+    let filled = 0;
+    let painted = 0;
+    let framesHit = 0;
+    let nf = 0;
+    const encoded = new Promise<void>((resolve, reject) => {
+      enc.on('error', reject);
+      enc.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error((encErr || `encoder exit ${code}`).slice(-400)));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      dec.on('error', reject);
+      dec.stdout.on('error', reject);
+      dec.on('close', (code) => {
+        if (code !== 0) reject(new Error((decErr || `decoder exit ${code}`).slice(-400)));
+      });
+      dec.stdout.on('data', (chunk: Buffer) => {
+        let off = 0;
+        while (off < chunk.length) {
+          const take = Math.min(frameBytes - filled, chunk.length - off);
+          chunk.copy(frame, filled, off, off + take);
+          filled += take;
+          off += take;
+          if (filled < frameBytes) continue;
+          const n = eraseCaptionGlyphs(frame, w, h);
+          if (n) framesHit++;
+          painted += n;
+          nf++;
+          const copy = Buffer.from(frame);
+          filled = 0;
+          if (!enc.stdin.write(copy)) {
+            dec.stdout.pause();
+            enc.stdin.once('drain', () => dec.stdout.resume());
+          }
+        }
+      });
+      dec.stdout.on('end', () => {
+        enc.stdin.end();
+        resolve();
+      });
+    });
+    await encoded;
+    if (!painted) {
+      try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+      return;
+    }
+    fs.renameSync(tmp, file);
+    log(`covered caption strokes on ${framesHit}/${nf} frames of the ${len.toFixed(1)}s piece`);
+  } catch (e) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore */ }
+    log(`caption stroke pass skipped (${(e as Error).message})`);
+  }
+}
+
 /** True when this piece still shows a burned-in caption line. */
 async function pieceHasText(
   file: string, W: number, H: number, len: number, fps: number, workDir: string,
@@ -2209,6 +2434,7 @@ async function cleanWholeAdGrok(
           f,
         ]);
       }
+      await wipeCaptionGlyphs(f, W, H, len, fps, workDir, log);
       localFiles.push(f);
     }
 
