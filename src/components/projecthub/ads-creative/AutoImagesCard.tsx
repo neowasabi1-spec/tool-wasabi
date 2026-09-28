@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
+import { runJevAndWait } from '@/lib/ads-intel/jev-client';
 
 type Props = {
   projectId: string;
@@ -40,10 +41,9 @@ export function AutoImagesCard({
         : 'Generating creatives from top templates…',
     );
     try {
-      const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await runJevAndWait(
+        projectId,
+        {
           type: 'template_creatives',
           payload: {
             productId,
@@ -55,31 +55,19 @@ export function AutoImagesCard({
               images,
             },
           },
-          wait: true,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.status === 'error') {
-        throw new Error(data.error || 'Generation failed');
-      }
-
-      const nOut = Number(data.result?.outputs ?? 0);
-      const nImg = Number(data.result?.images ?? 0);
+        },
+        { onProgress: (p) => toast.loading(p, { id: toastId }) },
+      );
+      const result = (data.result || {}) as { outputs?: number; images?: number };
+      const nOut = Number(result.outputs ?? 0);
+      const nImg = Number(result.images ?? 0);
       onQueued?.();
-
-      if (data.status === 'queued') {
-        toast.message(
-          'Job queued on the background worker. Open Review in a minute to see new outputs.',
-          { id: toastId },
-        );
-      } else {
-        toast.success(
-          nOut
-            ? `Done: ${nOut} creatives${nImg ? ` · ${nImg} images` : ''}. Open Review to see them.`
-            : 'Job finished. Open Review to see outputs.',
-          { id: toastId },
-        );
-      }
+      toast.success(
+        nOut
+          ? `Done: ${nOut} creatives${nImg ? ` · ${nImg} images` : ''}. Open Review to see them.`
+          : 'Job finished. Open Review to see outputs.',
+        { id: toastId },
+      );
       onDone?.();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Generation failed', { id: toastId });

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { runJevAndWait } from '@/lib/ads-intel/jev-client';
 import {
   Loader2, Link2, RefreshCw, Sparkles, CheckCircle2, Image as ImageIcon,
   Library, Wand2, Eye, LayoutTemplate, Flame, Layers, Film,
@@ -302,21 +303,15 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       const errors: string[] = [];
       for (let i = 0; i < ids.length; i++) {
         toast.loading(`Ingesting ${i + 1}/${ids.length}…`, { id: toastId });
-        const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'ingest_from_competitor_ad',
-            payload: { competitorAdId: ids[i] },
-            wait: true,
-          }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.ok && (data.status === 'done' || data.status === 'completed' || data.result)) ok += 1;
-        else if (res.ok && data.status === 'queued') {
-          errors.push(`#${ids[i]} still queued (worker not picking up)`);
-        } else {
-          errors.push(data.error || data.status || `ad ${ids[i]} failed`);
+        try {
+          await runJevAndWait(
+            projectId,
+            { type: 'ingest_from_competitor_ad', payload: { competitorAdId: ids[i] } },
+            { onProgress: (p) => toast.loading(`Ingesting ${i + 1}/${ids.length}: ${p}`, { id: toastId }) },
+          );
+          ok += 1;
+        } catch (e) {
+          errors.push(e instanceof Error ? e.message : `ad ${ids[i]} failed`);
         }
       }
       if (!ok) {
@@ -324,17 +319,13 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       }
 
       toast.loading(`Building templates from ${ok} ads…`, { id: toastId });
-      const t = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_templates', payload: {}, wait: true }),
-      });
-      const td = await t.json().catch(() => ({}));
-      if (!t.ok || td.status === 'error') {
-        throw new Error(td.error || 'build_templates failed');
-      }
-
-      const groups = Number(td.result?.groups ?? td.result?.templates ?? 0);
+      const td = await runJevAndWait(
+        projectId,
+        { type: 'build_templates', payload: {} },
+        { onProgress: (p) => toast.loading(p, { id: toastId }) },
+      );
+      const result = (td.result || {}) as { groups?: number; templates?: number };
+      const groups = Number(result.groups ?? result.templates ?? 0);
       toast.success(
         groups
           ? `Done: ${ok} ads → ${groups} template groups`

@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, RefreshCw, Layers } from 'lucide-react';
 import { toast } from 'sonner';
 import { getUploadUrl } from '@/lib/projecthub-storage';
+import { readApiJson, runJevAndWait } from '@/lib/ads-intel/jev-client';
 
 type Member = {
   id: string;
@@ -34,7 +35,7 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
     setLoading(true);
     try {
       const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`);
-      const data = await res.json();
+      const data = await readApiJson(res);
       if (!res.ok) throw new Error(data.error || 'Load failed');
       setProductId(data.products?.[0]?.id);
       setFamilies(Array.isArray(data.styleFamilies) ? data.styleFamilies : []);
@@ -49,22 +50,23 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
 
   async function buildFamilies() {
     setBusy(true);
+    const toastId = toast.loading('Computing styles…');
     try {
-      const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_families', payload: { productId }, wait: true }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.status === 'error') throw new Error(data.error || 'Build failed');
+      const data = await runJevAndWait(
+        projectId,
+        { type: 'build_families', payload: { productId } },
+        {
+          onProgress: (p) => toast.loading(p, { id: toastId }),
+        },
+      );
+      const result = (data.result || {}) as { families?: number };
       toast.success(
-        data.result?.families != null
-          ? `Styles: ${data.result.families} groups`
-          : 'Styles updated',
+        result.families != null ? `Styles: ${result.families} groups` : 'Styles updated',
+        { id: toastId },
       );
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Build failed');
+      toast.error(e instanceof Error ? e.message : 'Build failed', { id: toastId });
     } finally {
       setBusy(false);
     }
@@ -115,7 +117,7 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-semibold">{f.label}</h4>
             <Badge variant="secondary">{f.members.length} ads</Badge>
-            {f.bestRank != null && <Badge variant="outline">migliore #{f.bestRank}</Badge>}
+            {f.bestRank != null && <Badge variant="outline">best #{f.bestRank}</Badge>}
             {f.impressionShare > 0 && (
               <span className="text-[10px] text-muted-foreground">
                 ~{Math.round(f.impressionShare * 100)}% share

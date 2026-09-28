@@ -131,11 +131,31 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     const row = await enqueue(type as any, payload, projectId);
     // enqueue already kicked the Netlify background worker (or inline in dev).
 
+    // Heavy AI jobs must NOT run inside the Next/serverless request: Netlify kills
+    // long handlers and returns HTML 504 → client "Unexpected token '<'".
+    const HEAVY = new Set([
+      'build_families',
+      'build_templates',
+      'template_creatives',
+      'template_next',
+      'ingest_from_competitor_ad',
+      'ingest_from_own_ad',
+      'extract_creative',
+      'analyze_creative',
+      'analyze_product',
+      'auto_prompts',
+      'family_generate',
+      'create_output',
+      'generate_concepts',
+      'build_corpus',
+      'build_playbook',
+    ]);
+
     if (body.wait || adsIntelInline()) {
-      // Prefer polling the worker over re-running in the web request (long AI jobs).
-      // Fallback: if still queued after a few seconds, run in-process.
+      // Prefer polling the worker. Only fall back in-process for light jobs / local inline.
+      const maxPoll = HEAVY.has(type) && !adsIntelInline() ? 45 : 180;
       let last: Record<string, unknown> | null = null;
-      for (let i = 0; i < 180; i++) {
+      for (let i = 0; i < maxPoll; i++) {
         await new Promise((r) => setTimeout(r, 1000));
         const { data } = await db()
           .from('jev_jobs')
@@ -146,8 +166,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         if (data && ['done', 'error', 'cancelled'].includes(String(data.status))) {
           return NextResponse.json({ jobId: row.id, ...data });
         }
-        // Worker didn't pick up — run here once, then keep polling.
-        if (i === 4 && data && data.status === 'queued') {
+        // Worker didn't pick up — run here once for light jobs / local only.
+        if (i === 4 && data && data.status === 'queued' && (!HEAVY.has(type) || adsIntelInline())) {
           try {
             await runJevJobById(row.id);
           } catch (e) {
@@ -155,6 +175,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           }
         }
       }
+      // Still running — return JSON so the client can keep polling (never HTML).
       return NextResponse.json({ jobId: row.id, ...(last || { status: 'queued' }) });
     }
 

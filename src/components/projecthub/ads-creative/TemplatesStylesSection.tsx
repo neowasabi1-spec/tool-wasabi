@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, RefreshCw, LayoutTemplate } from 'lucide-react';
 import { toast } from 'sonner';
+import { readApiJson, runJevAndWait } from '@/lib/ads-intel/jev-client';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import { AutoImagesCard } from './AutoImagesCard';
 
@@ -48,7 +49,7 @@ export function TemplatesStylesSection({
     setLoading(true);
     try {
       const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`);
-      const data = await res.json();
+      const data = await readApiJson(res);
       if (!res.ok) throw new Error(data.error || 'Load failed');
       setProductId(data.products?.[0]?.id);
       setGroups(Array.isArray(data.templateGroups) ? data.templateGroups : []);
@@ -64,22 +65,23 @@ export function TemplatesStylesSection({
 
   async function buildTemplates() {
     setBusy(true);
+    const toastId = toast.loading('Computing templates…');
     try {
-      const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_templates', payload: { productId }, wait: true }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.status === 'error') throw new Error(data.error || 'Build failed');
+      const data = await runJevAndWait(
+        projectId,
+        { type: 'build_templates', payload: { productId } },
+        { onProgress: (p) => toast.loading(p, { id: toastId }) },
+      );
+      const result = (data.result || {}) as { groups?: number; templates?: number };
       toast.success(
-        data.result?.groups != null
-          ? `Templates: ${data.result.groups} groups from ${data.result.templates ?? '?'} ads`
+        result.groups != null
+          ? `Templates: ${result.groups} groups from ${result.templates ?? '?'} ads`
           : 'Templates updated',
+        { id: toastId },
       );
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Build failed');
+      toast.error(e instanceof Error ? e.message : 'Build failed', { id: toastId });
     } finally {
       setBusy(false);
     }
