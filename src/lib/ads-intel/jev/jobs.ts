@@ -18,12 +18,8 @@ function jevInline(): boolean {
 
 export async function enqueue(type: JobType, payload: Record<string, unknown>, projectId?: string | null) {
   const row = must(await db().from('jev_jobs').insert({ type, payload, project_id: projectId ?? null }).select('id').single()) as { id: string };
-  if (jevInline()) {
-    // Defer to avoid circular import at module load
-    void import('../dispatch').then(({ runJevJobById }) => runJevJobById(row.id)).catch((e) => {
-      console.error('[jev] inline job failed', row.id, e);
-    });
-  }
+  // Do not auto-start here: the API route awaits runJevJobById when wait/inline.
+  // Fire-and-forget enqueue (no wait) stays queued until a worker picks it up.
   return row;
 }
 

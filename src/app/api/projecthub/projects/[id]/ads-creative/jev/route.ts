@@ -129,16 +129,25 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const row = await enqueue(type as any, payload, projectId);
-    if (adsIntelInline() || body.wait) {
-      // Wait for completion when inline
-      for (let i = 0; i < 120; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        const { data } = await db().from('jev_jobs').select('status,result,error,progress').eq('id', row.id).single();
-        if (data && ['done', 'error', 'cancelled'].includes(data.status)) {
-          return NextResponse.json({ jobId: row.id, ...data });
-        }
+
+    // Production enqueue is queue-only (no worker). When the client asks to wait
+    // — or we are in inline/dev mode — run the job in this request so buttons
+    // like "Prepara gruppi Jev" actually do work.
+    if (body.wait || adsIntelInline()) {
+      try {
+        await runJevJobById(row.id);
+      } catch (e) {
+        // runJevJobById already marks the row error; still return it below
+        console.warn('[jev] runJevJobById:', e instanceof Error ? e.message : e);
       }
+      const { data } = await db()
+        .from('jev_jobs')
+        .select('status,result,error,progress')
+        .eq('id', row.id)
+        .single();
+      return NextResponse.json({ jobId: row.id, ...(data || { status: 'error' }) });
     }
+
     return NextResponse.json({ jobId: row.id, status: 'queued' });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });

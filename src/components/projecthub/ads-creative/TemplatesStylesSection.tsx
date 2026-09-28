@@ -61,20 +61,15 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
       const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_templates', payload: { productId } }),
+        body: JSON.stringify({ type: 'build_templates', payload: { productId }, wait: true }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Build failed');
-      toast.success(data.status === 'queued' ? 'Calcolo template in coda' : 'Template aggiornati');
-      for (let i = 0; i < 40; i++) {
-        await new Promise((r) => setTimeout(r, 1500));
-        const j = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`).then((r) => r.json());
-        const job = (j.jobs || []).find((x: { id: string }) => x.id === data.jobId);
-        if (job && ['done', 'error', 'cancelled'].includes(job.status)) {
-          if (job.status === 'error') throw new Error(job.error || 'Build error');
-          break;
-        }
-      }
+      if (!res.ok || data.status === 'error') throw new Error(data.error || 'Build failed');
+      toast.success(
+        data.result?.groups != null
+          ? `Template: ${data.result.groups} gruppi da ${data.result.templates ?? '?'} ads`
+          : 'Template aggiornati',
+      );
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Build failed');

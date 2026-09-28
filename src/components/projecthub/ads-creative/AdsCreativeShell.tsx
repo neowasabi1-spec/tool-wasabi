@@ -280,40 +280,65 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
     }
   }
 
-  /** Ingest selected competitor ads into Jev, then build template + style groups. */
+  /** Ingest selected (or top) competitor ads into Jev, then build template groups. */
   async function prepareJevGroups() {
-    const ids = selectedList.length ? selectedList.map((a) => a.id) : rankedAds.slice(0, 40).map((a) => a.id);
+    const ids = (selectedList.length ? selectedList : rankedAds)
+      .filter((a) => !String(a.media_type || '').includes('video'))
+      .map((a) => a.id)
+      .slice(0, 12);
     if (!ids.length) {
-      toast.error('Nessuna ad da preparare');
+      toast.error('Seleziona ads immagine (o aprine in lista) — i video si saltano qui');
       return;
     }
     setBusy(true);
+    const toastId = toast.loading(`Preparo ${ids.length} ads per Jev…`);
     try {
       let ok = 0;
-      for (const id of ids) {
+      const errors: string[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        toast.loading(`Ingest ${i + 1}/${ids.length}…`, { id: toastId });
         const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             type: 'ingest_from_competitor_ad',
-            payload: { competitorAdId: id },
+            payload: { competitorAdId: ids[i] },
             wait: true,
           }),
         });
-        if (res.ok) ok += 1;
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && (data.status === 'done' || data.status === 'completed' || data.result)) ok += 1;
+        else if (res.ok && data.status === 'queued') {
+          errors.push(`#${ids[i]} ancora in coda (worker assente)`);
+        } else {
+          errors.push(data.error || data.status || `ad ${ids[i]} failed`);
+        }
       }
-      toast.message(`Ingest ${ok}/${ids.length} → calcolo template…`);
+      if (!ok) {
+        throw new Error(errors[0] || 'Nessuna ad ingestita — controlla jev_creatives / migration');
+      }
+
+      toast.loading(`Calcolo template da ${ok} ads…`, { id: toastId });
       const t = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_templates', payload: {} }),
+        body: JSON.stringify({ type: 'build_templates', payload: {}, wait: true }),
       });
-      const td = await t.json();
-      if (!t.ok) throw new Error(td.error || 'build_templates failed');
-      toast.message('Template in coda — puoi aprire la vista Template');
+      const td = await t.json().catch(() => ({}));
+      if (!t.ok || td.status === 'error') {
+        throw new Error(td.error || 'build_templates failed');
+      }
+
+      const groups = Number(td.result?.groups ?? td.result?.templates ?? 0);
+      toast.success(
+        groups
+          ? `Fatto: ${ok} ads → ${groups} gruppi template`
+          : `Ingestite ${ok} ads — apri Template per vedere i gruppi`,
+        { id: toastId },
+      );
       setLibView('templates');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Prepare failed');
+      toast.error(e instanceof Error ? e.message : 'Prepare failed', { id: toastId });
     } finally {
       setBusy(false);
     }
