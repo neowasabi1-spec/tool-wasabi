@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import { runJevAndWait } from '@/lib/ads-intel/jev-client';
 import {
   Loader2, Link2, RefreshCw, Sparkles, CheckCircle2, Image as ImageIcon,
-  Library, Wand2, Eye, LayoutTemplate, Flame, Layers, Film,
+  Library, Wand2, Eye, LayoutTemplate, Flame, Layers, Film, Download, Maximize2, X,
 } from 'lucide-react';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import { daysRunning, sortByWinnerTier, winnerTier, type WinnerTier } from '@/lib/competitor-winner';
@@ -66,6 +66,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const [includePeers, setIncludePeers] = useState(false);
   const [concepts, setConcepts] = useState<any[]>([]);
   const [outputs, setOutputs] = useState<any[]>([]);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
 
   const loadProduct = useCallback(async () => {
@@ -803,42 +804,109 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                 Recalibrate weights
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Jev already wrote copy, generated the image, checked layout/text fidelity, and scored effectiveness
+              (it may have re-rendered weak attempts). Win / Neutral / Lose is <b>your</b> label for learning — not the auto-judge.
+            </p>
             {!outputs.length ? (
               <p className="text-sm text-muted-foreground">No outputs yet.</p>
             ) : (
-              outputs.map((o) => (
-                <div key={o.id} className="rounded-xl border border-border p-4 bg-card flex gap-4">
-                  {o.result_path ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={getUploadUrl(o.result_path)}
-                      alt=""
-                      className="w-24 h-24 rounded-lg object-cover border border-border"
-                    />
-                  ) : (
-                    <div className="w-24 h-24 rounded-lg bg-muted flex items-center justify-center">
-                      <ImageIcon className="w-6 h-6 text-muted-foreground" />
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {o.code && <Badge variant="outline">{o.code}</Badge>}
-                      {o.gate_decision && (
-                        <Badge variant="secondary" className="gap-1">
-                          <CheckCircle2 className="w-3 h-3" /> {o.gate_decision}
-                        </Badge>
+              outputs.map((o) => {
+                const imgUrl = o.result_path ? getUploadUrl(o.result_path) : '';
+                const q = o.quality || {};
+                const imgQ = q.image || {};
+                const score = imgQ.score ?? q.score;
+                const fidelity = imgQ.fidelity?.score;
+                const fidelityOk = imgQ.fidelity?.ok;
+                const slots = o.spec?.slots && typeof o.spec.slots === 'object'
+                  ? Object.entries(o.spec.slots as Record<string, string>).slice(0, 4)
+                  : [];
+                return (
+                  <div key={o.id} className="rounded-xl border border-border p-4 bg-card flex gap-4">
+                    <div className="shrink-0 space-y-2">
+                      {imgUrl ? (
+                        <button
+                          type="button"
+                          className="relative group block"
+                          onClick={() => setPreviewUrl(imgUrl)}
+                          title="View larger"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={imgUrl}
+                            alt=""
+                            className="w-28 h-28 rounded-lg object-cover border border-border"
+                          />
+                          <span className="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/35 transition flex items-center justify-center">
+                            <Maximize2 className="w-5 h-5 text-white opacity-0 group-hover:opacity-100" />
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="w-28 h-28 rounded-lg bg-muted flex items-center justify-center">
+                          <ImageIcon className="w-6 h-6 text-muted-foreground" />
+                        </div>
+                      )}
+                      {imgUrl && (
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-[11px] gap-1"
+                            onClick={() => setPreviewUrl(imgUrl)}
+                          >
+                            <Maximize2 className="w-3 h-3" /> Enlarge
+                          </Button>
+                          <a
+                            href={imgUrl}
+                            download={`${o.code || o.id}.png`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-7 items-center gap-1 rounded-md border border-input bg-background px-2 text-[11px] font-medium hover:bg-accent"
+                          >
+                            <Download className="w-3 h-3" /> Download
+                          </a>
+                        </div>
                       )}
                     </div>
-                    <p className="text-sm font-medium mt-1">{o.angle || o.kind || o.status}</p>
-                    <p className="text-xs text-muted-foreground line-clamp-3">{o.concept_notes || JSON.stringify(o.spec || {}).slice(0, 200)}</p>
-                    <div className="flex gap-2 mt-2">
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'win')}>Win</Button>
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'neutral')}>Neutral</Button>
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'lose')}>Lose</Button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {o.code && <Badge variant="outline">{o.code}</Badge>}
+                        {o.status && <Badge variant="secondary">{o.status}</Badge>}
+                        {o.gate_decision && (
+                          <Badge variant="secondary" className="gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> {o.gate_decision}
+                          </Badge>
+                        )}
+                        {typeof score === 'number' && (
+                          <Badge variant="outline">Jev {Math.round(score * 100)}/100</Badge>
+                        )}
+                        {typeof fidelity === 'number' && (
+                          <Badge variant="outline" className={fidelityOk ? '' : 'border-amber-500 text-amber-700 dark:text-amber-300'}>
+                            Fidelity {Math.round(fidelity * 100)}%{fidelityOk ? '' : ' · needs review'}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-sm font-medium mt-1">{o.angle || o.kind || o.spec?.angle || 'Template creative'}</p>
+                      {slots.length > 0 ? (
+                        <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                          {slots.map(([k, v]) => (
+                            <li key={k}><span className="font-medium text-foreground/80">{k}:</span> {String(v)}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-muted-foreground line-clamp-3 mt-1">
+                          {o.concept_notes || (o.spec ? JSON.stringify(o.spec).slice(0, 200) : '')}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'win')}>Win</Button>
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'neutral')}>Neutral</Button>
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'lose')}>Lose</Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -846,6 +914,42 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
             <h3 className="text-sm font-semibold mb-2">Templates library</h3>
             <CreativesTab projectId={projectId} />
           </div>
+
+          {previewUrl && (
+            <div
+              className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+              onClick={() => setPreviewUrl(null)}
+              role="dialog"
+              aria-modal="true"
+            >
+              <button
+                type="button"
+                className="absolute top-4 right-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+                onClick={() => setPreviewUrl(null)}
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <a
+                href={previewUrl}
+                download
+                target="_blank"
+                rel="noreferrer"
+                className="absolute top-4 right-16 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="Download"
+              >
+                <Download className="w-5 h-5" />
+              </a>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={previewUrl}
+                alt="Creative preview"
+                className="max-h-[90vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>
