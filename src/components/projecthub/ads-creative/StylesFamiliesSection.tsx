@@ -59,8 +59,8 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
       if (!res.ok || data.status === 'error') throw new Error(data.error || 'Build failed');
       toast.success(
         data.result?.families != null
-          ? `Stili: ${data.result.families} gruppi`
-          : 'Stili aggiornati',
+          ? `Styles: ${data.result.families} groups`
+          : 'Styles updated',
       );
       await load();
     } catch (e) {
@@ -73,7 +73,7 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
   if (loading) {
     return (
       <div className="py-10 text-sm text-muted-foreground flex items-center gap-2">
-        <Loader2 className="w-4 h-4 animate-spin" /> Caricamento stili…
+        <Loader2 className="w-4 h-4 animate-spin" /> Loading styles…
       </div>
     );
   }
@@ -84,29 +84,29 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
         <div className="flex items-start gap-2">
           <Layers className="w-4 h-4 mt-0.5 text-muted-foreground" />
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold">Stili visivi (come in Jev)</h3>
+            <h3 className="text-sm font-semibold">Visual styles (Jev families)</h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Ads con lo stesso linguaggio grafico nello stesso gruppo. Prima analizza/ricrea le ads (ingest),
-              poi calcola gli stili. Genera dentro un gruppo alla volta così non si mischiano i template.
+              Ads that share the same graphic language sit in one group. Analyze / Prepare Jev groups first,
+              then compute styles. Generate inside one group at a time so templates do not mix.
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">
             {families.length
-              ? `${families.length} gruppi · ${families.reduce((n, f) => n + f.members.length, 0)} ads`
-              : 'Nessun gruppo ancora'}
+              ? `${families.length} groups · ${families.reduce((n, f) => n + f.members.length, 0)} ads`
+              : 'No groups yet'}
           </span>
           <Button size="sm" variant="outline" disabled={busy || !productId} onClick={() => void buildFamilies()} className="gap-1.5 ml-auto">
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            {families.length ? 'Ricalcola stili' : 'Calcola stili'}
+            {families.length ? 'Recompute styles' : 'Compute styles'}
           </Button>
         </div>
       </div>
 
       {!families.length && (
         <p className="text-sm text-muted-foreground py-2">
-          Seleziona ads in Lista → Analizza / Prepara gruppi Jev, poi torna qui e calcola gli stili.
+          Select ads in List → Analyze / Prepare Jev groups, then come back and compute styles.
         </p>
       )}
 

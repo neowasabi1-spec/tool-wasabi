@@ -22,7 +22,7 @@ const STEPS: { id: Step; label: string; icon: typeof Link2 }[] = [
   { id: 'library', label: 'Library', icon: Library },
   { id: 'analyze', label: 'Analyze', icon: Wand2 },
   { id: 'generate', label: 'Generate', icon: Sparkles },
-  { id: 'styles', label: 'Template e stili', icon: LayoutTemplate },
+  { id: 'styles', label: 'Templates & styles', icon: LayoutTemplate },
   { id: 'review', label: 'Review', icon: Eye },
 ];
 
@@ -134,6 +134,11 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       /* ignore */
     }
   }, [projectId]);
+
+  function openReviewOutputs() {
+    void loadGenerateState();
+    setStep('review');
+  }
 
   useEffect(() => {
     void loadMeta();
@@ -287,16 +292,16 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       .map((a) => a.id)
       .slice(0, 12);
     if (!ids.length) {
-      toast.error('Seleziona ads immagine (o aprine in lista) — i video si saltano qui');
+      toast.error('Select image ads (or open the list) — videos are skipped here');
       return;
     }
     setBusy(true);
-    const toastId = toast.loading(`Preparo ${ids.length} ads per Jev…`);
+    const toastId = toast.loading(`Preparing ${ids.length} ads for Jev…`);
     try {
       let ok = 0;
       const errors: string[] = [];
       for (let i = 0; i < ids.length; i++) {
-        toast.loading(`Ingest ${i + 1}/${ids.length}…`, { id: toastId });
+        toast.loading(`Ingesting ${i + 1}/${ids.length}…`, { id: toastId });
         const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -309,16 +314,16 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
         const data = await res.json().catch(() => ({}));
         if (res.ok && (data.status === 'done' || data.status === 'completed' || data.result)) ok += 1;
         else if (res.ok && data.status === 'queued') {
-          errors.push(`#${ids[i]} ancora in coda (worker assente)`);
+          errors.push(`#${ids[i]} still queued (worker not picking up)`);
         } else {
           errors.push(data.error || data.status || `ad ${ids[i]} failed`);
         }
       }
       if (!ok) {
-        throw new Error(errors[0] || 'Nessuna ad ingestita — controlla jev_creatives / migration');
+        throw new Error(errors[0] || 'No ads ingested — check jev_creatives / migrations');
       }
 
-      toast.loading(`Calcolo template da ${ok} ads…`, { id: toastId });
+      toast.loading(`Building templates from ${ok} ads…`, { id: toastId });
       const t = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -332,8 +337,8 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       const groups = Number(td.result?.groups ?? td.result?.templates ?? 0);
       toast.success(
         groups
-          ? `Fatto: ${ok} ads → ${groups} gruppi template`
-          : `Ingestite ${ok} ads — apri Template per vedere i gruppi`,
+          ? `Done: ${ok} ads → ${groups} template groups`
+          : `Ingested ${ok} ads — open Templates to see groups`,
         { id: toastId },
       );
       setLibView('templates');
@@ -488,13 +493,13 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2 items-center">
             <Button size="sm" variant={libView === 'list' ? 'default' : 'outline'} onClick={() => setLibView('list')}>
-              Lista
+              List
             </Button>
             <Button size="sm" variant={libView === 'templates' ? 'default' : 'outline'} onClick={() => setLibView('templates')}>
               <LayoutTemplate className="w-3.5 h-3.5 mr-1" /> Template
             </Button>
             <Button size="sm" variant={libView === 'styles' ? 'default' : 'outline'} onClick={() => setLibView('styles')}>
-              <Layers className="w-3.5 h-3.5 mr-1" /> Stili
+              <Layers className="w-3.5 h-3.5 mr-1" /> Styles
             </Button>
             <span className="text-border px-1">|</span>
             {libView === 'list' && (
@@ -540,26 +545,28 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
               <>
                 <Button size="sm" variant="outline" onClick={() => void prepareJevGroups()} disabled={busy || loading}>
                   {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Layers className="w-4 h-4 mr-2" />}
-                  Prepara gruppi Jev
+                  Prepare Jev groups
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => void analyzeSelected()} disabled={busy || !selected.size}>
                   Analyze ({selected.size})
                 </Button>
                 <Button size="sm" onClick={() => void recreateSelected()} disabled={busy || !selected.size}>
                   {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
-                  Ricrea selezionate ({selected.size})
+                  Recreate selected ({selected.size})
                 </Button>
               </>
             )}
           </div>
           {libView === 'list' && (
             <p className="text-xs text-muted-foreground">
-              Come in Jev: stessa creatività = copie raggruppate (×N). Ordine WINNER → PROMISING.
-              Solo stesso prodotto (prune automatico). Abilita <b>+ Peers</b> per i vertical peers. Video: anteprima nativa.
+              Same creative = grouped copies (×N). Sorted WINNER → PROMISING.
+              Same-product only (auto-prune). Enable <b>+ Peers</b> for vertical peers. Videos use a native preview.
             </p>
           )}
 
-          {libView === 'templates' && <TemplatesStylesSection projectId={projectId} />}
+          {libView === 'templates' && (
+            <TemplatesStylesSection projectId={projectId} onOutputsReady={openReviewOutputs} />
+          )}
           {libView === 'styles' && <StylesFamiliesSection projectId={projectId} />}
 
           {libView === 'list' && (loading ? (
@@ -771,7 +778,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       )}
 
       {step === 'styles' && (
-        <TemplatesStylesSection projectId={projectId} />
+        <TemplatesStylesSection projectId={projectId} onOutputsReady={openReviewOutputs} />
       )}
 
       {step === 'review' && (

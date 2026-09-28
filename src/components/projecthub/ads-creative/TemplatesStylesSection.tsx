@@ -30,7 +30,14 @@ type TemplateGroup = {
   } | null;
 };
 
-export function TemplatesStylesSection({ projectId }: { projectId: string }) {
+export function TemplatesStylesSection({
+  projectId,
+  onOutputsReady,
+}: {
+  projectId: string;
+  /** Jump to Review after "Create from this template". */
+  onOutputsReady?: () => void;
+}) {
   const [productId, setProductId] = useState<string | undefined>();
   const [groups, setGroups] = useState<TemplateGroup[]>([]);
   const [stats, setStats] = useState({ images: 0, withTemplate: 0 });
@@ -67,8 +74,8 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
       if (!res.ok || data.status === 'error') throw new Error(data.error || 'Build failed');
       toast.success(
         data.result?.groups != null
-          ? `Template: ${data.result.groups} gruppi da ${data.result.templates ?? '?'} ads`
-          : 'Template aggiornati',
+          ? `Templates: ${data.result.groups} groups from ${data.result.templates ?? '?'} ads`
+          : 'Templates updated',
       );
       await load();
     } catch (e) {
@@ -83,7 +90,7 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
   if (loading) {
     return (
       <div className="py-10 text-sm text-muted-foreground flex items-center gap-2">
-        <Loader2 className="w-4 h-4 animate-spin" /> Caricamento template…
+        <Loader2 className="w-4 h-4 animate-spin" /> Loading templates…
       </div>
     );
   }
@@ -94,31 +101,32 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
         <div className="flex items-start gap-2">
           <LayoutTemplate className="w-4 h-4 mt-0.5 text-muted-foreground" />
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold">Immagini: template grafici</h3>
+            <h3 className="text-sm font-semibold">Image graphic templates</h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Ogni template è la scheda riproducibile di una ad vincente (sfondo, elementi, caratteri, spazi di testo).
-              Si genera dentro un template alla volta cambiando solo i testi: gli stili non si mescolano.
+              Each template is a reusable layout sheet from a winning ad (background, elements, type, text slots).
+              Generation stays inside one template at a time and only changes the copy — styles are not mixed.
+              New images show up under <b>Review</b>.
             </p>
           </div>
         </div>
         <div className={`flex flex-wrap items-center gap-2 rounded-md px-3 py-2 text-xs ${missing > 0 ? 'bg-amber-500/10 text-amber-800 dark:text-amber-200' : 'bg-muted text-muted-foreground'}`}>
           <span>
             {missing > 0
-              ? `${missing} immagini senza scheda del template (la generazione automatica calcola comunque le migliori 60).`
-              : `${groups.length} template da ${stats.withTemplate} immagini.`}
+              ? `${missing} images still need a template sheet (auto-gen still uses the best 60).`
+              : `${groups.length} template groups from ${stats.withTemplate} images.`}
           </span>
           <Button size="sm" variant="outline" disabled={busy || !productId} onClick={() => void buildTemplates()} className="gap-1.5 ml-auto">
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            {missing > 0 ? 'Calcola tutti i template' : 'Ricalcola gruppi'}
+            {missing > 0 ? 'Compute all templates' : 'Recompute groups'}
           </Button>
         </div>
       </div>
 
-      <AutoImagesCard projectId={projectId} productId={productId} onQueued={() => void load()} />
+      <AutoImagesCard projectId={projectId} productId={productId} onQueued={() => void load()} onDone={onOutputsReady} />
 
       {!groups.length && (
         <p className="text-sm text-muted-foreground py-4">
-          Nessun template ancora: calcolali qui sopra, oppure lancia la generazione automatica.
+          No templates yet — compute them above, or run Prepare Jev groups from List first.
         </p>
       )}
 
@@ -127,7 +135,7 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-semibold">{g.label}</h4>
             <Badge variant="secondary">{g.members.length} {g.members.length === 1 ? 'ad' : 'ads'}</Badge>
-            {g.bestRank != null && <Badge variant="outline">migliore #{g.bestRank}</Badge>}
+            {g.bestRank != null && <Badge variant="outline">best #{g.bestRank}</Badge>}
             {g.spec?.genre && <span className="text-xs text-muted-foreground">{g.spec.genre}</span>}
           </div>
           <div className="flex flex-wrap items-end gap-2">
@@ -139,23 +147,23 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
                     <img src={getUploadUrl(m.thumb)} alt="" className="w-full h-full object-cover" />
                   ) : null}
                 </div>
-                #{m.impression_rank ?? '?'}{i === 0 ? ' · riferimento' : ''}
+                #{m.impression_rank ?? '?'}{i === 0 ? ' · reference' : ''}
               </div>
             ))}
             {g.members.length > 7 && <span className="self-center text-xs text-muted-foreground">+{g.members.length - 7}</span>}
           </div>
           {g.spec?.slots && (
             <details className="text-xs">
-              <summary className="cursor-pointer text-muted-foreground">Scheda del template: {g.spec.slots.length} spazi di testo</summary>
+              <summary className="cursor-pointer text-muted-foreground">Template sheet: {g.spec.slots.length} text slots</summary>
               <div className="mt-2 grid gap-1">
                 {g.spec.slots.map((s) => (
                   <p key={s.slot}>
                     <b>{s.role}</b>{' '}
-                    <span className="text-muted-foreground">({s.words} parole, {s.casing})</span>: &ldquo;{s.current_text}&rdquo;
+                    <span className="text-muted-foreground">({s.words} words, {s.casing})</span>: &ldquo;{s.current_text}&rdquo;
                   </p>
                 ))}
                 {!!g.spec.must_keep?.length && (
-                  <p className="text-muted-foreground">Da tenere: {g.spec.must_keep.join(' · ')}</p>
+                  <p className="text-muted-foreground">Keep: {g.spec.must_keep.join(' · ')}</p>
                 )}
               </div>
             </details>
@@ -167,6 +175,7 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
               groupKey={g.key}
               compact
               onQueued={() => void load()}
+              onDone={onOutputsReady}
             />
           </div>
         </div>
@@ -175,7 +184,7 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
       {groups.length > 12 && (
         <details className="rounded-xl border border-border bg-card p-4">
           <summary className="cursor-pointer text-sm font-medium">
-            Altri template · {groups.length - 12}
+            More templates · {groups.length - 12}
           </summary>
           <div className="mt-3 space-y-3">
             {groups.slice(12).map((g) => (
@@ -187,6 +196,7 @@ export function TemplatesStylesSection({ projectId }: { projectId: string }) {
                   groupKey={g.key}
                   compact
                   onQueued={() => void load()}
+                  onDone={onOutputsReady}
                 />
               </div>
             ))}

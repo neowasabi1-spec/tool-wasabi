@@ -12,16 +12,19 @@ type Props = {
   compact?: boolean;
   language?: string;
   onQueued?: () => void;
+  /** Called when generation finishes — parent should open Review and reload outputs. */
+  onDone?: () => void;
 };
 
-/** Creatività immagine automatiche: template migliori × testi con angoli diversi, immagini generate e votate. */
+/** Auto image creatives: best templates × varied copy angles, rendered and scored. */
 export function AutoImagesCard({
   projectId,
   productId,
   groupKey,
   compact,
-  language = 'it',
+  language = 'en',
   onQueued,
+  onDone,
 }: Props) {
   const [templates, setTemplates] = useState(4);
   const [perTemplate, setPerTemplate] = useState(3);
@@ -31,6 +34,11 @@ export function AutoImagesCard({
 
   async function run() {
     setBusy(true);
+    const toastId = toast.loading(
+      groupKey
+        ? 'Generating creatives from this template…'
+        : 'Generating creatives from top templates…',
+    );
     try {
       const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
         method: 'POST',
@@ -47,14 +55,34 @@ export function AutoImagesCard({
               images,
             },
           },
+          wait: true,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Queue failed');
-      toast.success(data.status === 'queued' ? 'Creatività in coda' : 'Job avviato');
+      if (!res.ok || data.status === 'error') {
+        throw new Error(data.error || 'Generation failed');
+      }
+
+      const nOut = Number(data.result?.outputs ?? 0);
+      const nImg = Number(data.result?.images ?? 0);
       onQueued?.();
+
+      if (data.status === 'queued') {
+        toast.message(
+          'Job queued on the background worker. Open Review in a minute to see new outputs.',
+          { id: toastId },
+        );
+      } else {
+        toast.success(
+          nOut
+            ? `Done: ${nOut} creatives${nImg ? ` · ${nImg} images` : ''}. Open Review to see them.`
+            : 'Job finished. Open Review to see outputs.',
+          { id: toastId },
+        );
+      }
+      onDone?.();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Queue failed');
+      toast.error(e instanceof Error ? e.message : 'Generation failed', { id: toastId });
     } finally {
       setBusy(false);
     }
@@ -64,7 +92,7 @@ export function AutoImagesCard({
     <div className={`grid gap-3 ${groupKey ? 'sm:grid-cols-[auto_auto_1fr_auto]' : 'sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]'} sm:items-end`}>
       {!groupKey && (
         <label className="space-y-1 text-xs">
-          <span className="font-medium text-foreground">Template (i migliori)</span>
+          <span className="font-medium text-foreground">Top templates</span>
           <input
             type="number"
             min={1}
@@ -76,7 +104,7 @@ export function AutoImagesCard({
         </label>
       )}
       <label className="space-y-1 text-xs">
-        <span className="font-medium text-foreground">Creatività per template</span>
+        <span className="font-medium text-foreground">Creatives per template</span>
         <input
           type="number"
           min={1}
@@ -87,7 +115,7 @@ export function AutoImagesCard({
         />
       </label>
       <label className="space-y-1 text-xs">
-        <span className="font-medium text-foreground">Lingua</span>
+        <span className="font-medium text-foreground">Language</span>
         <input
           value={lang}
           onChange={(e) => setLang(e.target.value)}
@@ -96,12 +124,17 @@ export function AutoImagesCard({
       </label>
       <Button onClick={() => void run()} disabled={busy} className="gap-1.5">
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-        {groupKey ? 'Crea da questo template' : 'Crea creatività'}
+        {groupKey ? 'Create from this template' : 'Create creatives'}
       </Button>
       <label className={`mb-0 flex items-center gap-2 text-sm text-muted-foreground ${groupKey ? 'sm:col-span-4' : 'sm:col-span-4'}`}>
         <input type="checkbox" checked={images} onChange={(e) => setImages(e.target.checked)} />
-        Genera anche le immagini (circa 0,25 $ l&apos;una; senza, restano i prompt)
+        Also generate images (~$0.25 each; otherwise you only get prompts)
       </label>
+      {groupKey && (
+        <p className="text-[11px] text-muted-foreground sm:col-span-4">
+          Results land in <b>Review</b> (Ads Creative → Review), not in this list.
+        </p>
+      )}
     </div>
   );
 
@@ -110,11 +143,11 @@ export function AutoImagesCard({
   return (
     <div className="rounded-xl border border-border bg-card p-4 space-y-3">
       <div>
-        <h3 className="text-sm font-semibold text-foreground">Creatività immagine automatiche</h3>
+        <h3 className="text-sm font-semibold text-foreground">Auto image creatives</h3>
         <p className="text-xs text-muted-foreground mt-1">
-          Prende i template grafici delle ads con più impression (uno per gruppo) e per ognuno scrive testi con angoli
-          diversi (Opus e Sonnet). Jev sceglie i testi migliori, le immagini vengono generate, Gemini controlla che
-          rispettino il template e i testi, Jev vota l&apos;efficacia. Sotto soglia si prepara da solo una versione migliorata.
+          Uses the highest-impression graphic templates (one per group). For each template it writes
+          copy at different angles, generates images, checks layout/text fidelity, and scores
+          effectiveness. Finished assets appear under <b>Review</b>.
         </p>
       </div>
       {form}
