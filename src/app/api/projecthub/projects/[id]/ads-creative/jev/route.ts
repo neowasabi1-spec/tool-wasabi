@@ -129,26 +129,36 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const row = await enqueue(type as any, payload, projectId);
+    // enqueue already kicked the Netlify background worker (or inline in dev).
 
-    // Production enqueue is queue-only (no worker). When the client asks to wait
-    // — or we are in inline/dev mode — run the job in this request so buttons
-    // like "Prepara gruppi Jev" actually do work.
     if (body.wait || adsIntelInline()) {
-      try {
-        await runJevJobById(row.id);
-      } catch (e) {
-        // runJevJobById already marks the row error; still return it below
-        console.warn('[jev] runJevJobById:', e instanceof Error ? e.message : e);
+      // Prefer polling the worker over re-running in the web request (long AI jobs).
+      // Fallback: if still queued after a few seconds, run in-process.
+      let last: Record<string, unknown> | null = null;
+      for (let i = 0; i < 180; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const { data } = await db()
+          .from('jev_jobs')
+          .select('status,result,error,progress')
+          .eq('id', row.id)
+          .single();
+        last = data as Record<string, unknown> | null;
+        if (data && ['done', 'error', 'cancelled'].includes(String(data.status))) {
+          return NextResponse.json({ jobId: row.id, ...data });
+        }
+        // Worker didn't pick up — run here once, then keep polling.
+        if (i === 4 && data && data.status === 'queued') {
+          try {
+            await runJevJobById(row.id);
+          } catch (e) {
+            console.warn('[jev] fallback runJevJobById:', e instanceof Error ? e.message : e);
+          }
+        }
       }
-      const { data } = await db()
-        .from('jev_jobs')
-        .select('status,result,error,progress')
-        .eq('id', row.id)
-        .single();
-      return NextResponse.json({ jobId: row.id, ...(data || { status: 'error' }) });
+      return NextResponse.json({ jobId: row.id, ...(last || { status: 'queued' }) });
     }
 
-    return NextResponse.json({ jobId: row.id, status: 'queued' });
+    return NextResponse.json({ jobId: row.id, status: 'queued', worker: true });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
