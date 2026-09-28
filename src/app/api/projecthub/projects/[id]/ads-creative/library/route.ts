@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { restoreAutoPrunedBrands } from '@/lib/competitor-same-product';
+import { loadDiscoveryLexicon } from '@/lib/discovery-lexicon';
+import { pruneNonSameProductBrands } from '@/lib/competitor-same-product';
 import { attachContentHashes, dedupeCreatives } from '@/lib/ads-intel/creative-fingerprint';
 import { sortByWinnerTier } from '@/lib/competitor-winner';
 
@@ -10,13 +11,12 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 /**
- * Ads Creative Library sources:
- * - competitor pages already in the library (including ones a same-product
- *   pass had hidden — those are restored on load)
- * - vertical peers the user added
- * Never: video_folder saves.
+ * Ads Creative Library = same-product competitors by default.
+ * Vertical peers only when includePeers=true (user-curated inspiration).
+ * Never: inactive/pruned junk, video_folder saves.
+ * Do NOT restore auto-pruned brands here — that reintroduces off-target ads.
  */
-async function libraryBrandIds(projectId: string): Promise<number[]> {
+async function libraryBrandIds(projectId: string, includePeers: boolean): Promise<number[]> {
   const { data, error } = await supabaseAdmin
     .from('competitor_brands')
     .select('id, brand_type, is_active')
@@ -24,7 +24,12 @@ async function libraryBrandIds(projectId: string): Promise<number[]> {
     .neq('is_active', 'false');
   if (error) throw new Error(error.message);
   return ((data || []) as Array<{ id: number; brand_type?: string | null }>)
-    .filter((b) => String(b.brand_type || '') !== 'video_folder')
+    .filter((b) => {
+      const t = String(b.brand_type || '');
+      if (t === 'video_folder') return false;
+      if (t === 'inspiration') return includePeers;
+      return true;
+    })
     .map((b) => b.id);
 }
 
@@ -35,6 +40,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const url = new URL(req.url);
   const source = url.searchParams.get('source') || 'competitor';
+  const cleanup = url.searchParams.get('cleanup') !== '0';
+  const includePeers = url.searchParams.get('peers') === '1';
 
   if (source === 'own') {
     const { data, error } = await supabaseAdmin
@@ -52,16 +59,45 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     return NextResponse.json({ source: 'own', ads: data || [] });
   }
 
-  let restored = 0;
-  try {
-    restored = await restoreAutoPrunedBrands(projectId);
-  } catch (e) {
-    console.warn('[ads-creative/library] restore pruned brands:', (e as Error).message);
+  let pruned = 0;
+  if (cleanup) {
+    try {
+      const lexicon = await loadDiscoveryLexicon(supabaseAdmin, projectId);
+      const product = lexicon.product;
+      if (product?.name) {
+        const r = await pruneNonSameProductBrands(projectId, {
+          name: product.name,
+          description: product.description || '',
+          market: product.market || '',
+          affiliate: true,
+          hosts: product.hosts || [],
+          names: product.names?.length ? product.names : [product.name],
+        });
+        pruned = r.removed;
+      } else {
+        const { data: project } = await supabaseAdmin
+          .from('projects')
+          .select('name, description')
+          .eq('id', projectId)
+          .maybeSingle();
+        if (project?.name) {
+          const r = await pruneNonSameProductBrands(projectId, {
+            name: String(project.name),
+            description: String(project.description || '').slice(0, 900),
+            affiliate: true,
+            names: [String(project.name)],
+          });
+          pruned = r.removed;
+        }
+      }
+    } catch (e) {
+      console.warn('[ads-creative/library] prune:', (e as Error).message);
+    }
   }
 
-  const brandIds = await libraryBrandIds(projectId);
+  const brandIds = await libraryBrandIds(projectId, includePeers);
   if (!brandIds.length) {
-    return NextResponse.json({ source: 'competitor', ads: [], restored, curatedOnly: true });
+    return NextResponse.json({ source: 'competitor', ads: [], pruned, curatedOnly: true, includePeers });
   }
 
   const { data, error } = await supabaseAdmin
@@ -71,7 +107,6 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     .in('brand_id', brandIds)
     .order('created_at', { ascending: false })
     .limit(400);
-  // media_hash column may be missing until migration — retry without it.
   let rows: Record<string, unknown>[] | null = (data as Record<string, unknown>[] | null) || null;
   let selErr = error;
   if (selErr && /media_hash/i.test(selErr.message || '')) {
@@ -98,13 +133,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     ...ad,
     analysis: byRef.get(String(ad.id)) || null,
   }));
-  // Same bytes, different storage paths → one card (hashes computed on the fly).
   mapped = await attachContentHashes(mapped, { limit: 150, concurrency: 10 });
   const ads = sortByWinnerTier(dedupeCreatives(mapped)).slice(0, 120);
   const collapsed = mapped.length - ads.length;
 
   const bIds = [...new Set(ads.map((a: any) => a.brand_id).filter(Boolean))];
-  let brandNames: Record<number, string> = {};
+  const brandNames: Record<number, string> = {};
   if (bIds.length) {
     const { data: brands } = await supabaseAdmin
       .from('competitor_brands')
@@ -120,8 +154,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   return NextResponse.json({
     source: 'competitor',
     ads: withBrand,
-    restored,
+    pruned,
     collapsed,
     curatedOnly: true,
+    includePeers,
   });
 }

@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import {
   Loader2, Link2, RefreshCw, Sparkles, CheckCircle2, Image as ImageIcon,
-  Library, Wand2, Eye, LayoutTemplate, Flame, Layers,
+  Library, Wand2, Eye, LayoutTemplate, Flame, Layers, Film,
 } from 'lucide-react';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import { daysRunning, sortByWinnerTier, winnerTier, type WinnerTier } from '@/lib/competitor-winner';
@@ -62,6 +62,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false);
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [libView, setLibView] = useState<'list' | 'templates' | 'styles'>('list');
+  const [includePeers, setIncludePeers] = useState(false);
   const [concepts, setConcepts] = useState<any[]>([]);
   const [outputs, setOutputs] = useState<any[]>([]);
 
@@ -95,8 +96,12 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const loadLibrary = useCallback(async () => {
     setLoading(true);
     try {
+      // Always prune off-product competitor pages. Vertical peers stay out
+      // unless the user opts in (they are for spy, not same-offer creatives).
+      const peers = source === 'competitor' && includePeers ? '&peers=1' : '&peers=0';
+      const cleanup = source === 'competitor' ? '&cleanup=1' : '&cleanup=0';
       const res = await fetch(
-        `/api/projecthub/projects/${projectId}/ads-creative/library?source=${source}`,
+        `/api/projecthub/projects/${projectId}/ads-creative/library?source=${source}${cleanup}${peers}`,
       );
       const data = await res.json();
       if (!res.ok && data.error && !(data.ads || []).length) {
@@ -104,6 +109,9 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       }
       setAds(data.ads || []);
       setSelected(new Set());
+      if (source === 'competitor' && Number(data.pruned) > 0) {
+        toast.message(`Removed ${data.pruned} off-product page${data.pruned === 1 ? '' : 's'} from library`);
+      }
       if (source === 'competitor' && Number(data.collapsed) > 0) {
         toast.message(`Hid ${data.collapsed} duplicate creative${data.collapsed === 1 ? '' : 's'}`);
       }
@@ -112,7 +120,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, source]);
+  }, [projectId, source, includePeers]);
 
   const loadGenerateState = useCallback(async () => {
     try {
@@ -489,6 +497,14 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                   <Flame className="w-3.5 h-3.5 mr-1" />
                   Winners{winnerCount ? ` (${winnerCount})` : ''}
                 </Button>
+                <Button
+                  size="sm"
+                  variant={includePeers ? 'default' : 'outline'}
+                  onClick={() => setIncludePeers((v) => !v)}
+                  title="Include vertical peers (other products you added on purpose)"
+                >
+                  + Peers
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => void loadLibrary()} disabled={loading}>
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                 </Button>
@@ -514,7 +530,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
           {libView === 'list' && (
             <p className="text-xs text-muted-foreground">
               Come in Jev: stessa creatività = copie raggruppate (×N). Ordine WINNER → PROMISING.
-              Usa <b>Prepara gruppi Jev</b> poi le viste Template / Stili per il clustering grafico.
+              Solo stesso prodotto (prune automatico). Abilita <b>+ Peers</b> per i vertical peers. Video: anteprima nativa.
             </p>
           )}
 
@@ -579,11 +595,21 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                         </td>
                         <td className="p-2 align-middle">
                           <div className="w-12 h-12 rounded-md bg-muted overflow-hidden flex items-center justify-center">
-                            {img ? (
+                            {img && String(ad.media_type || '').includes('video') ? (
+                              <video
+                                src={img}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : img ? (
                               // eslint-disable-next-line @next/next/no-img-element
                               <img src={img} alt="" className="w-full h-full object-cover" />
                             ) : (
-                              <ImageIcon className="w-4 h-4 text-muted-foreground" />
+                              String(ad.media_type || '').includes('video')
+                                ? <Film className="w-4 h-4 text-muted-foreground" />
+                                : <ImageIcon className="w-4 h-4 text-muted-foreground" />
                             )}
                           </div>
                         </td>
