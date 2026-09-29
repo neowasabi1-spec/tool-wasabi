@@ -127,6 +127,10 @@ type CompetitorAd = {
   source?: string | null;
   /** Brand Ads Library URL when the row is joined (All creatives / overview). */
   ads_library_url?: string | null;
+  /** Jev comparability vs our product (0–100). */
+  relevance_score?: number | null;
+  relevance_label?: string | null;
+  relevance_why?: string | null;
 };
 
 function formatDate(d: string | null) {
@@ -217,6 +221,26 @@ function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: str
 
 // Creatives arriving from the daily scrape are flagged until the competitor is
 // opened, so a new batch is noticeable without reading dates.
+function RelevanceBadge({ ad, className = "" }: { ad: CompetitorAd; className?: string }) {
+  if (ad.relevance_score == null) return null;
+  const label = String(ad.relevance_label || "");
+  const tone =
+    label === "strong"
+      ? "bg-emerald-500/90 text-white"
+      : label === "adjacent"
+        ? "bg-amber-500/90 text-white"
+        : "bg-slate-500/80 text-white";
+  return (
+    <span
+      title={ad.relevance_why || "Jev comparability vs our product"}
+      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${tone} ${className}`}
+    >
+      Jev {ad.relevance_score}
+    </span>
+  );
+}
+
+
 function NewBadge({ count, className = "" }: { count?: number; className?: string }) {
   const label = count && count > 1 ? `${count} NEW` : "NEW";
   return (
@@ -2368,6 +2392,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   const [fileLabel, setFileLabel] = useState("");
   const [detailAd, setDetailAd] = useState<CompetitorAd | null>(null);
   const [scraping, setScraping] = useState(false);
+  const [scoringRelevance, setScoringRelevance] = useState(false);
   const [cfgOpen, setCfgOpen] = useState(false);
   const [savingCfg, setSavingCfg] = useState(false);
   const [libUrl, setLibUrl] = useState(competitor.ads_library_url || "");
@@ -2409,6 +2434,34 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
       }
     } finally { setScraping(false); }
   };
+
+  const scoreRelevance = async () => {
+    if (scoringRelevance) return;
+    setScoringRelevance(true);
+    try {
+      const r = await fetch(
+        `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/score-relevance`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brandId: competitor.id, limit: 40, force: false }),
+        },
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || "Score failed");
+      toast({
+        title: data.scored
+          ? `Scored ${data.scored} ads with Jev${data.avg != null ? ` · avg ${data.avg}` : ""}`
+          : "No unscored ads",
+      });
+      await load();
+    } catch (e) {
+      toast({ title: e instanceof Error ? e.message : "Score failed", variant: "destructive" });
+    } finally {
+      setScoringRelevance(false);
+    }
+  };
+
 
   const saveCfg = async () => {
     setSavingCfg(true);
@@ -2544,6 +2597,15 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           </Button>
           <Button variant="outline" onClick={scrapeNow} disabled={scraping} className="gap-1.5 text-sm">
             {scraping ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />} Scrape now
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void scoreRelevance()}
+            disabled={scoringRelevance || !ads.length}
+            className="gap-1.5 text-sm"
+            title="Jev: is this ad comparable to our product?"
+          >
+            {scoringRelevance ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} Score with Jev
           </Button>
           <Button onClick={() => setUploadOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
             <Upload className="w-4 h-4" /> Add Ad
@@ -2727,7 +2789,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
                   {/* New + Winner + Active badges (stacked) */}
                   <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
                     {isNew(ad) && <NewBadge />}
-                    <WinnerBadge ad={ad} />
+                    <WinnerBadge ad={ad} /><RelevanceBadge ad={ad} />
                     {(ad.ad_active === "true" || ad.is_active === "true") && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500 text-white shadow-sm">ACTIVE</span>
                     )}
@@ -2992,7 +3054,7 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
                   : <AdPlaceholder ad={ad} index={idx} />}
                 <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
                   {ad.is_new && <NewBadge />}
-                  <WinnerBadge ad={ad} />
+                  <WinnerBadge ad={ad} /><RelevanceBadge ad={ad} />
                 </div>
                 <div className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity p-2">
                   <button onClick={e => { e.stopPropagation(); saveTpl(ad); }}
