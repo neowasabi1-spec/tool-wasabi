@@ -2380,6 +2380,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   const [filter, setFilter] = useState<"all" | "image" | "video">("all");
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
+  const [hideOffTarget, setHideOffTarget] = useState(true);
   // Kept across reloads so the badges stay put for the whole visit, even though
   // the brand is stamped as seen as soon as they are shown.
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
@@ -2444,7 +2445,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ brandId: competitor.id, limit: 40, force: false }),
+          body: JSON.stringify({ brandId: competitor.id, limit: 40, force: true }),
         },
       );
       const data = await r.json().catch(() => ({}));
@@ -2452,7 +2453,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
       toast({
         title: data.scored
           ? `Scored ${data.scored} ads with Jev${data.avg != null ? ` · avg ${data.avg}` : ""}`
-          : "No unscored ads",
+          : "No ads to score",
       });
       await load();
     } catch (e) {
@@ -2561,12 +2562,14 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
     .filter(a => filter === "all" || a.media_type === filter)
     .filter(a => !winnersOnly || winnerTier(a) !== null)
     .filter(a => !newOnly || isNew(a))
+    .filter(a => !hideOffTarget || a.relevance_label !== "off_target")
     .filter(a => !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.headline.toLowerCase().includes(search.toLowerCase()) || a.hook.toLowerCase().includes(search.toLowerCase()))
     // Fresh creatives first, then by winner tier.
     .sort((a, b) => (isNew(b) ? 1 : 0) - (isNew(a) ? 1 : 0) || tierRank(a) - tierRank(b));
 
   const winnerCount = ads.filter(a => winnerTier(a) !== null).length;
   const newCount = ads.filter(isNew).length;
+  const offTargetCount = ads.filter(a => a.relevance_label === "off_target").length;
   const allSelected = filtered.length > 0 && filtered.every(a => selected.has(a.id));
   const toggleAll = () => allSelected ? setSelected(new Set()) : setSelected(new Set(filtered.map(a => a.id)));
 
@@ -2680,6 +2683,14 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
             title="Creatives added since your last visit"
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${newOnly ? "bg-emerald-500 border-emerald-500 text-white" : "border-emerald-400/60 text-emerald-600 hover:bg-emerald-50"}`}>
             <Sparkles className="w-3.5 h-3.5" /> New ({newCount})
+          </button>
+        )}
+        {offTargetCount > 0 && (
+          <button
+            onClick={() => setHideOffTarget(v => !v)}
+            title={hideOffTarget ? "Off-target creatives hidden — click to show" : "Including off-target creatives — click to hide"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${hideOffTarget ? "border-slate-300 text-slate-600 bg-slate-50" : "bg-slate-600 border-slate-600 text-white"}`}>
+            {hideOffTarget ? `Hide off-target (${offTargetCount})` : `Show off-target (${offTargetCount})`}
           </button>
         )}
       </div>

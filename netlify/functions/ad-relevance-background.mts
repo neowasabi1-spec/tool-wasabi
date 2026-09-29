@@ -2,7 +2,10 @@
  * Background worker: score unscored competitor ads with Jev across all projects.
  */
 import type { Config, Context } from '@netlify/functions';
-import { scoreAllProjectsUnscoredAds } from '../../src/lib/ads-intel/ad-relevance';
+import {
+  scoreAllProjectsUnscoredAds,
+  scoreProjectAdsRelevance,
+} from '../../src/lib/ads-intel/ad-relevance';
 
 export default async (req: Request, _context: Context) => {
   if (req.method !== 'POST') {
@@ -19,11 +22,25 @@ export default async (req: Request, _context: Context) => {
   }
 
   try {
-    const result = await scoreAllProjectsUnscoredAds({
-      perProjectLimit: 40,
-      maxProjects: 30,
-      maxAds: 150,
-    });
+    const body = await req.json().catch(() => ({} as Record<string, unknown>));
+    const force = body.force === true;
+    const projectId = typeof body.projectId === 'string' ? body.projectId.trim() : '';
+    const result = projectId
+      ? await scoreProjectAdsRelevance(projectId, {
+          limit: Number(body.limit) || 60,
+          force,
+        }).then((r) => ({
+          projects: 1,
+          scored: r.scored,
+          errors: r.errors,
+          details: [{ projectId, scored: r.scored, errors: r.errors, avg: r.avg }],
+        }))
+      : await scoreAllProjectsUnscoredAds({
+          perProjectLimit: 40,
+          maxProjects: 30,
+          maxAds: 150,
+          force,
+        });
     return new Response(JSON.stringify({ ok: true, ...result }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
