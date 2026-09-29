@@ -29,6 +29,32 @@ import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client
 import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 import CachedScreenshot from "@/components/CachedScreenshot";
 import { fbAdLibrarySearchUrl } from "@/lib/ads-library-url";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+const PEER_COUNTRIES: { code: string; label: string }[] = [
+  { code: "US", label: "United States" },
+  { code: "GB", label: "United Kingdom" },
+  { code: "IT", label: "Italy" },
+  { code: "DE", label: "Germany" },
+  { code: "FR", label: "France" },
+  { code: "ES", label: "Spain" },
+  { code: "PT", label: "Portugal" },
+  { code: "NL", label: "Netherlands" },
+  { code: "BE", label: "Belgium" },
+  { code: "AT", label: "Austria" },
+  { code: "CH", label: "Switzerland" },
+  { code: "PL", label: "Poland" },
+  { code: "RO", label: "Romania" },
+  { code: "CA", label: "Canada" },
+  { code: "AU", label: "Australia" },
+  { code: "ALL", label: "All countries" },
+];
 
 const BASE_URL = "";
 
@@ -1770,7 +1796,14 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   const [peerSuggestions, setPeerSuggestions] = useState<Array<{ name: string; why: string }>>([]);
   const [peerSelected, setPeerSelected] = useState<Set<string>>(new Set());
   const [peerCustom, setPeerCustom] = useState("");
-  const [peerCountry, setPeerCountry] = useState("IT");
+  const [peerCountry, setPeerCountry] = useState(() => {
+    if (typeof window === "undefined") return "US";
+    try {
+      const saved = localStorage.getItem(`ads-library-country:${projectId}`);
+      if (saved && PEER_COUNTRIES.some((c) => c.code === saved)) return saved;
+    } catch { /* ignore */ }
+    return "US";
+  });
   const [peerLoading, setPeerLoading] = useState(false);
   const [peerAdding, setPeerAdding] = useState(false);
   const [peerError, setPeerError] = useState("");
@@ -1901,8 +1934,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       }
       const list = Array.isArray(data.suggestions) ? data.suggestions : [];
       setPeerSuggestions(list);
-      setPeerCountry(typeof data.country === "string" && data.country ? data.country : "IT");
-      // Pre-select all suggestions so the user can deselect.
+      // Do not overwrite a country the user already picked. API guess is unused here.
       setPeerSelected(new Set(list.map((s: { name: string }) => s.name)));
     } catch {
       setPeerError("Could not load suggestions");
@@ -2209,7 +2241,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <DialogHeader>
             <DialogTitle>Add vertical peers</DialogTitle>
             <DialogDescription>
-              Same vertical, different products — suggested names for Meta Ad Library spy ({peerCountry}).
+              Same vertical, different products. You pick the Meta Ad Library country — we only guess from the project brief.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-1">
@@ -2251,6 +2283,27 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
                 ) : (
                   <p className="text-sm text-muted-foreground">No suggestions — type product names below.</p>
                 )}
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-foreground">Ad Library country</label>
+                  <Select
+                    value={peerCountry}
+                    onValueChange={(v) => {
+                      setPeerCountry(v);
+                      try { localStorage.setItem(`ads-library-country:${projectId}`, v); } catch { /* ignore */ }
+                    }}
+                  >
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PEER_COUNTRIES.map((c) => (
+                        <SelectItem key={c.code} value={c.code}>
+                          {c.label} ({c.code})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-foreground">Other product names</label>
                   <Input
