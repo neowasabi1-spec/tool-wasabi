@@ -2250,7 +2250,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
             <DialogDescription>
               Same buyer intent, different products — not clones of your offer. Pick Meta Ad Library country below.
               {peerVertical === "mmo_bizopp" ? (
-                <> Detected: make-money / phone-income info products (peers like WiFi Profit, not WiFi hardware).</>
+                <> Detected: make-money / phone-income info products (peers like Wifi Profits, not WiFi hardware).</>
               ) : peerVertical === "cpg_supplement" ? (
                 <> Detected: supplements / CPG.</>
               ) : null}

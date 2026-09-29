@@ -35,7 +35,7 @@ function briefSnippet(val: unknown, max = 2000): string {
 function detectVertical(...parts: Array<string | null | undefined>): Vertical {
   const s = parts.filter(Boolean).join(' \n ').toLowerCase();
   if (
-    /social profits|wifi profit|feed flip|make money|\$\d+\/?day|from my phone|phone income|commission flow|biz\s*opp|clickbank|income training|passive income|side hustle system|affiliate info product|get paid from|cash from (your )?phone|try-socialprofits/.test(
+    /social profits|wifi profits?|feed flip|make money|\$\d+\/?day|from my phone|phone income|commission flow|biz\s*opp|clickbank|income training|passive income|side hustle system|affiliate info product|get paid from|cash from (your )?phone|try-socialprofits/.test(
       s,
     )
   ) {
@@ -59,7 +59,9 @@ OUR OFFER is a paid "system" / training / dashboard sold via VSL or advertorial 
 
 Suggest OTHER real Meta-advertised info products / front-end brand names in the SAME buyer intent:
 - "make money from your phone", auto commission machines, WiFi/phone income systems, similar ClickBank-style frontends.
-Good kind of peer: WiFi Profit, other phone-income / social-profits style machines, similar "$X/day from phone" trainings.
+Good kind of peer (use exact Meta-searchable names when known):
+- "Wifi Profits" (ClickBank) — online business with phone/laptop/tablet over WiFi, AI content, viral video maker, $67 OTOs style
+- other phone-income / social-profits style machines, similar "$X/day from phone" trainings
 Bad (never suggest):
 - WiFi routers, ISPs, hardware, VPN, mobile carriers
 - Meta Ads Manager, Canva, CapCut, Shopify, LinkedIn, TikTok Shop as SaaS tools
@@ -151,7 +153,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     /try-socialprofits|socialprofits|social profits machine/i.test(
       `${productName} ${offerUrl} ${briefSnippet(project.brief, 400)}`,
     )
-      ? 'Vertical lock: make-money-from-phone info product / Social Profits Machine (MMO bizopp). Peers = other phone-income / commission-machine frontends (e.g. WiFi Profit), NOT hardware WiFi, NOT SaaS tools.'
+      ? 'Vertical lock: make-money-from-phone info product / Social Profits Machine (MMO bizopp). Peers = other phone-income / commission-machine frontends (e.g. Wifi Profits on ClickBank), NOT hardware WiFi, NOT SaaS tools.'
       : '',
   ]
     .filter(Boolean)
@@ -204,7 +206,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
     const data = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
     const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text || '').join('');
-    const suggestions = parseSuggestions(text, existing);
+    let suggestions = parseSuggestions(text, existing);
+    // Anchor peer for Social Profits Machine–class offers (exact ClickBank brand spelling).
+    if (vertical === 'mmo_bizopp' && !existing.has('wifi profits')) {
+      const seeded = { name: 'Wifi Profits', why: 'Closest ClickBank peer: phone/WiFi income system' };
+      suggestions = [seeded, ...suggestions.filter((s) => s.name.toLowerCase() !== 'wifi profits')].slice(0, MAX_SUGGESTIONS);
+    }
     return NextResponse.json({ suggestions, country, vertical });
   } catch (e) {
     return NextResponse.json(
