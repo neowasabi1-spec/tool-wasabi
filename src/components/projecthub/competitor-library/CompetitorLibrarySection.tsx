@@ -1807,6 +1807,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   const [peerLoading, setPeerLoading] = useState(false);
   const [peerAdding, setPeerAdding] = useState(false);
   const [peerError, setPeerError] = useState("");
+  const [peerVertical, setPeerVertical] = useState<string>("");
 
   // Direct competitor discovery (multi SEARCH → Apify → judge in webhook)
   const [discovering, setDiscovering] = useState(false);
@@ -1921,11 +1922,16 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
     setPeerSuggestions([]);
     setPeerSelected(new Set());
     setPeerCustom("");
+    setPeerVertical("");
     setPeerLoading(true);
     try {
       const r = await fetch(
         `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/suggest-vertical-peers`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
       );
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -1934,6 +1940,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       }
       const list = Array.isArray(data.suggestions) ? data.suggestions : [];
       setPeerSuggestions(list);
+      setPeerVertical(typeof data.vertical === "string" ? data.vertical : "");
       // Do not overwrite a country the user already picked. API guess is unused here.
       setPeerSelected(new Set(list.map((s: { name: string }) => s.name)));
     } catch {
@@ -2241,7 +2248,12 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <DialogHeader>
             <DialogTitle>Add vertical peers</DialogTitle>
             <DialogDescription>
-              Same vertical, different products. You pick the Meta Ad Library country — we only guess from the project brief.
+              Same buyer intent, different products — not clones of your offer. Pick Meta Ad Library country below.
+              {peerVertical === "mmo_bizopp" ? (
+                <> Detected: make-money / phone-income info products (peers like WiFi Profit, not WiFi hardware).</>
+              ) : peerVertical === "cpg_supplement" ? (
+                <> Detected: supplements / CPG.</>
+              ) : null}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-1">
