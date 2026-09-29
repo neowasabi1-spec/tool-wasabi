@@ -594,16 +594,11 @@ export async function ingestDataset(opts: {
     }).catch(() => 0);
   }
 
-  // Best-effort: Jev scores new creatives vs our product (comparability).
+  // Best-effort: Jev scores new creatives vs our product (all unscored on this project).
   if (added > 0) {
-    const brandIds = fixedBrandId ? [fixedBrandId] : [...touchedBrands];
-    void Promise.all(
-      brandIds.slice(0, 6).map((bid) =>
-        scoreProjectAdsRelevance(projectId, { brandId: bid, limit: Math.min(30, added + 5) }).catch((e) => {
-          console.warn('[scrape] ad relevance:', e instanceof Error ? e.message : e);
-        }),
-      ),
-    );
+    void scoreProjectAdsRelevance(projectId, { limit: Math.min(50, added + 20) }).catch((e) => {
+      console.warn('[scrape] ad relevance:', e instanceof Error ? e.message : e);
+    });
   }
 
   return { added, skipped, failed, brands: touchedBrands.size, landings };

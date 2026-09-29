@@ -240,3 +240,69 @@ export async function scoreProjectAdsRelevance(
   const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : undefined;
   return { scored, skipped: Math.max(0, (data || []).length - rows.length), errors, avg };
 }
+
+/**
+ * Drain unscored ads across ALL projects (scheduled cron + post-scrape).
+ * Caps total work per run so Netlify / serverless stay healthy.
+ */
+export async function scoreAllProjectsUnscoredAds(opts?: {
+  perProjectLimit?: number;
+  maxProjects?: number;
+  maxAds?: number;
+}): Promise<{
+  projects: number;
+  scored: number;
+  errors: number;
+  details: Array<{ projectId: string; scored: number; errors: number; avg?: number }>;
+}> {
+  const perProjectLimit = Math.min(Math.max(opts?.perProjectLimit ?? 30, 1), 60);
+  const maxProjects = Math.min(Math.max(opts?.maxProjects ?? 25, 1), 50);
+  const maxAds = Math.min(Math.max(opts?.maxAds ?? 120, 1), 200);
+
+  const { data, error } = await supabaseAdmin
+    .from('competitor_ads')
+    .select('project_id')
+    .is('relevance_score', null)
+    .order('created_at', { ascending: false })
+    .limit(800);
+
+  if (error) {
+    if (/relevance_score|42703|PGRST204/i.test(error.message)) {
+      throw new Error('Run supabase-migration-ad-relevance.sql first');
+    }
+    throw new Error(error.message);
+  }
+
+  const counts = new Map<string, number>();
+  for (const row of data || []) {
+    const pid = String((row as { project_id?: string }).project_id || '');
+    if (!pid) continue;
+    counts.set(pid, (counts.get(pid) || 0) + 1);
+  }
+
+  const projectIds = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, maxProjects)
+    .map(([id]) => id);
+
+  let scored = 0;
+  let errors = 0;
+  const details: Array<{ projectId: string; scored: number; errors: number; avg?: number }> = [];
+
+  for (const projectId of projectIds) {
+    if (scored >= maxAds) break;
+    const room = Math.max(1, Math.min(perProjectLimit, maxAds - scored));
+    try {
+      const r = await scoreProjectAdsRelevance(projectId, { limit: room, force: false });
+      scored += r.scored;
+      errors += r.errors;
+      details.push({ projectId, scored: r.scored, errors: r.errors, avg: r.avg });
+    } catch (e) {
+      errors++;
+      console.warn('[ad-relevance] project', projectId, e instanceof Error ? e.message : e);
+      details.push({ projectId, scored: 0, errors: 1 });
+    }
+  }
+
+  return { projects: details.length, scored, errors, details };
+}
