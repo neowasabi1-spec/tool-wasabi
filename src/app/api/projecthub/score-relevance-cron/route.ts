@@ -53,6 +53,8 @@ async function handle(req: NextRequest) {
     url.searchParams.get('projectId') ||
     (typeof body.projectId === 'string' ? body.projectId : '')
   ).trim();
+  const brandIdRaw = url.searchParams.get('brandId') ?? body.brandId;
+  const brandId = brandIdRaw != null ? Number(brandIdRaw) : undefined;
   const limitRaw = url.searchParams.get('limit') ?? body.limit;
   const limit = limitRaw != null ? Number(limitRaw) : undefined;
 
@@ -60,10 +62,11 @@ async function handle(req: NextRequest) {
     try {
       if (projectId) {
         const result = await scoreProjectAdsRelevance(projectId, {
+          brandId: Number.isFinite(brandId) ? brandId : undefined,
           limit: Number.isFinite(limit) ? Number(limit) : 40,
           force,
         });
-        return NextResponse.json({ ok: true, worker: false, projectId, ...result });
+        return NextResponse.json({ ok: true, worker: false, projectId, brandId, ...result });
       }
       const result = await scoreAllProjectsUnscoredAds({
         perProjectLimit: Number.isFinite(limit) ? Number(limit) : 40,

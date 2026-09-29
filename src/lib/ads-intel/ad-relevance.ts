@@ -287,7 +287,7 @@ async function fetchAdsForScoring(
 export async function scoreProjectAdsRelevance(
   projectId: string,
   opts?: { brandId?: number; limit?: number; force?: boolean },
-): Promise<{ scored: number; skipped: number; errors: number; avg?: number }> {
+): Promise<{ scored: number; skipped: number; errors: number; avg?: number; sample?: Array<{ id: number; brand_id: number; score: number | null; label: string | null; why: string | null }> }> {
   if (!env.openrouterKey && env.judgeEngine === 'jev') {
     throw new Error('OPENROUTER_API_KEY is not configured');
   }
@@ -364,7 +364,29 @@ export async function scoreProjectAdsRelevance(
 
   await Promise.all(Array.from({ length: Math.min(pool, rows.length) }, () => worker()));
   const avg = scores.length ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : undefined;
-  return { scored, skipped: Math.max(0, data.length - rows.length), errors, avg };
+
+  // Lightweight sample so operators can verify off-target filtering without DB access.
+  let sample: Array<{ id: number; brand_id: number; score: number | null; label: string | null; why: string | null }> = [];
+  try {
+    const ids = rows.slice(0, 12).map((r) => r.id);
+    if (ids.length) {
+      const { data: sampleRows } = await supabaseAdmin
+        .from('competitor_ads')
+        .select('id, brand_id, relevance_score, relevance_label, relevance_why')
+        .in('id', ids);
+      sample = (sampleRows || []).map((r: any) => ({
+        id: r.id,
+        brand_id: r.brand_id,
+        score: r.relevance_score,
+        label: r.relevance_label,
+        why: r.relevance_why,
+      }));
+    }
+  } catch {
+    /* ignore */
+  }
+
+  return { scored, skipped: Math.max(0, data.length - rows.length), errors, avg, sample };
 }
 
 /**
