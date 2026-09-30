@@ -51,6 +51,15 @@ function LiveRefreshHost() {
   const refreshLiveCatalog = useStore((s) => s.refreshLiveCatalog);
   const pathname = usePathname();
   const lastPath = useRef<string | null>(null);
+  const lastEmitAt = useRef(0);
+
+  const emitDebounced = () => {
+    const now = Date.now();
+    // Focus/visibility storms were re-fetching every ProjectHub section at once.
+    if (now - lastEmitAt.current < 15_000) return;
+    lastEmitAt.current = now;
+    emitLiveRefresh();
+  };
 
   useEffect(() => {
     if (!isInitialized) return;
@@ -62,6 +71,7 @@ function LiveRefreshHost() {
     }
     if (lastPath.current === pathname) return;
     lastPath.current = pathname;
+    lastEmitAt.current = Date.now();
     emitLiveRefresh();
     void refreshLiveCatalog();
   }, [isInitialized, pathname, refreshLiveCatalog]);
@@ -74,7 +84,7 @@ function LiveRefreshHost() {
     };
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
-      emitLiveRefresh();
+      emitDebounced();
       void refreshLiveCatalog();
     };
     document.addEventListener('visibilitychange', onVisible);
