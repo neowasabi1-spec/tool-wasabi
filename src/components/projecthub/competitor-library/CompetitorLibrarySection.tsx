@@ -2509,8 +2509,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   const [ads, setAds] = useState<CompetitorAd[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "image" | "video">("all");
-  const [winnersOnly, setWinnersOnly] = useState(false);
+  const [filter, setFilter] = useState<"all" | "image" | "video" | "winner" | "promising">("all");
   const [newOnly, setNewOnly] = useState(false);
   const [hideOffTarget, setHideOffTarget] = useState(true);
   // Kept across reloads so the badges stay put for the whole visit, even though
@@ -2691,15 +2690,17 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   const isNew = (a: CompetitorAd) => newIds.has(a.id);
   const tierRank = (a: CompetitorAd) => { const t = winnerTier(a); return t === "winner" ? 0 : t === "promising" ? 1 : 2; };
   const filtered = ads
-    .filter(a => filter === "all" || a.media_type === filter)
-    .filter(a => !winnersOnly || winnerTier(a) !== null)
+    .filter(a => filter === "all"
+      || ((filter === "image" || filter === "video") && a.media_type === filter)
+      || ((filter === "winner" || filter === "promising") && winnerTier(a) === filter))
     .filter(a => !newOnly || isNew(a))
     .filter(a => !hideOffTarget || a.relevance_label !== "off_target")
     .filter(a => !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.headline.toLowerCase().includes(search.toLowerCase()) || a.hook.toLowerCase().includes(search.toLowerCase()))
     // Fresh creatives first, then by winner tier.
     .sort((a, b) => (isNew(b) ? 1 : 0) - (isNew(a) ? 1 : 0) || tierRank(a) - tierRank(b));
 
-  const winnerCount = ads.filter(a => winnerTier(a) !== null).length;
+  const winnerCount = ads.filter(a => winnerTier(a) === "winner").length;
+  const promisingCount = ads.filter(a => winnerTier(a) === "promising").length;
   const newCount = ads.filter(isNew).length;
   const offTargetCount = ads.filter(a => a.relevance_label === "off_target").length;
   const allSelected = filtered.length > 0 && filtered.every(a => selected.has(a.id));
@@ -2798,18 +2799,26 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
           <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search creatives..." className="pl-8 h-8 text-sm" />
         </div>
-        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30">
-          {(["all","image","video"] as const).map(f => (
+        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 flex-wrap">
+          {([
+            ["all", "All"],
+            ["image", `Images${imageCount ? ` (${imageCount})` : ""}`],
+            ["video", `Video${videoCount ? ` (${videoCount})` : ""}`],
+            ["winner", `Winners${winnerCount ? ` (${winnerCount})` : ""}`],
+            ["promising", `Potential${promisingCount ? ` (${promisingCount})` : ""}`],
+          ] as const).map(([f, label]) => (
             <button key={f} onClick={() => setFilter(f)}
-              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${f === filter ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
-              {f === "all" ? "All" : f === "image" ? "Images" : "Video"}
+              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${
+                f === filter
+                  ? f === "winner" ? "bg-amber-400 text-amber-950 shadow-sm"
+                    : f === "promising" ? "bg-sky-400 text-sky-950 shadow-sm"
+                    : "bg-white shadow-sm text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}>
+              {label}
             </button>
           ))}
         </div>
-        <button onClick={() => setWinnersOnly(v => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${winnersOnly ? "bg-amber-400 border-amber-400 text-amber-950" : "border-border text-muted-foreground hover:text-foreground hover:border-amber-300"}`}>
-          <Flame className="w-3.5 h-3.5" /> Winners{winnerCount > 0 ? ` (${winnerCount})` : ""}
-        </button>
         {newCount > 0 && (
           <button onClick={() => setNewOnly(v => !v)}
             title="Creatives added since your last visit"
@@ -3088,9 +3097,8 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
   const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [media, setMedia] = useState<"all" | "image" | "video">("all");
+  const [media, setMedia] = useState<"all" | "image" | "video" | "winner" | "promising">("all");
   const [brand, setBrand] = useState<string>("all");
-  const [winnersOnly, setWinnersOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
   const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
@@ -3131,12 +3139,16 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
 
   const brands = [...new Set(creatives.map(c => c.brand_name).filter(Boolean))];
   const tierRank = (a: CompetitorAd) => { const t = winnerTier(a); return t === "winner" ? 0 : t === "promising" ? 1 : 2; };
-  const winnerCount = creatives.filter(c => winnerTier(c) !== null).length;
+  const imageCount = creatives.filter(c => c.media_type === "image").length;
+  const videoCount = creatives.filter(c => c.media_type === "video").length;
+  const winnerCount = creatives.filter(c => winnerTier(c) === "winner").length;
+  const promisingCount = creatives.filter(c => winnerTier(c) === "promising").length;
   const newCount = creatives.filter(c => c.is_new).length;
   const filtered = creatives
-    .filter(c => media === "all" || c.media_type === media)
+    .filter(c => media === "all"
+      || ((media === "image" || media === "video") && c.media_type === media)
+      || ((media === "winner" || media === "promising") && winnerTier(c) === media))
     .filter(c => brand === "all" || c.brand_name === brand)
-    .filter(c => !winnersOnly || winnerTier(c) !== null)
     .filter(c => !newOnly || c.is_new)
     .filter(c => !search || `${c.name} ${c.headline} ${c.hook} ${c.brand_name}`.toLowerCase().includes(search.toLowerCase()))
     // Fresh creatives first, then by winner tier.
@@ -3155,18 +3167,26 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
           <option value="all">All competitors</option>
           {brands.map(b => <option key={b} value={b}>{b}</option>)}
         </select>
-        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30">
-          {(["all", "image", "video"] as const).map(f => (
+        <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 flex-wrap">
+          {([
+            ["all", "All"],
+            ["image", `Images${imageCount ? ` (${imageCount})` : ""}`],
+            ["video", `Video${videoCount ? ` (${videoCount})` : ""}`],
+            ["winner", `Winners${winnerCount ? ` (${winnerCount})` : ""}`],
+            ["promising", `Potential${promisingCount ? ` (${promisingCount})` : ""}`],
+          ] as const).map(([f, label]) => (
             <button key={f} onClick={() => setMedia(f)}
-              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${f === media ? "bg-white shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
-              {f === "all" ? "All" : f === "image" ? "Images" : "Video"}
+              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${
+                f === media
+                  ? f === "winner" ? "bg-amber-400 text-amber-950 shadow-sm"
+                    : f === "promising" ? "bg-sky-400 text-sky-950 shadow-sm"
+                    : "bg-white shadow-sm text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}>
+              {label}
             </button>
           ))}
         </div>
-        <button onClick={() => setWinnersOnly(v => !v)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${winnersOnly ? "bg-amber-400 border-amber-400 text-amber-950" : "border-border text-muted-foreground hover:text-foreground hover:border-amber-300"}`}>
-          <Flame className="w-3.5 h-3.5" /> Winners{winnerCount > 0 ? ` (${winnerCount})` : ""}
-        </button>
         {newCount > 0 && (
           <button onClick={() => setNewOnly(v => !v)}
             title="Creatives added since your last visit"
