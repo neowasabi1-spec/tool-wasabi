@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { lastImageGenError, openaiGenerateImageBytes, openaiImageKey } from '@/lib/openai-image';
+import { lastImageGenError, openaiGenerateImageBytes } from '@/lib/openai-image';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -11,7 +11,7 @@ const BUCKET = 'project-files';
 
 /**
  * Prepare signed URLs + product context for remaking a competitor image,
- * generate via ChatGPT Images (gpt-image-2, not fal), or persist a result.
+ * generate via ChatGPT Image 2 (openai/gpt-image-2), or persist a result.
  *
  * POST { action: 'prepare' }
  * POST { action: 'generate', prompt, productImageUrl?, language?, mode? }
@@ -88,9 +88,6 @@ async function generateWithChatGpt(
   body: Record<string, unknown>,
 ) {
   try {
-    if (!openaiImageKey()) {
-      return NextResponse.json({ error: 'OPENAI_API_KEY is missing' }, { status: 500 });
-    }
     const prompt = String(body.prompt || '').trim();
     if (prompt.length < 8) {
       return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
@@ -123,7 +120,7 @@ async function generateWithChatGpt(
     });
     if (!made) {
       return NextResponse.json(
-        { error: lastImageGenError() || 'ChatGPT did not return an image' },
+        { error: lastImageGenError() || 'ChatGPT Image 2 did not return an image' },
         { status: 502 },
       );
     }
