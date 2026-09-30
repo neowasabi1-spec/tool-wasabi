@@ -1170,20 +1170,37 @@ function CreativeDetailPanel({
             "Do not copy the original layout.",
           ].join(" ");
         setCreateStep(`${i} of ${count} · ChatGPT Image 2`);
-        const saveRes = await fetch(
-          `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
-          {
+        const endpoint = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`;
+        const startRes = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "start", prompt, productImageUrl: "", language: "", mode: createKind }),
+        });
+        const startedRaw = await startRes.text();
+        let started: { error?: string; jobId?: string } = {};
+        try { started = JSON.parse(startedRaw); } catch { /* html */ }
+        if (!startRes.ok || !started.jobId) {
+          throw new Error(started.error || `ChatGPT Image 2 did not start (HTTP ${startRes.status})`);
+        }
+        const deadline = Date.now() + 4 * 60_000;
+        let finished = false;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          const stRes = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "generate", prompt, productImageUrl: "", language: "", mode: createKind }),
-          },
-        );
-        const raw = await saveRes.text();
-        let saved: { error?: string } = {};
-        try { saved = JSON.parse(raw); } catch { /* html timeout */ }
-        if (!saveRes.ok) {
-          throw new Error(saved.error || (made ? `Stopped after ${made} of ${count}` : "Could not save the image"));
+            body: JSON.stringify({ action: "status", jobId: started.jobId }),
+          });
+          const stRaw = await stRes.text();
+          let st: { status?: string; error?: string } = {};
+          try { st = JSON.parse(stRaw); } catch { continue; }
+          if (st.status === "done") { finished = true; break; }
+          if (st.status === "error") {
+            throw new Error(st.error || (made ? `Stopped after ${made} of ${count}` : "ChatGPT Image 2 failed"));
+          }
+          setCreateStep(`${i} of ${count} · ChatGPT Image 2`);
         }
+        if (!finished) throw new Error(made ? `Stopped after ${made} of ${count}` : "ChatGPT Image 2 timed out");
         made++;
       }
       await loadBuildStatus();

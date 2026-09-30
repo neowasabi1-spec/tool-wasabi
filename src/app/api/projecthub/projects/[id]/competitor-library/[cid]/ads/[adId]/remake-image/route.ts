@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { lastImageGenError, openaiGenerateImageBytes } from '@/lib/openai-image';
+import { readRemakeJob, runRemakeJob, writeRemakeJob, type RemakeJob } from '@/lib/remake-still';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -40,6 +41,8 @@ export async function POST(
   const action = String(body.action || 'prepare');
 
   if (action === 'save') return saveResult(id, brandIdNum, adIdNum, body);
+  if (action === 'status') return jobStatus(id, body);
+  if (action === 'start') return startJob(req, id, brandIdNum, adIdNum, body);
   if (action === 'generate') return generateWithChatGpt(id, brandIdNum, adIdNum, body);
 
   const { data: ad } = await supabaseAdmin
@@ -79,6 +82,55 @@ export async function POST(
     bodyText: a.body_text || '',
     name: a.name || '',
   });
+}
+
+async function jobStatus(projectId: string, body: Record<string, unknown>) {
+  const jobId = String(body.jobId || '').trim();
+  if (!jobId) return NextResponse.json({ error: 'Missing job' }, { status: 400 });
+  const job = await readRemakeJob(projectId, jobId);
+  if (!job) return NextResponse.json({ error: 'Job not found' }, { status: 404 });
+  return NextResponse.json(job);
+}
+
+async function startJob(
+  req: NextRequest,
+  projectId: string,
+  brandId: number,
+  adId: number,
+  body: Record<string, unknown>,
+) {
+  const prompt = String(body.prompt || '').trim();
+  if (prompt.length < 8) return NextResponse.json({ error: 'Missing prompt' }, { status: 400 });
+  const jobId = `${adId}_${Date.now()}`;
+  const job: RemakeJob = {
+    status: 'pending',
+    projectId,
+    brandId,
+    adId,
+    prompt,
+    productImageUrl: String(body.productImageUrl || ''),
+    language: String(body.language || ''),
+    mode: String(body.mode || ''),
+  };
+  const writeErr = await writeRemakeJob(projectId, jobId, job);
+  if (writeErr) return NextResponse.json({ error: writeErr }, { status: 500 });
+
+  const origin = process.env.URL || process.env.DEPLOY_PRIME_URL || req.nextUrl.origin;
+  let queued = false;
+  try {
+    const res = await fetch(`${origin.replace(/\/$/, '')}/.netlify/functions/remake-image-background`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId, jobId }),
+    });
+    queued = res.status === 202 || res.ok;
+  } catch {
+    queued = false;
+  }
+  if (!queued) {
+    await runRemakeJob(projectId, jobId);
+  }
+  return NextResponse.json({ jobId });
 }
 
 async function generateWithChatGpt(
