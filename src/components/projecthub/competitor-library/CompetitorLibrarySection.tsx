@@ -3986,6 +3986,16 @@ function ShotsLibraryView({
   } | null>(null);
   const [reelFootageLoading, setReelFootageLoading] = useState(true);
   const [reelPreparing, setReelPreparing] = useState(false);
+  const [reelBrief, setReelBrief] = useState("");
+  const [reelJob, setReelJob] = useState<{
+    id: string;
+    status: string;
+    progress?: string;
+    error?: string;
+    mediaBuyer?: string;
+  } | null>(null);
+  const [reelEngineConfigured, setReelEngineConfigured] = useState<boolean | null>(null);
+  const [reelStarting, setReelStarting] = useState(false);
 
   const loadReelFootage = async () => {
     setReelFootageLoading(true);
@@ -4022,8 +4032,8 @@ function ShotsLibraryView({
         return;
       }
       toast({
-        title: "Reel inventory ready",
-        description: `projectId: ${projectId} — use MCP wasabi-reel reel_import_cleaned_shots with this projectId (downloads locally). Optional b-roll: reel_generate_clip.`,
+        title: "Inventory ready",
+        description: "Footage counts are up to date. Start a video on the Claude Cloud reel engine below.",
       });
     } catch {
       toast({ title: "Prepare failed", variant: "destructive" });
@@ -4032,22 +4042,66 @@ function ShotsLibraryView({
     }
   };
 
-  const copyProjectId = async () => {
+  const loadReelJobs = async () => {
     try {
-      await navigator.clipboard.writeText(projectId);
-      toast({ title: "Project ID copied" });
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/reel/jobs`, { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 503) {
+        setReelEngineConfigured(false);
+        return;
+      }
+      setReelEngineConfigured(j.configured !== false);
+      const jobs = Array.isArray(j.jobs) ? j.jobs : [];
+      const active = jobs.find((x: { status?: string }) =>
+        ["queued", "running", "waiting_claude", "publishing"].includes(String(x.status || "")),
+      ) || jobs[0];
+      if (active) {
+        setReelJob({
+          id: active.id,
+          status: active.status,
+          progress: active.progress,
+          error: active.error,
+          mediaBuyer: j.mediaBuyer || active.mediaBuyer,
+        });
+      }
     } catch {
-      toast({ title: "Copy failed", variant: "destructive" });
+      setReelEngineConfigured(null);
     }
   };
 
-  const copyMcpImportCommand = async () => {
-    const prompt = `Import cleaned reel footage for projectId ${projectId} (includeFullAds), then follow reel-director gates, then reel_publish_to_wasabi with the same projectId and final reelDir.`;
+  const startReelEngineJob = async () => {
+    if (reelStarting) return;
+    setReelStarting(true);
     try {
-      await navigator.clipboard.writeText(prompt);
-      toast({ title: "MCP prompt copied", description: "Paste in Claude/Cursor with wasabi-reel enabled." });
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/reel/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "produce",
+          brief: reelBrief.trim() || undefined,
+          includeFullAds: true,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: j.error || "Could not start reel job", variant: "destructive" });
+        return;
+      }
+      setReelEngineConfigured(true);
+      setReelJob({
+        id: j.job.id,
+        status: j.job.status,
+        progress: j.job.progress,
+        mediaBuyer: j.mediaBuyer,
+      });
+      toast({
+        title: "Video job queued",
+        description: `Folder ${j.mediaBuyer}/${projectId} on the reel engine. Finished files land in Created videos.`,
+      });
     } catch {
-      toast({ title: "Copy failed", variant: "destructive" });
+      toast({ title: "Could not start reel job", variant: "destructive" });
+    } finally {
+      setReelStarting(false);
     }
   };
 
@@ -4069,8 +4123,14 @@ function ShotsLibraryView({
     } catch { if (!quiet) setShots([]); }
     finally { if (!quiet) setLoading(false); }
   };
-  useEffect(() => { load(); void loadReelFootage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
-  useLiveReload(() => { void load(true); void loadReelFootage(); });
+  useEffect(() => { load(); void loadReelFootage(); void loadReelJobs(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useLiveReload(() => { void load(true); void loadReelFootage(); void loadReelJobs(); });
+  useEffect(() => {
+    if (!reelJob || !["queued", "running", "waiting_claude", "publishing"].includes(reelJob.status)) return;
+    const tmr = setInterval(() => { void loadReelJobs(); }, 8000);
+    return () => clearInterval(tmr);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reelJob?.id, reelJob?.status]);
 
   // While AI subtitle removal is running, refresh quietly until it settles.
   const cleaningCount = shots.filter(
@@ -4352,9 +4412,9 @@ function ShotsLibraryView({
           <div className="flex items-center gap-2 min-w-0">
             <Film className="w-4 h-4 shrink-0 text-muted-foreground" />
             <div>
-              <p className="text-xs font-semibold text-foreground">Reel Engine (local MCP + Wasabi inventory)</p>
+              <p className="text-xs font-semibold text-foreground">Create video (Claude Cloud reel engine)</p>
               <p className="text-[10px] text-muted-foreground leading-snug max-w-lg">
-                Setup: <b>scripts/setup-reel-mediabuyer.sh</b> · Guida: <b>reel/MEDIABUYER-SETUP.md</b>
+                Runs on the shared engine host — no MCP and no Claude on your laptop. Output folders: <code className="text-[9px]">mediaBuyer/projectId</code>.
               </p>
             </div>
           </div>
@@ -4376,13 +4436,28 @@ function ShotsLibraryView({
             </div>
           ) : null}
         </div>
-        <ol className="text-[10px] text-muted-foreground space-y-0.5 list-decimal list-inside max-w-2xl">
-          <li>Clean / split footage in this tab (Remove subs with AI when needed).</li>
-          <li><b>Prepare for Reel Engine</b> — inventory JSON on server (download happens locally via MCP).</li>
-          <li>Copy <b>projectId</b> for MCP <code className="text-[9px]">reel_import_cleaned_shots</code>.</li>
-          <li>In Claude/Cursor: import → skill <b>reel-director</b> (gates) → <code className="text-[9px]">reel_publish_to_wasabi</code>.</li>
-          <li>Finished video appears under project tab <b>Created videos</b>.</li>
-        </ol>
+        {reelEngineConfigured === false && (
+          <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+            Engine not connected yet. When the Claude Cloud host is up, ops set <code className="text-[9px]">REEL_ENGINE_URL</code> on Netlify — then this button works.
+          </p>
+        )}
+        <textarea
+          value={reelBrief}
+          onChange={(e) => setReelBrief(e.target.value)}
+          placeholder="Optional brief / angle for the reel (hooks, offer, language)…"
+          className="w-full min-h-[64px] text-xs rounded-md border border-border bg-background px-2 py-1.5 resize-y"
+        />
+        {reelJob && (
+          <p className="text-[10px] text-muted-foreground">
+            Job <code className="text-[9px]">{reelJob.id.slice(0, 8)}</code>
+            {reelJob.mediaBuyer ? <> · buyer <b>{reelJob.mediaBuyer}</b></> : null}
+            {" · "}
+            <b>{reelJob.status}</b>
+            {reelJob.progress ? ` — ${reelJob.progress}` : ""}
+            {reelJob.error ? <span className="text-red-600"> · {reelJob.error}</span> : null}
+            {reelJob.status === "done" ? " · check Created videos" : null}
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
             size="sm"
@@ -4392,23 +4467,16 @@ function ShotsLibraryView({
             className="h-7 text-xs gap-1">
             {reelPreparing
               ? <><Loader2 className="w-3 h-3 animate-spin" /> Preparing…</>
-              : "2. Prepare for Reel Engine"}
+              : "Refresh inventory"}
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            onClick={() => void copyProjectId()}
-            className="h-7 text-xs gap-1"
-            title="Copy projectId for MCP">
-            <Copy className="w-3 h-3" /> 3. projectId
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => void copyMcpImportCommand()}
-            className="h-7 text-xs gap-1"
-            title="Copy ready prompt for Claude">
-            <Copy className="w-3 h-3" /> Copy MCP import command
+            onClick={() => void startReelEngineJob()}
+            disabled={reelStarting || reelEngineConfigured === false}
+            className="h-7 text-xs gap-1 bg-primary text-white">
+            {reelStarting
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Starting…</>
+              : <><Sparkles className="w-3 h-3" /> Create video on engine</>}
           </Button>
         </div>
       </div>

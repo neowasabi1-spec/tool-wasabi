@@ -1,0 +1,61 @@
+{
+  "name": "reel-engine",
+  "version": "1.1.2",
+  "description": "AI-powered reel production pipeline: Claude + fal.ai + ElevenLabs + Remotion",
+  "type": "module",
+  "scripts": {
+    "studio": "remotion studio remotion/index.ts",
+    "preview": "remotion preview remotion/index.ts",
+    "render": "tsx scripts/render-only.ts",
+    "recalc-props": "tsx scripts/recalc-props.ts",
+    "reel": "tsx scripts/generate-reel.ts",
+    "scene-map": "tsx scripts/scene-map.ts",
+    "storyboard": "tsx scripts/storyboard.ts",
+    "refresh:deconstruct": "tsx scripts/refresh-deconstruct.ts",
+    "refresh:verify": "tsx scripts/refresh-verify.ts",
+    "test:consistency": "tsx scripts/test-character-consistency.ts",
+    "test:heygen": "tsx scripts/test-heygen-avatar-v.ts",
+    "higgsfield:auth": "tsx scripts/higgsfield-auth.ts",
+    "mcp": "tsx mcp/server.ts",
+    "engine:http": "tsx server/http.ts",
+    "engine:worker": "tsx src/wasabi/engine-worker.ts",
+    "validate-script": "tsx scripts/validate-script.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.5.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@fal-ai/client": "^1.9.5",
+    "@google/genai": "^2.6.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@remotion/bundler": "^4.0.441",
+    "@remotion/cli": "^4.0.441",
+    "@remotion/google-fonts": "^4.0.441",
+    "@remotion/layout-utils": "4.0.441",
+    "@remotion/media-utils": "^4.0.441",
+    "@remotion/paths": "^4.0.441",
+    "@remotion/renderer": "^4.0.441",
+    "@remotion/transitions": "^4.0.441",
+    "@remotion/zod-types": "^4.0.441",
+    "@supabase/supabase-js": "^2.117.2",
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "dotenv": "^17.3.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "remotion": "^4.0.441",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.3",
+    "zod": "^4.3.6"
+  },
+  "_license": {
+    "product": "VideoClaude",
+    "ref": "VC-5QCC",
+    "to": "Ospiti Michel Sainville"
+  }
+}
