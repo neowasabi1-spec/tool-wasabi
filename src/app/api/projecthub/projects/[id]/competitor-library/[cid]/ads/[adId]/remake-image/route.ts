@@ -115,7 +115,7 @@ async function generateWithChatGpt(
       imageUrls,
       size: '1024x1536',
       quality: 'medium',
-      timeoutMs: 120_000,
+      timeoutMs: 170_000,
       openaiOnly: true,
     });
     if (!made) {

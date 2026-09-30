@@ -1,13 +1,9 @@
 /**
- * ChatGPT Image 2 as used by the rest of the app.
- *
- * The working UI (Visual HTML editor → /api/generate-image) does NOT call
- * api.openai.com with OPENAI_API_KEY. It submits to
- *   queue.fal.run/openai/gpt-image-2
- *   queue.fal.run/openai/gpt-image-2/edit
- * authenticated with FAL_KEY. That is the ChatGPT Image 2 the product already
- * uses. OPENAI_API_KEY is a different credential (chat/TTS) and 401s here.
+ * ChatGPT Image 2 via the OpenAI API (OPENAI_API_KEY, optional OPENAI_BASE_URL).
+ * Ads Library Create uses this. Do not send those jobs to Fal.
  */
+
+import OpenAI, { toFile } from 'openai';
 
 export function openaiImageKey(): string {
   return (process.env.OPENAI_API_KEY || '')
@@ -342,6 +338,91 @@ export async function waitGptImage2Job(job: GptImage2Job, timeoutMs: number): Pr
   return last;
 }
 
+function openAiSize(raw?: string): '1024x1024' | '1536x1024' | '1024x1536' | 'auto' {
+  const s = mapSize(raw);
+  if (s === '1024x1024' || s === '1536x1024' || s === '1024x1536' || s === 'auto') return s;
+  return '1024x1536';
+}
+
+function openaiClient(timeoutMs: number): OpenAI | null {
+  const apiKey = openaiImageKey();
+  if (!apiKey) {
+    setImageErr('OPENAI_API_KEY is missing. Create uses ChatGPT Image 2 on the OpenAI API.');
+    return null;
+  }
+  const baseURL = (process.env.OPENAI_BASE_URL || '').trim().replace(/\/+$/, '');
+  return new OpenAI({
+    apiKey,
+    ...(baseURL ? { baseURL } : {}),
+    timeout: timeoutMs,
+    maxRetries: 0,
+  });
+}
+
+function openaiErrorMessage(e: unknown): string {
+  const err = e as { status?: number; message?: string; error?: { message?: string } };
+  const msg = err?.error?.message || err?.message || 'OpenAI image request failed';
+  const status = err?.status ? ` (${err.status})` : '';
+  return `ChatGPT Image 2${status}: ${redactSecrets(msg)}`;
+}
+
+async function openaiDirectBytes(
+  prompt: string,
+  refs: string[],
+  size: '1024x1024' | '1536x1024' | '1024x1536' | 'auto',
+  quality: 'low' | 'medium' | 'high',
+  timeoutMs: number,
+): Promise<{ buf: Buffer; mime: string } | null> {
+  const client = openaiClient(timeoutMs);
+  if (!client) return null;
+  const files = [];
+  for (let i = 0; i < refs.length; i++) {
+    const raw = await bytesFromRef(refs[i]);
+    if (!raw) continue;
+    const sniffed = sniffImage(raw.buf, raw.mime);
+    files.push(await toFile(raw.buf, `ref-${i}.${sniffed.ext}`, { type: sniffed.mime }));
+  }
+  if (refs.length && !files.length) {
+    setImageErr('Could not load the source image for ChatGPT Image 2');
+    return null;
+  }
+  const model = openaiImageModel();
+  try {
+    const result = files.length
+      ? await client.images.edit({
+        model,
+        image: files.length === 1 ? files[0] : files,
+        prompt: prompt.slice(0, 32_000),
+        size,
+        quality,
+        output_format: 'png',
+        n: 1,
+      })
+      : await client.images.generate({
+        model,
+        prompt: prompt.slice(0, 32_000),
+        size,
+        quality,
+        output_format: 'png',
+        n: 1,
+      });
+    const b64 = result.data?.[0]?.b64_json;
+    if (!b64) {
+      setImageErr('ChatGPT Image 2 returned no image');
+      return null;
+    }
+    const buf = Buffer.from(b64, 'base64');
+    if (buf.length < 80) {
+      setImageErr('ChatGPT Image 2 returned an empty image');
+      return null;
+    }
+    return { buf, mime: 'image/png' };
+  } catch (e) {
+    setImageErr(openaiErrorMessage(e));
+    return null;
+  }
+}
+
 export async function openaiGenerateImageBytes(opts: {
   prompt: string;
   imageUrls?: string[];
@@ -357,16 +438,14 @@ export async function openaiGenerateImageBytes(opts: {
     setImageErr('empty image prompt');
     return null;
   }
-  const timeoutMs = opts.timeoutMs ?? 180_000;
-  const size = mapSize(opts.size);
-  const quality = mapQuality(opts.quality);
+  const timeoutMs = opts.timeoutMs ?? 170_000;
   const tick = opts.onTick;
   const iv = tick ? setInterval(() => { void tick(); }, 8_000) : null;
   try {
     const refs = (opts.imageUrls || []).filter(Boolean).slice(0, 16);
-    return await gptImage2ViaGenerateImageQueue(prompt, refs, size, quality, timeoutMs);
+    return await openaiDirectBytes(prompt, refs, openAiSize(opts.size), mapQuality(opts.quality), timeoutMs);
   } catch (e) {
-    setImageErr((e as Error).message);
+    setImageErr(openaiErrorMessage(e));
     return null;
   } finally {
     if (iv) clearInterval(iv);
