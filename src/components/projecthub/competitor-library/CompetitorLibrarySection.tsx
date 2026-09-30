@@ -980,6 +980,11 @@ function CreativeDetailPanel({
   const [imgProduct, setImgProduct] = useState("");
   const [imgPhoto, setImgPhoto] = useState<{ file: File; preview: string } | null>(null);
   const imgPhotoRef = useRef<HTMLInputElement | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createKind, setCreateKind] = useState<"variation" | "new">("variation");
+  const [createCount, setCreateCount] = useState(3);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createStep, setCreateStep] = useState("");
   useEffect(() => () => { if (imgPhoto?.preview) URL.revokeObjectURL(imgPhoto.preview); }, [imgPhoto]);
   const remakeImage = async (mode: "swipe" | "recreate" | "edit") => {
     const language = imgLang === LANGUAGE_OTHER ? imgLangOther.trim() : imgLang;
@@ -1070,6 +1075,78 @@ function CreativeDetailPanel({
       toast({ title: msg, variant: "destructive" });
     } finally {
       setImgBusy("");
+    }
+  };
+  const startCreate = async () => {
+    if (ad.media_type === "video" || !ad.file_path) {
+      toast({ title: "Create works on image creatives", variant: "destructive" });
+      return;
+    }
+    const count = Math.max(1, Math.min(6, Math.round(Number(createCount) || 1)));
+    const productName = (imgProduct || product || "").trim();
+    const twists = [
+      "a different headline wording",
+      "a shifted badge and a tighter crop",
+      "a warmer background",
+      "a cooler background",
+      "the offer text restacked",
+      "a different supporting detail, same offer",
+    ];
+    setCreateBusy(true);
+    setCreateStep(`1 of ${count}`);
+    try {
+      const prepRes = await fetch(
+        `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "prepare" }) },
+      );
+      const prep = await prepRes.json().catch(() => ({}));
+      if (!prepRes.ok) throw new Error(prep.error || "Could not prepare the image");
+      const name = productName || String(prep.productName || "").trim();
+      let made = 0;
+      for (let i = 1; i <= count; i++) {
+        setCreateStep(`${i} of ${count}`);
+        const twist = twists[(i - 1) % twists.length];
+        const prompt = createKind === "variation"
+          ? [
+            `Variation ${i} of ${count} of this ad${name ? ` for ${name}` : ""}.`,
+            "Keep the same layout, people, product, offer and format.",
+            `Change only this: ${twist}.`,
+            "It must still read as the same ad, not a new concept.",
+          ].join(" ")
+          : [
+            `Brand-new ad ${i} of ${count}${name ? ` for ${name}` : ""}, inspired by this one.`,
+            "Keep the same offer, but invent new people, setting, composition and headline.",
+            `This version's angle: ${twist}.`,
+            "Do not copy the original layout.",
+          ].join(" ");
+        const saveRes = await fetch(
+          `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "generate", prompt, productImageUrl: "", language: "", mode: createKind }),
+          },
+        );
+        const raw = await saveRes.text();
+        let saved: { error?: string } = {};
+        try { saved = JSON.parse(raw); } catch { /* html timeout */ }
+        if (!saveRes.ok) {
+          throw new Error(saved.error || (made ? `Stopped after ${made} of ${count}` : "Could not create the image"));
+        }
+        made++;
+      }
+      await loadBuildStatus();
+      setCreateOpen(false);
+      toast({
+        title: createKind === "variation" ? `${made} variations ready` : `${made} new creatives ready`,
+        description: "Saved with this creative and in Created videos.",
+      });
+    } catch (e) {
+      const msg = (e as Error).message || "Failed";
+      toast({ title: msg, variant: "destructive" });
+    } finally {
+      setCreateBusy(false);
+      setCreateStep("");
     }
   };
   const days = daysRunning(ad);
@@ -1192,6 +1269,11 @@ function CreativeDetailPanel({
           <Button onClick={() => onSaveTemplate(ad.id)} className="w-full bg-sky-500 hover:bg-sky-600 text-white gap-2">
             <Bookmark className="w-4 h-4" /> Save template
           </Button>
+          {ad.media_type !== "video" && ad.file_path && (
+            <Button onClick={() => setCreateOpen(true)} className="w-full gap-2">
+              <Sparkles className="w-4 h-4" /> Create
+            </Button>
+          )}
           {ad.file_path && (
             <Button variant="outline" onClick={() => downloadCreative(ad)} className="w-full gap-2">
               <Download className="w-4 h-4" /> Download {ad.media_type === "video" ? "video" : "image"}
@@ -1752,6 +1834,56 @@ function CreativeDetailPanel({
       </div>
     </div>
     {showShots && <ShotsGrid projectId={projectId} ad={ad} onClose={() => setShowShots(false)} />}
+    {createOpen && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/50" onClick={() => { if (!createBusy) setCreateOpen(false); }} />
+        <div className="relative w-full max-w-sm bg-card border border-border rounded-2xl shadow-2xl p-4 space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-foreground">Create</p>
+            <button
+              type="button"
+              onClick={() => { if (!createBusy) setCreateOpen(false); }}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label="Close">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            {([
+              ["variation", "Variations", "Same ad, small changes"],
+              ["new", "New", "A different creative from this one"],
+            ] as const).map(([id, label, hint]) => (
+              <button
+                key={id}
+                type="button"
+                disabled={createBusy}
+                onClick={() => setCreateKind(id)}
+                className={`rounded-lg border px-3 py-2 text-left ${createKind === id ? "border-primary bg-primary/5" : "border-border hover:bg-muted/40"}`}>
+                <span className="block text-xs font-semibold text-foreground">{label}</span>
+                <span className="block text-[10px] text-muted-foreground leading-snug mt-0.5">{hint}</span>
+              </button>
+            ))}
+          </div>
+          <label className="block space-y-1">
+            <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">How many</span>
+            <Input
+              type="number"
+              min={1}
+              max={6}
+              value={createCount}
+              disabled={createBusy}
+              onChange={(e) => setCreateCount(Number(e.target.value))}
+              className="h-9"
+            />
+          </label>
+          <Button onClick={() => void startCreate()} disabled={createBusy} className="w-full gap-2">
+            {createBusy
+              ? <><RefreshCw className="w-4 h-4 animate-spin" /> {createStep || "Creating…"}</>
+              : <><Sparkles className="w-4 h-4" /> {createKind === "variation" ? "Create variations" : "Create new"}</>}
+          </Button>
+        </div>
+      </div>
+    )}
     </>
   );
 }
