@@ -919,7 +919,7 @@ function CreativeDetailPanel({
   const [buildError, setBuildError] = useState<string>("");
   const [buildVideos, setBuildVideos] = useState<{ id: number; file_path: string; thumb_path?: string | null; duration_sec: number }[]>([]);
   // Show the finished video inline only right after a build done in THIS session;
-  // otherwise it lives permanently in the "Created videos" tab, not pinned here.
+  // otherwise it lives permanently in the "NEW CREATIVE" tab, not pinned here.
   const [showInline, setShowInline] = useState(false);
   const [voice, setVoice] = useState("alloy");
   // Localize the cleaned (or original) video: new voiceover + subtitles.
@@ -1001,8 +1001,8 @@ function CreativeDetailPanel({
         toast({
           title: j.queued === false ? "Already building" : "Voice + subtitles queued",
           description: cleanPath
-            ? "Using the cleaned video. When it’s done you’ll find it in Created videos."
-            : "When it’s done you’ll find it in Created videos.",
+            ? "Using the cleaned video. When it’s done you’ll find it in NEW CREATIVE."
+            : "When it’s done you’ll find it in NEW CREATIVE.",
         });
         if (!buildPoll.current) buildPoll.current = setInterval(loadBuildStatus, 5000);
       } else {
@@ -1117,7 +1117,7 @@ function CreativeDetailPanel({
       await loadBuildStatus();
       toast({
         title: mode === "swipe" ? "Swipe ready" : mode === "recreate" ? "Recreated" : "Edit ready",
-        description: "Saved with this creative — also in Created videos.",
+        description: "Saved with this creative — also in NEW CREATIVE.",
       });
     } catch (e) {
       const msg = (e as Error).message || "Failed";
@@ -1207,7 +1207,7 @@ function CreativeDetailPanel({
       setCreateOpen(false);
       toast({
         title: createKind === "variation" ? `${made} variations ready` : `${made} new creatives ready`,
-        description: "Saved with this creative and in Created videos.",
+        description: "Saved with this creative and in NEW CREATIVE.",
       });
     } catch (e) {
       const msg = (e as Error).message || "Failed";
@@ -1448,7 +1448,7 @@ function CreativeDetailPanel({
                 <p className="text-[9px] text-muted-foreground uppercase tracking-widest font-semibold">Remake this image</p>
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
-                Swipe it with your product, recreate the same ad in another language, or describe an edit. Results stay here and in <b>Created videos</b>.
+                Swipe it with your product, recreate the same ad in another language, or describe an edit. Results stay here and in <b>NEW CREATIVE</b>.
               </p>
               <Input
                 value={imgProduct}
@@ -1672,8 +1672,8 @@ function CreativeDetailPanel({
               </div>
               <p className="text-[10px] text-muted-foreground leading-snug">
                 {cleanPath
-                  ? <>Uses the <b>cleaned video</b> above. Pick a language (e.g. German) and a voice, then either reuse the original transcript or paste your own copy. The result is saved in <b>Created videos</b>.</>
-                  : <>Clean the video above first so burned-in captions are gone — otherwise this dubs the original footage. Pick a language and a voice, reuse the transcript or paste copy. Saved in <b>Created videos</b>.</>}
+                  ? <>Uses the <b>cleaned video</b> above. Pick a language (e.g. German) and a voice, then either reuse the original transcript or paste your own copy. The result is saved in <b>NEW CREATIVE</b>.</>
+                  : <>Clean the video above first so burned-in captions are gone — otherwise this dubs the original footage. Pick a language and a voice, reuse the transcript or paste copy. Saved in <b>NEW CREATIVE</b>.</>}
               </p>
               <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30 w-fit">
                 {([["original", "Original copy"], ["custom", "My copy"]] as const).map(([v, l]) => (
@@ -1781,7 +1781,7 @@ function CreativeDetailPanel({
                     </div>
                   </div>
                   <p className="text-[10px] text-muted-foreground flex items-center gap-1 flex-wrap">
-                    <Sparkles className="w-3 h-3 text-primary" /> Saved to the <b>Created videos</b> tab.
+                    <Sparkles className="w-3 h-3 text-primary" /> Saved to the <b>NEW CREATIVE</b> tab.
                     {onOpenCreated && (
                       <button type="button" onClick={onOpenCreated} className="font-semibold text-primary hover:underline">
                         Open it
@@ -4266,7 +4266,7 @@ function ShotsLibraryView({
       });
       toast({
         title: "Video job queued",
-        description: `Folder ${j.mediaBuyer}/${projectId} on the reel engine. Finished files land in Created videos.`,
+        description: `Folder ${j.mediaBuyer}/${projectId} on the reel engine. Finished files land in NEW CREATIVE.`,
       });
     } catch {
       toast({ title: "Could not start reel job", variant: "destructive" });
@@ -4625,7 +4625,7 @@ function ShotsLibraryView({
             <b>{reelJob.status}</b>
             {reelJob.progress ? ` — ${reelJob.progress}` : ""}
             {reelJob.error ? <span className="text-red-600"> · {reelJob.error}</span> : null}
-            {reelJob.status === "done" ? " · check Created videos" : null}
+            {reelJob.status === "done" ? " · check NEW CREATIVE" : null}
           </p>
         )}
         <div className="flex flex-wrap items-center gap-1.5">
@@ -4804,7 +4804,7 @@ function CustomVideoModal({
 
   const build = async () => {
     if (brandId === NEW || brandId === "") {
-      toast({ title: "Pick or create a Created videos folder first", variant: "destructive" });
+      toast({ title: "Pick or create a NEW CREATIVE folder first", variant: "destructive" });
       return;
     }
     if (copy.trim().length < 30) { toast({ title: "Paste a bit more copy (min ~30 chars)", variant: "destructive" }); return; }
@@ -4820,7 +4820,7 @@ function CustomVideoModal({
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        toast({ title: "Building your video", description: "Progress stays on this page. When it’s ready you’ll find it in Created videos." });
+        toast({ title: "Building your video", description: "Progress stays on this page. When it’s ready you’ll find it in NEW CREATIVE." });
         onQueued(Number(brandId));
       } else if (alive.current) {
         setStatus("");
@@ -4852,10 +4852,10 @@ function CustomVideoModal({
         </div>
         <div className="p-4 space-y-3">
           <p className="text-[11px] text-muted-foreground leading-snug">
-            Paste your copy and the builder auto-picks clips from <b>all your clean shots</b>, matched line-by-line to the script, then voices and subtitles them. The finished file lands in the <b>Created videos</b> tab.
+            Paste your copy and the builder auto-picks clips from <b>all your clean shots</b>, matched line-by-line to the script, then voices and subtitles them. The finished file lands in the <b>NEW CREATIVE</b> tab.
           </p>
           <div>
-            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Save in Created videos folder</p>
+            <p className="text-[9px] text-muted-foreground uppercase tracking-wider mb-1">Save in NEW CREATIVE folder</p>
             <select
               value={brandId}
               onChange={(e) => {
@@ -4885,7 +4885,7 @@ function CustomVideoModal({
               </div>
             )}
             <p className="text-[9px] text-muted-foreground mt-1 leading-snug">
-              Pick a folder already in <b>Created videos</b>, or create a new one. Footage still comes from every clean shot — this only files the result.
+              Pick a folder already in <b>NEW CREATIVE</b>, or create a new one. Footage still comes from every clean shot — this only files the result.
             </p>
           </div>
           <div>
@@ -5003,7 +5003,7 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h3 className="text-lg font-bold text-foreground">Created videos</h3>
+          <h3 className="text-lg font-bold text-foreground">NEW CREATIVE</h3>
           <p className="text-sm text-muted-foreground mt-0.5">
             Localized videos, footage builds, and remade competitor images. Localize or remake from Ads Library — when it finishes, the file appears here.
           </p>
@@ -5018,7 +5018,7 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
       ) : videos.length === 0 ? (
         <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
           <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
-          <p className="text-sm font-semibold text-foreground mb-1">No created videos yet</p>
+          <p className="text-sm font-semibold text-foreground mb-1">No creatives yet</p>
           <p className="text-xs text-muted-foreground max-w-md mx-auto">
             Go to an ad: for videos, clean then <b>Localize</b>; for images, <b>Swipe / Recreate / Edit</b>. When a job finishes, the file appears here.
           </p>
@@ -5957,7 +5957,7 @@ const LIBRARY_TABS = [
   { id: "landings" as Tab, label: "Landings", icon: LayoutTemplate },
   { id: "landingImages" as Tab, label: "Image landings", icon: ImageIcon },
   { id: "shots" as Tab, label: "Shots", icon: Film },
-  { id: "created" as Tab, label: "Created videos", icon: Sparkles },
+  { id: "created" as Tab, label: "NEW CREATIVE", icon: Sparkles },
 ] as const;
 
 const BUILD_WATCH_KEY = (projectId: string) => `ph-video-build:${projectId}`;
@@ -5986,7 +5986,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
         stopBuildPoll();
         setBuildWatch({ brandId, status: "done" });
         try { sessionStorage.removeItem(BUILD_WATCH_KEY(projectId)); } catch { /* ignore */ }
-        toast({ title: "Video ready", description: "Open the Created videos tab to watch or download it." });
+        toast({ title: "Video ready", description: "Open the NEW CREATIVE tab to watch or download it." });
       } else if (s === "error" || s === "canceled") {
         stopBuildPoll();
         setBuildWatch({ brandId, status: s, error: err });
@@ -6012,7 +6012,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
         stopBuildPoll();
         toast({
           title: "Still building",
-          description: "Taking longer than usual — check the Created videos tab in a few minutes.",
+          description: "Taking longer than usual — check the NEW CREATIVE tab in a few minutes.",
         });
         return;
       }
@@ -6044,7 +6044,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
         {buildWatch.status === "done" && <Sparkles className="w-4 h-4 shrink-0" />}
         <span className="leading-snug">
           {busy && "Building your video from copy — this can take a few minutes."}
-          {buildWatch.status === "done" && "Video is ready. It’s saved in the Created videos tab."}
+          {buildWatch.status === "done" && "Video is ready. It’s saved in the NEW CREATIVE tab."}
           {(buildWatch.status === "error" || buildWatch.status === "canceled") && (
             <>Build failed{buildWatch.error ? `: ${buildWatch.error}` : "."}</>
           )}
@@ -6053,7 +6053,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
       <div className="flex items-center gap-2 shrink-0">
         {buildWatch.status === "done" && (
           <Button size="sm" className="h-7 text-xs" onClick={() => { setTab("created"); setSelected(null); }}>
-            Open Created videos
+            Open NEW CREATIVE
           </Button>
         )}
         <button
