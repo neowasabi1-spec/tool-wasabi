@@ -29,6 +29,7 @@ import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client
 import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 import CachedScreenshot from "@/components/CachedScreenshot";
 import { fbAdLibrarySearchUrl } from "@/lib/ads-library-url";
+import { submitAndPollGenerate } from "@/app/(main)/templates/ads-recreate-client";
 import {
   Select,
   SelectContent,
@@ -1091,15 +1092,26 @@ function CreativeDetailPanel({
         prompt = `Edit this image as requested, keep everything else the same: ${imgEdit.trim()}`;
       }
 
+      const sourceUrl = String(prep.imageUrl || "");
+      if (!sourceUrl) throw new Error("Could not load the source image");
+      const url = await submitAndPollGenerate({
+        mode: "image2image",
+        model: "gpt-image-2-edit",
+        prompt,
+        imageUrl: sourceUrl,
+        secondaryImageUrl: productImageUrl || undefined,
+        onWait: () => {},
+        label: "ChatGPT Image 2",
+      });
       const saveRes = await fetch(
         `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            action: "generate",
+            action: "save",
+            url,
             prompt,
-            productImageUrl,
             language: mode === "recreate" ? language : "",
             mode,
           }),
@@ -1111,7 +1123,7 @@ function CreativeDetailPanel({
       if (!saveRes.ok) {
         throw new Error(
           saved.error
-          || (saveRes.status === 504 ? "ChatGPT timed out — try again" : `Could not edit the image (${saveRes.status})`),
+          || (saveRes.status === 504 ? "ChatGPT Image 2 timed out — try again" : `Could not save the image (${saveRes.status})`),
         );
       }
       await loadBuildStatus();
@@ -1151,6 +1163,8 @@ function CreativeDetailPanel({
       );
       const prep = await prepRes.json().catch(() => ({}));
       if (!prepRes.ok) throw new Error(prep.error || "Could not prepare the image");
+      const sourceUrl = String(prep.imageUrl || "");
+      if (!sourceUrl) throw new Error("Could not load the source image");
       const name = productName || String(prep.productName || "").trim();
       let made = 0;
       for (let i = 1; i <= count; i++) {
@@ -1169,19 +1183,27 @@ function CreativeDetailPanel({
             `This version's angle: ${twist}.`,
             "Do not copy the original layout.",
           ].join(" ");
+        const url = await submitAndPollGenerate({
+          mode: "image2image",
+          model: "gpt-image-2-edit",
+          prompt,
+          imageUrl: sourceUrl,
+          onWait: (msg) => setCreateStep(`${i} of ${count} · ${msg}`),
+          label: "ChatGPT Image 2",
+        });
         const saveRes = await fetch(
           `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "generate", prompt, productImageUrl: "", language: "", mode: createKind }),
+            body: JSON.stringify({ action: "save", url, prompt, productImageUrl: "", language: "", mode: createKind }),
           },
         );
         const raw = await saveRes.text();
         let saved: { error?: string } = {};
         try { saved = JSON.parse(raw); } catch { /* html timeout */ }
         if (!saveRes.ok) {
-          throw new Error(saved.error || (made ? `Stopped after ${made} of ${count}` : "Could not create the image"));
+          throw new Error(saved.error || (made ? `Stopped after ${made} of ${count}` : "Could not save the image"));
         }
         made++;
       }
