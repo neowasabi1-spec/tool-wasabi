@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Loader2, RefreshCw, Layers } from 'lucide-react';
 import { toast } from 'sonner';
 import { getUploadUrl } from '@/lib/projecthub-storage';
+import { readApiJson, runJevAndWait } from '@/lib/ads-intel/jev-client';
 
 type Member = {
   id: string;
@@ -34,7 +35,7 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
     setLoading(true);
     try {
       const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`);
-      const data = await res.json();
+      const data = await readApiJson(res);
       if (!res.ok) throw new Error(data.error || 'Load failed');
       setProductId(data.products?.[0]?.id);
       setFamilies(Array.isArray(data.styleFamilies) ? data.styleFamilies : []);
@@ -49,28 +50,23 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
 
   async function buildFamilies() {
     setBusy(true);
+    const toastId = toast.loading('Computing styles…');
     try {
-      const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_families', payload: { productId } }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Build failed');
-      toast.success(data.status === 'queued' ? 'Calcolo stili in coda' : 'Stili aggiornati');
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const j = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`).then((r) => r.json());
-        const job = (j.jobs || []).find((x: { id: string }) => x.id === data.jobId);
-        if (job && ['done', 'error', 'cancelled'].includes(job.status)) {
-          if (job.status === 'error') throw new Error(job.error || 'Build error');
-          break;
-        }
-        if (data.status === 'done' || data.result) break;
-      }
+      const data = await runJevAndWait(
+        projectId,
+        { type: 'build_families', payload: { productId } },
+        {
+          onProgress: (p) => toast.loading(p, { id: toastId }),
+        },
+      );
+      const result = (data.result || {}) as { families?: number };
+      toast.success(
+        result.families != null ? `Styles: ${result.families} groups` : 'Styles updated',
+        { id: toastId },
+      );
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Build failed');
+      toast.error(e instanceof Error ? e.message : 'Build failed', { id: toastId });
     } finally {
       setBusy(false);
     }
@@ -79,7 +75,7 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
   if (loading) {
     return (
       <div className="py-10 text-sm text-muted-foreground flex items-center gap-2">
-        <Loader2 className="w-4 h-4 animate-spin" /> Caricamento stili…
+        <Loader2 className="w-4 h-4 animate-spin" /> Loading styles…
       </div>
     );
   }
@@ -90,29 +86,29 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
         <div className="flex items-start gap-2">
           <Layers className="w-4 h-4 mt-0.5 text-muted-foreground" />
           <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold">Stili visivi (come in Jev)</h3>
+            <h3 className="text-sm font-semibold">Visual styles (Jev families)</h3>
             <p className="text-xs text-muted-foreground mt-1">
-              Ads con lo stesso linguaggio grafico nello stesso gruppo. Prima analizza/ricrea le ads (ingest),
-              poi calcola gli stili. Genera dentro un gruppo alla volta così non si mischiano i template.
+              Ads that share the same graphic language sit in one group. Analyze / Prepare Jev groups first,
+              then compute styles. Generate inside one group at a time so templates do not mix.
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-muted-foreground">
             {families.length
-              ? `${families.length} gruppi · ${families.reduce((n, f) => n + f.members.length, 0)} ads`
-              : 'Nessun gruppo ancora'}
+              ? `${families.length} groups · ${families.reduce((n, f) => n + f.members.length, 0)} ads`
+              : 'No groups yet'}
           </span>
           <Button size="sm" variant="outline" disabled={busy || !productId} onClick={() => void buildFamilies()} className="gap-1.5 ml-auto">
             {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-            {families.length ? 'Ricalcola stili' : 'Calcola stili'}
+            {families.length ? 'Recompute styles' : 'Compute styles'}
           </Button>
         </div>
       </div>
 
       {!families.length && (
         <p className="text-sm text-muted-foreground py-2">
-          Seleziona ads in Lista → Analizza / Prepara gruppi Jev, poi torna qui e calcola gli stili.
+          Select ads in List → Analyze / Prepare Jev groups, then come back and compute styles.
         </p>
       )}
 
@@ -121,7 +117,7 @@ export function StylesFamiliesSection({ projectId }: { projectId: string }) {
           <div className="flex flex-wrap items-center gap-2">
             <h4 className="text-sm font-semibold">{f.label}</h4>
             <Badge variant="secondary">{f.members.length} ads</Badge>
-            {f.bestRank != null && <Badge variant="outline">migliore #{f.bestRank}</Badge>}
+            {f.bestRank != null && <Badge variant="outline">best #{f.bestRank}</Badge>}
             {f.impressionShare > 0 && (
               <span className="text-[10px] text-muted-foreground">
                 ~{Math.round(f.impressionShare * 100)}% share

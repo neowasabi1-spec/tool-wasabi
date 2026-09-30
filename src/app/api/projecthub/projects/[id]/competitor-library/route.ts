@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { isNewAd, loadSeenAt } from '@/lib/competitor-seen';
-import { restoreAutoPrunedBrands } from '@/lib/competitor-same-product';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -10,24 +8,9 @@ export const runtime = 'nodejs';
 /**
  * Competitor Library — brands endpoint.
  *
- *   GET  /api/projecthub/projects/:id/competitor-library
- *        → list competitor_brands for the project, enriched with per-brand
- *          creative stats (counts, hooks, headlines) computed from
- *          competitor_ads. Shape matches the `CompetitorWithStats` type the
- *          frontend expects.
- *
- *   POST /api/projecthub/projects/:id/competitor-library
- *        → add a competitor brand.
+ *   GET  → brands + per-brand stats (SQL aggregate — not a full ads dump)
+ *   POST → add a competitor brand
  */
-
-interface AdRow {
-  brand_id: number;
-  media_type: string;
-  hook: string;
-  headline: string;
-  file_path: string;
-  created_at: string;
-}
 
 interface BrandRow {
   id: number;
@@ -43,69 +26,119 @@ interface BrandRow {
   created_at: string;
 }
 
+type StatsRow = {
+  brand_id: number;
+  ads_count: number;
+  video_count: number;
+  image_count: number;
+  new_count: number;
+  preview_paths: string[] | null;
+  preview_types: string[] | null;
+};
+
+type SlimAd = {
+  brand_id: number;
+  media_type: string | null;
+  file_path: string | null;
+  created_at: string | null;
+};
+
+/** Fallback when RPC migration is not applied yet — capped + slim columns. */
+async function statsFallback(projectId: string): Promise<Map<number, StatsRow>> {
+  const { data: ads } = await supabaseAdmin
+    .from('competitor_ads')
+    .select('brand_id, media_type, file_path, created_at')
+    .eq('project_id', projectId)
+    .order('created_at', { ascending: false })
+    .limit(2500);
+
+  const map = new Map<number, StatsRow & { _previewN: number }>();
+  for (const raw of (ads || []) as SlimAd[]) {
+    const id = Number(raw.brand_id);
+    let row = map.get(id) as (StatsRow & { _previewN: number }) | undefined;
+    if (!row) {
+      row = {
+        brand_id: id,
+        ads_count: 0,
+        video_count: 0,
+        image_count: 0,
+        new_count: 0,
+        preview_paths: [],
+        preview_types: [],
+        _previewN: 0,
+      };
+      map.set(id, row);
+    }
+    row.ads_count++;
+    if (raw.media_type === 'video') row.video_count++;
+    else row.image_count++;
+    if (raw.file_path && row._previewN < 4) {
+      (row.preview_paths as string[]).push(raw.file_path);
+      (row.preview_types as string[]).push(raw.media_type || 'image');
+      row._previewN++;
+    }
+  }
+  return map;
+}
+
+async function loadStats(projectId: string): Promise<Map<number, StatsRow>> {
+  const { data, error } = await supabaseAdmin.rpc('competitor_library_brand_stats', {
+    p_project_id: projectId,
+  });
+  if (!error && Array.isArray(data)) {
+    const map = new Map<number, StatsRow>();
+    for (const r of data as StatsRow[]) {
+      map.set(Number(r.brand_id), r);
+    }
+    return map;
+  }
+  if (error && !/competitor_library_brand_stats|42883|PGRST202/i.test(error.message || '')) {
+    console.warn('[competitor-library] stats rpc:', error.message);
+  }
+  return statsFallback(projectId);
+}
+
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const { id } = params;
   const { allowed } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  try {
-    await restoreAutoPrunedBrands(id);
-  } catch (e) {
-    console.warn('[competitor-library] restore pruned brands:', (e as Error).message);
-  }
+  // restoreAutoPrunedBrands removed from GET hot path (was scanning brands on every live refresh).
 
-  const { data: brands, error } = await supabaseAdmin
-    .from('competitor_brands')
-    .select(
-      'id, project_id, name, ads_library_url, scrape_count, frequency, brand_type, notes, is_active, last_scraped, created_at',
-    )
-    .eq('project_id', id)
-    .order('created_at', { ascending: false });
+  const [{ data: brands, error }, stats] = await Promise.all([
+    supabaseAdmin
+      .from('competitor_brands')
+      .select(
+        'id, project_id, name, ads_library_url, scrape_count, frequency, brand_type, notes, is_active, last_scraped, created_at',
+      )
+      .eq('project_id', id)
+      .order('created_at', { ascending: false }),
+    loadStats(id),
+  ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const [{ data: ads }, seenAt] = await Promise.all([
-    supabaseAdmin
-      .from('competitor_ads')
-      .select('brand_id, media_type, hook, headline, file_path, created_at')
-      .eq('project_id', id)
-      .order('created_at', { ascending: false }),
-    loadSeenAt(id),
-  ]);
-
-  const adsByBrand = new Map<number, AdRow[]>();
-  for (const a of (ads || []) as AdRow[]) {
-    const list = adsByBrand.get(a.brand_id) || [];
-    list.push(a);
-    adsByBrand.set(a.brand_id, list);
-  }
-
   const result = ((brands || []) as BrandRow[]).map((b) => {
-    const list = adsByBrand.get(b.id) || [];
-    const videoCount = list.filter((a) => a.media_type === 'video').length;
-    const imageCount = list.filter((a) => a.media_type !== 'video').length;
-    const hooks = [...new Set(list.map((a) => a.hook).filter(Boolean))];
-    const headlines = [...new Set(list.map((a) => a.headline).filter(Boolean))];
-    // Card previews: up to 4 newest creatives that have a file (mosaic).
-    const withFile = list.filter((a) => a.file_path);
-    const previews = withFile
-      .slice(0, 4)
-      .map((a) => ({ file_path: a.file_path, media_type: a.media_type }));
-    const preview = withFile.find((a) => a.media_type !== 'video') || withFile[0] || null;
-    // Creatives the daily scrape brought in since this competitor was opened.
-    const newCount = list.filter((a) => isNewAd(seenAt, b.id, a.created_at)).length;
+    const s = stats.get(b.id);
+    const paths = (s?.preview_paths || []).filter(Boolean);
+    const types = (s?.preview_types || []).filter(Boolean);
+    const previews = paths.map((file_path, i) => ({
+      file_path,
+      media_type: types[i] || 'image',
+    }));
+    const preview = previews.find((p) => p.media_type !== 'video') || previews[0] || null;
     return {
       ...b,
-      ads_count: list.length,
-      new_count: newCount,
-      video_count: videoCount,
-      image_count: imageCount,
-      hooks,
-      headlines,
+      ads_count: Number(s?.ads_count || 0),
+      new_count: Number(s?.new_count || 0),
+      video_count: Number(s?.video_count || 0),
+      image_count: Number(s?.image_count || 0),
+      hooks: [] as string[],
+      headlines: [] as string[],
       monitoring_status: b.is_active === 'true' ? 'attivo' : 'in_analisi',
       last_check: b.last_scraped,
-      preview_path: preview ? preview.file_path : '',
-      preview_type: preview ? preview.media_type : '',
+      preview_path: preview?.file_path || '',
+      preview_type: preview?.media_type || '',
       previews,
     };
   });

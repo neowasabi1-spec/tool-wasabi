@@ -14,6 +14,7 @@ import {
   type MappedAd,
 } from '@/lib/apify';
 import { insertCompetitorAd, ensureBrand, fillMissingAdCopy } from '@/lib/competitor-ads';
+import { scoreProjectAdsRelevance } from '@/lib/ads-intel/ad-relevance';
 import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-media';
@@ -591,6 +592,13 @@ export async function ingestDataset(opts: {
       htmlCache,
       deadline: HARD_DEADLINE + 20_000,
     }).catch(() => 0);
+  }
+
+  // Best-effort: Jev scores new creatives vs our product (all unscored on this project).
+  if (added > 0) {
+    void scoreProjectAdsRelevance(projectId, { limit: Math.min(50, added + 20) }).catch((e) => {
+      console.warn('[scrape] ad relevance:', e instanceof Error ? e.message : e);
+    });
   }
 
   return { added, skipped, failed, brands: touchedBrands.size, landings };

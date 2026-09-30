@@ -4,9 +4,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
+import { runJevAndWait } from '@/lib/ads-intel/jev-client';
 import {
   Loader2, Link2, RefreshCw, Sparkles, CheckCircle2, Image as ImageIcon,
-  Library, Wand2, Eye, LayoutTemplate, Flame, Layers,
+  Library, Wand2, Eye, LayoutTemplate, Flame, Layers, Film, Download, Maximize2, X,
 } from 'lucide-react';
 import { getUploadUrl } from '@/lib/projecthub-storage';
 import { daysRunning, sortByWinnerTier, winnerTier, type WinnerTier } from '@/lib/competitor-winner';
@@ -22,7 +23,7 @@ const STEPS: { id: Step; label: string; icon: typeof Link2 }[] = [
   { id: 'library', label: 'Library', icon: Library },
   { id: 'analyze', label: 'Analyze', icon: Wand2 },
   { id: 'generate', label: 'Generate', icon: Sparkles },
-  { id: 'styles', label: 'Template e stili', icon: LayoutTemplate },
+  { id: 'styles', label: 'Templates & styles', icon: LayoutTemplate },
   { id: 'review', label: 'Review', icon: Eye },
 ];
 
@@ -62,8 +63,10 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const [busy, setBusy] = useState(false);
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [libView, setLibView] = useState<'list' | 'templates' | 'styles'>('list');
+  const [includePeers, setIncludePeers] = useState(false);
   const [concepts, setConcepts] = useState<any[]>([]);
   const [outputs, setOutputs] = useState<any[]>([]);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
 
   const loadProduct = useCallback(async () => {
@@ -95,8 +98,12 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
   const loadLibrary = useCallback(async () => {
     setLoading(true);
     try {
+      // Always prune off-product competitor pages. Vertical peers stay out
+      // unless the user opts in (they are for spy, not same-offer creatives).
+      const peers = source === 'competitor' && includePeers ? '&peers=1' : '&peers=0';
+      const cleanup = source === 'competitor' ? '&cleanup=1' : '&cleanup=0';
       const res = await fetch(
-        `/api/projecthub/projects/${projectId}/ads-creative/library?source=${source}`,
+        `/api/projecthub/projects/${projectId}/ads-creative/library?source=${source}${cleanup}${peers}`,
       );
       const data = await res.json();
       if (!res.ok && data.error && !(data.ads || []).length) {
@@ -104,6 +111,9 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       }
       setAds(data.ads || []);
       setSelected(new Set());
+      if (source === 'competitor' && Number(data.pruned) > 0) {
+        toast.message(`Removed ${data.pruned} off-product page${data.pruned === 1 ? '' : 's'} from library`);
+      }
       if (source === 'competitor' && Number(data.collapsed) > 0) {
         toast.message(`Hid ${data.collapsed} duplicate creative${data.collapsed === 1 ? '' : 's'}`);
       }
@@ -112,7 +122,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [projectId, source]);
+  }, [projectId, source, includePeers]);
 
   const loadGenerateState = useCallback(async () => {
     try {
@@ -126,6 +136,11 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       /* ignore */
     }
   }, [projectId]);
+
+  function openReviewOutputs() {
+    void loadGenerateState();
+    setStep('review');
+  }
 
   useEffect(() => {
     void loadMeta();
@@ -272,40 +287,55 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
     }
   }
 
-  /** Ingest selected competitor ads into Jev, then build template + style groups. */
+  /** Ingest selected (or top) competitor ads into Jev, then build template groups. */
   async function prepareJevGroups() {
-    const ids = selectedList.length ? selectedList.map((a) => a.id) : rankedAds.slice(0, 40).map((a) => a.id);
+    const ids = (selectedList.length ? selectedList : rankedAds)
+      .filter((a) => !String(a.media_type || '').includes('video'))
+      .map((a) => a.id)
+      .slice(0, 12);
     if (!ids.length) {
-      toast.error('Nessuna ad da preparare');
+      toast.error('Select image ads (or open the list) — videos are skipped here');
       return;
     }
     setBusy(true);
+    const toastId = toast.loading(`Preparing ${ids.length} ads for Jev…`);
     try {
       let ok = 0;
-      for (const id of ids) {
-        const res = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            type: 'ingest_from_competitor_ad',
-            payload: { competitorAdId: id },
-            wait: true,
-          }),
-        });
-        if (res.ok) ok += 1;
+      const errors: string[] = [];
+      for (let i = 0; i < ids.length; i++) {
+        toast.loading(`Ingesting ${i + 1}/${ids.length}…`, { id: toastId });
+        try {
+          await runJevAndWait(
+            projectId,
+            { type: 'ingest_from_competitor_ad', payload: { competitorAdId: ids[i] } },
+            { onProgress: (p) => toast.loading(`Ingesting ${i + 1}/${ids.length}: ${p}`, { id: toastId }) },
+          );
+          ok += 1;
+        } catch (e) {
+          errors.push(e instanceof Error ? e.message : `ad ${ids[i]} failed`);
+        }
       }
-      toast.message(`Ingest ${ok}/${ids.length} → calcolo template…`);
-      const t = await fetch(`/api/projecthub/projects/${projectId}/ads-creative/jev`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'build_templates', payload: {} }),
-      });
-      const td = await t.json();
-      if (!t.ok) throw new Error(td.error || 'build_templates failed');
-      toast.message('Template in coda — puoi aprire la vista Template');
+      if (!ok) {
+        throw new Error(errors[0] || 'No ads ingested — check jev_creatives / migrations');
+      }
+
+      toast.loading(`Building templates from ${ok} ads…`, { id: toastId });
+      const td = await runJevAndWait(
+        projectId,
+        { type: 'build_templates', payload: {} },
+        { onProgress: (p) => toast.loading(p, { id: toastId }) },
+      );
+      const result = (td.result || {}) as { groups?: number; templates?: number };
+      const groups = Number(result.groups ?? result.templates ?? 0);
+      toast.success(
+        groups
+          ? `Done: ${ok} ads → ${groups} template groups`
+          : `Ingested ${ok} ads — open Templates to see groups`,
+        { id: toastId },
+      );
       setLibView('templates');
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Prepare failed');
+      toast.error(e instanceof Error ? e.message : 'Prepare failed', { id: toastId });
     } finally {
       setBusy(false);
     }
@@ -455,13 +485,13 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2 items-center">
             <Button size="sm" variant={libView === 'list' ? 'default' : 'outline'} onClick={() => setLibView('list')}>
-              Lista
+              List
             </Button>
             <Button size="sm" variant={libView === 'templates' ? 'default' : 'outline'} onClick={() => setLibView('templates')}>
               <LayoutTemplate className="w-3.5 h-3.5 mr-1" /> Template
             </Button>
             <Button size="sm" variant={libView === 'styles' ? 'default' : 'outline'} onClick={() => setLibView('styles')}>
-              <Layers className="w-3.5 h-3.5 mr-1" /> Stili
+              <Layers className="w-3.5 h-3.5 mr-1" /> Styles
             </Button>
             <span className="text-border px-1">|</span>
             {libView === 'list' && (
@@ -489,6 +519,14 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                   <Flame className="w-3.5 h-3.5 mr-1" />
                   Winners{winnerCount ? ` (${winnerCount})` : ''}
                 </Button>
+                <Button
+                  size="sm"
+                  variant={includePeers ? 'default' : 'outline'}
+                  onClick={() => setIncludePeers((v) => !v)}
+                  title="Include vertical peers (other products you added on purpose)"
+                >
+                  + Peers
+                </Button>
                 <Button size="sm" variant="ghost" onClick={() => void loadLibrary()} disabled={loading}>
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
                 </Button>
@@ -499,26 +537,28 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
               <>
                 <Button size="sm" variant="outline" onClick={() => void prepareJevGroups()} disabled={busy || loading}>
                   {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Layers className="w-4 h-4 mr-2" />}
-                  Prepara gruppi Jev
+                  Prepare Jev groups
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => void analyzeSelected()} disabled={busy || !selected.size}>
                   Analyze ({selected.size})
                 </Button>
                 <Button size="sm" onClick={() => void recreateSelected()} disabled={busy || !selected.size}>
                   {busy ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Sparkles className="w-4 h-4 mr-2" />}
-                  Ricrea selezionate ({selected.size})
+                  Recreate selected ({selected.size})
                 </Button>
               </>
             )}
           </div>
           {libView === 'list' && (
             <p className="text-xs text-muted-foreground">
-              Come in Jev: stessa creatività = copie raggruppate (×N). Ordine WINNER → PROMISING.
-              Usa <b>Prepara gruppi Jev</b> poi le viste Template / Stili per il clustering grafico.
+              Same creative = grouped copies (×N). Sorted WINNER → PROMISING.
+              Same-product only (auto-prune). Enable <b>+ Peers</b> for vertical peers. Videos use a native preview.
             </p>
           )}
 
-          {libView === 'templates' && <TemplatesStylesSection projectId={projectId} />}
+          {libView === 'templates' && (
+            <TemplatesStylesSection projectId={projectId} onOutputsReady={openReviewOutputs} />
+          )}
           {libView === 'styles' && <StylesFamiliesSection projectId={projectId} />}
 
           {libView === 'list' && (loading ? (
@@ -579,11 +619,21 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                         </td>
                         <td className="p-2 align-middle">
                           <div className="w-12 h-12 rounded-md bg-muted overflow-hidden flex items-center justify-center">
-                            {img ? (
+                            {img && String(ad.media_type || '').includes('video') ? (
+                              <video
+                                src={img}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="w-full h-full object-cover"
+                              />
+                            ) : img ? (
                               // eslint-disable-next-line @next/next/no-img-element
                               <img src={img} alt="" className="w-full h-full object-cover" />
                             ) : (
-                              <ImageIcon className="w-4 h-4 text-muted-foreground" />
+                              String(ad.media_type || '').includes('video')
+                                ? <Film className="w-4 h-4 text-muted-foreground" />
+                                : <ImageIcon className="w-4 h-4 text-muted-foreground" />
                             )}
                           </div>
                         </td>
@@ -720,7 +770,7 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
       )}
 
       {step === 'styles' && (
-        <TemplatesStylesSection projectId={projectId} />
+        <TemplatesStylesSection projectId={projectId} onOutputsReady={openReviewOutputs} />
       )}
 
       {step === 'review' && (
@@ -754,42 +804,109 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
                 Recalibrate weights
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              Jev already wrote copy, generated the image, checked layout/text fidelity, and scored effectiveness
+              (it may have re-rendered weak attempts). Win / Neutral / Lose is <b>your</b> label for learning — not the auto-judge.
+            </p>
             {!outputs.length ? (
               <p className="text-sm text-muted-foreground">No outputs yet.</p>
             ) : (
-              outputs.map((o) => (
-                <div key={o.id} className="rounded-xl border border-border p-4 bg-card flex gap-4">
-                  {o.result_path ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={getUploadUrl(o.result_path)}
-                      alt=""
-                      className="w-24 h-24 rounded-lg object-cover border border-border"
-                    />
-                  ) : (
-                    <div className="w-24 h-24 rounded-lg bg-muted flex items-center justify-center">
-                      <ImageIcon className="w-6 h-6 text-muted-foreground" />
-                    </div>
-                  )}
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {o.code && <Badge variant="outline">{o.code}</Badge>}
-                      {o.gate_decision && (
-                        <Badge variant="secondary" className="gap-1">
-                          <CheckCircle2 className="w-3 h-3" /> {o.gate_decision}
-                        </Badge>
+              outputs.map((o) => {
+                const imgUrl = o.result_path ? getUploadUrl(o.result_path) : '';
+                const q = o.quality || {};
+                const imgQ = q.image || {};
+                const score = imgQ.score ?? q.score;
+                const fidelity = imgQ.fidelity?.score;
+                const fidelityOk = imgQ.fidelity?.ok;
+                const slots = o.spec?.slots && typeof o.spec.slots === 'object'
+                  ? Object.entries(o.spec.slots as Record<string, string>).slice(0, 4)
+                  : [];
+                return (
+                  <div key={o.id} className="rounded-xl border border-border p-4 bg-card flex gap-4">
+                    <div className="shrink-0 space-y-2">
+                      {imgUrl ? (
+                        <button
+                          type="button"
+                          className="relative group block"
+                          onClick={() => setPreviewUrl(imgUrl)}
+                          title="View larger"
+                        >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={imgUrl}
+                            alt=""
+                            className="w-28 h-28 rounded-lg object-cover border border-border"
+                          />
+                          <span className="absolute inset-0 rounded-lg bg-black/0 group-hover:bg-black/35 transition flex items-center justify-center">
+                            <Maximize2 className="w-5 h-5 text-white opacity-0 group-hover:opacity-100" />
+                          </span>
+                        </button>
+                      ) : (
+                        <div className="w-28 h-28 rounded-lg bg-muted flex items-center justify-center">
+                          <ImageIcon className="w-6 h-6 text-muted-foreground" />
+                        </div>
+                      )}
+                      {imgUrl && (
+                        <div className="flex gap-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 px-2 text-[11px] gap-1"
+                            onClick={() => setPreviewUrl(imgUrl)}
+                          >
+                            <Maximize2 className="w-3 h-3" /> Enlarge
+                          </Button>
+                          <a
+                            href={imgUrl}
+                            download={`${o.code || o.id}.png`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-7 items-center gap-1 rounded-md border border-input bg-background px-2 text-[11px] font-medium hover:bg-accent"
+                          >
+                            <Download className="w-3 h-3" /> Download
+                          </a>
+                        </div>
                       )}
                     </div>
-                    <p className="text-sm font-medium mt-1">{o.angle || o.kind || o.status}</p>
-                    <p className="text-xs text-muted-foreground line-clamp-3">{o.concept_notes || JSON.stringify(o.spec || {}).slice(0, 200)}</p>
-                    <div className="flex gap-2 mt-2">
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'win')}>Win</Button>
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'neutral')}>Neutral</Button>
-                      <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'lose')}>Lose</Button>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {o.code && <Badge variant="outline">{o.code}</Badge>}
+                        {o.status && <Badge variant="secondary">{o.status}</Badge>}
+                        {o.gate_decision && (
+                          <Badge variant="secondary" className="gap-1">
+                            <CheckCircle2 className="w-3 h-3" /> {o.gate_decision}
+                          </Badge>
+                        )}
+                        {typeof score === 'number' && (
+                          <Badge variant="outline">Jev {Math.round(score * 100)}/100</Badge>
+                        )}
+                        {typeof fidelity === 'number' && (
+                          <Badge variant="outline" className={fidelityOk ? '' : 'border-amber-500 text-amber-700 dark:text-amber-300'}>
+                            Fidelity {Math.round(fidelity * 100)}%{fidelityOk ? '' : ' · needs review'}
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="text-sm font-medium mt-1">{o.angle || o.kind || o.spec?.angle || 'Template creative'}</p>
+                      {slots.length > 0 ? (
+                        <ul className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+                          {slots.map(([k, v]) => (
+                            <li key={k}><span className="font-medium text-foreground/80">{k}:</span> {String(v)}</li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-xs text-muted-foreground line-clamp-3 mt-1">
+                          {o.concept_notes || (o.spec ? JSON.stringify(o.spec).slice(0, 200) : '')}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'win')}>Win</Button>
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'neutral')}>Neutral</Button>
+                        <Button size="sm" variant="outline" disabled={busy} onClick={() => void recordOutcome(String(o.id), 'lose')}>Lose</Button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
 
@@ -797,6 +914,42 @@ export function AdsCreativeShell({ projectId }: { projectId: string }) {
             <h3 className="text-sm font-semibold mb-2">Templates library</h3>
             <CreativesTab projectId={projectId} />
           </div>
+
+          {previewUrl && (
+            <div
+              className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+              onClick={() => setPreviewUrl(null)}
+              role="dialog"
+              aria-modal="true"
+            >
+              <button
+                type="button"
+                className="absolute top-4 right-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+                onClick={() => setPreviewUrl(null)}
+                aria-label="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <a
+                href={previewUrl}
+                download
+                target="_blank"
+                rel="noreferrer"
+                className="absolute top-4 right-16 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+                onClick={(e) => e.stopPropagation()}
+                aria-label="Download"
+              >
+                <Download className="w-5 h-5" />
+              </a>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={previewUrl}
+                alt="Creative preview"
+                className="max-h-[90vh] max-w-[92vw] rounded-lg object-contain shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

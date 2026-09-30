@@ -129,17 +129,57 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const row = await enqueue(type as any, payload, projectId);
-    if (adsIntelInline() || body.wait) {
-      // Wait for completion when inline
-      for (let i = 0; i < 120; i++) {
-        await new Promise((r) => setTimeout(r, 500));
-        const { data } = await db().from('jev_jobs').select('status,result,error,progress').eq('id', row.id).single();
-        if (data && ['done', 'error', 'cancelled'].includes(data.status)) {
+    // enqueue already kicked the Netlify background worker (or inline in dev).
+
+    // Heavy AI jobs must NOT run inside the Next/serverless request: Netlify kills
+    // long handlers and returns HTML 504 → client "Unexpected token '<'".
+    const HEAVY = new Set([
+      'build_families',
+      'build_templates',
+      'template_creatives',
+      'template_next',
+      'ingest_from_competitor_ad',
+      'ingest_from_own_ad',
+      'extract_creative',
+      'analyze_creative',
+      'analyze_product',
+      'auto_prompts',
+      'family_generate',
+      'create_output',
+      'generate_concepts',
+      'build_corpus',
+      'build_playbook',
+    ]);
+
+    if (body.wait || adsIntelInline()) {
+      // Prefer polling the worker. Only fall back in-process for light jobs / local inline.
+      const maxPoll = HEAVY.has(type) && !adsIntelInline() ? 45 : 180;
+      let last: Record<string, unknown> | null = null;
+      for (let i = 0; i < maxPoll; i++) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const { data } = await db()
+          .from('jev_jobs')
+          .select('status,result,error,progress')
+          .eq('id', row.id)
+          .single();
+        last = data as Record<string, unknown> | null;
+        if (data && ['done', 'error', 'cancelled'].includes(String(data.status))) {
           return NextResponse.json({ jobId: row.id, ...data });
         }
+        // Worker didn't pick up — run here once for light jobs / local only.
+        if (i === 4 && data && data.status === 'queued' && (!HEAVY.has(type) || adsIntelInline())) {
+          try {
+            await runJevJobById(row.id);
+          } catch (e) {
+            console.warn('[jev] fallback runJevJobById:', e instanceof Error ? e.message : e);
+          }
+        }
       }
+      // Still running — return JSON so the client can keep polling (never HTML).
+      return NextResponse.json({ jobId: row.id, ...(last || { status: 'queued' }) });
     }
-    return NextResponse.json({ jobId: row.id, status: 'queued' });
+
+    return NextResponse.json({ jobId: row.id, status: 'queued', worker: true });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

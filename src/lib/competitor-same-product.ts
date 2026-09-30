@@ -64,22 +64,24 @@ export async function pruneNonSameProductBrands(
   for (const b of candidates) {
     const { data: ads } = await supabaseAdmin
       .from('competitor_ads')
-      .select('headline, hook, body_text, landing_url')
+      .select('name, headline, hook, body_text, landing_url')
       .eq('project_id', projectId)
       .eq('brand_id', b.id)
       .order('created_at', { ascending: false })
-      .limit(4);
+      .limit(6);
 
     const samples = (ads || [])
-      .map((a) => [a.headline, a.hook, a.body_text].filter(Boolean).join(' — '))
+      .map((a) => [a.name, a.headline, a.hook, a.body_text].filter(Boolean).join(' — '))
       .filter(Boolean) as string[];
+    // Brand page name is decisive for off-niche junk (hotels, toys, etc.).
+    const withBrand = [`Page: ${b.name}`, ...samples].slice(0, 6);
 
     const landingHost = hostOf((ads || []).find((a) => a.landing_url)?.landing_url || undefined);
 
     cards.push({
       id: String(b.id),
       name: b.name,
-      samples: samples.length ? samples : [b.name],
+      samples: withBrand.length ? withBrand : [b.name],
       landingHost,
     });
   }

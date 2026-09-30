@@ -1,0 +1,35 @@
+{
+  "hook": "",
+  "totalDurationSec": 16,
+  "audioMode": "elevenlabs",
+  "voiceoverText": "Ogni giorno perdi clienti che non sai nemmeno di avere. Le richieste arrivano da tutte le parti e nessuno le vede. Da oggi i numeri parlano da soli. Guarda la differenza in un colpo solo.",
+  "scenes": [
+    {
+      "visualPrompt": "close-up of hands of a small business owner sorting paper notes on a cluttered wooden desk, late evening, single warm desk lamp from the left at 45 degrees, shallow depth of field f/1.8, tense and overwhelmed mood, slight 35mm film grain, muted tones #2B2B2B and #C9A36B, slow dolly-in, eye-level shot, 9:16 vertical composition",
+      "durationSec": 5,
+      "voiceoverSegment": "Ogni giorno perdi clienti che non sai nemmeno di avere.",
+      "text": ""
+    },
+    {
+      "visualPrompt": "wide shot of an empty modern office at dusk, phone glowing unattended on a desk, blue ambient light from windows, static camera, lonely and quiet mood, 35mm film grain, cool tones #1B2434 and #0E1116, eye-level, 9:16 vertical composition",
+      "durationSec": 5,
+      "voiceoverSegment": "Le richieste arrivano da tutte le parti e nessuno le vede.",
+      "text": ""
+    },
+    {
+      "visualPrompt": "",
+      "durationSec": 4,
+      "voiceoverSegment": "Da oggi i numeri parlano da soli.",
+      "dashboardComponent": "demo-card",
+      "text": ""
+    },
+    {
+      "visualPrompt": "medium shot of the same business owner now relaxed, leaning back in chair with a calm smile, morning light from large windows, soft warm fill, slow dolly-out, hopeful mood, 35mm film grain, warm tones #E8E1D2 and #C9A36B, 9:16 vertical composition",
+      "durationSec": 2,
+      "voiceoverSegment": "Guarda la differenza in un colpo solo.",
+      "text": ""
+    }
+  ],
+  "cta": "Scopri di più → link in bio",
+  "style": "basic"
+}

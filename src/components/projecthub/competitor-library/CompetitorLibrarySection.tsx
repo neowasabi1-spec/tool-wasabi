@@ -29,6 +29,32 @@ import { fillLandingLibrary, landingFillError } from "@/lib/landing-media-client
 import SaveAdTemplateDialog, { type SaveAdTemplateItem } from "@/components/ads/SaveAdTemplateDialog";
 import CachedScreenshot from "@/components/CachedScreenshot";
 import { fbAdLibrarySearchUrl } from "@/lib/ads-library-url";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+
+const PEER_COUNTRIES: { code: string; label: string }[] = [
+  { code: "US", label: "United States" },
+  { code: "GB", label: "United Kingdom" },
+  { code: "IT", label: "Italy" },
+  { code: "DE", label: "Germany" },
+  { code: "FR", label: "France" },
+  { code: "ES", label: "Spain" },
+  { code: "PT", label: "Portugal" },
+  { code: "NL", label: "Netherlands" },
+  { code: "BE", label: "Belgium" },
+  { code: "AT", label: "Austria" },
+  { code: "CH", label: "Switzerland" },
+  { code: "PL", label: "Poland" },
+  { code: "RO", label: "Romania" },
+  { code: "CA", label: "Canada" },
+  { code: "AU", label: "Australia" },
+  { code: "ALL", label: "All countries" },
+];
 
 const BASE_URL = "";
 
@@ -101,6 +127,10 @@ type CompetitorAd = {
   source?: string | null;
   /** Brand Ads Library URL when the row is joined (All creatives / overview). */
   ads_library_url?: string | null;
+  /** Jev comparability vs our product (0–100). */
+  relevance_score?: number | null;
+  relevance_label?: string | null;
+  relevance_why?: string | null;
 };
 
 function formatDate(d: string | null) {
@@ -191,6 +221,26 @@ function WinnerBadge({ ad, className = "" }: { ad: CompetitorAd; className?: str
 
 // Creatives arriving from the daily scrape are flagged until the competitor is
 // opened, so a new batch is noticeable without reading dates.
+function RelevanceBadge({ ad, className = "" }: { ad: CompetitorAd; className?: string }) {
+  if (ad.relevance_score == null) return null;
+  const label = String(ad.relevance_label || "");
+  const tone =
+    label === "strong"
+      ? "bg-emerald-500/90 text-white"
+      : label === "adjacent"
+        ? "bg-amber-500/90 text-white"
+        : "bg-slate-500/80 text-white";
+  return (
+    <span
+      title={ad.relevance_why || "Jev comparability vs our product"}
+      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${tone} ${className}`}
+    >
+      Jev {ad.relevance_score}
+    </span>
+  );
+}
+
+
 function NewBadge({ count, className = "" }: { count?: number; className?: string }) {
   const label = count && count > 1 ? `${count} NEW` : "NEW";
   return (
@@ -1902,10 +1952,18 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
   const [peerSuggestions, setPeerSuggestions] = useState<Array<{ name: string; why: string }>>([]);
   const [peerSelected, setPeerSelected] = useState<Set<string>>(new Set());
   const [peerCustom, setPeerCustom] = useState("");
-  const [peerCountry, setPeerCountry] = useState("IT");
+  const [peerCountry, setPeerCountry] = useState(() => {
+    if (typeof window === "undefined") return "US";
+    try {
+      const saved = localStorage.getItem(`ads-library-country:${projectId}`);
+      if (saved && PEER_COUNTRIES.some((c) => c.code === saved)) return saved;
+    } catch { /* ignore */ }
+    return "US";
+  });
   const [peerLoading, setPeerLoading] = useState(false);
   const [peerAdding, setPeerAdding] = useState(false);
   const [peerError, setPeerError] = useState("");
+  const [peerVertical, setPeerVertical] = useState<string>("");
 
   // Direct competitor discovery (multi SEARCH → Apify → judge in webhook)
   const [discovering, setDiscovering] = useState(false);
@@ -2020,11 +2078,16 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
     setPeerSuggestions([]);
     setPeerSelected(new Set());
     setPeerCustom("");
+    setPeerVertical("");
     setPeerLoading(true);
     try {
       const r = await fetch(
         `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/suggest-vertical-peers`,
-        { method: "POST" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
       );
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -2033,8 +2096,8 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       }
       const list = Array.isArray(data.suggestions) ? data.suggestions : [];
       setPeerSuggestions(list);
-      setPeerCountry(typeof data.country === "string" && data.country ? data.country : "IT");
-      // Pre-select all suggestions so the user can deselect.
+      setPeerVertical(typeof data.vertical === "string" ? data.vertical : "");
+      // Do not overwrite a country the user already picked. API guess is unused here.
       setPeerSelected(new Set(list.map((s: { name: string }) => s.name)));
     } catch {
       setPeerError("Could not load suggestions");
@@ -2341,7 +2404,12 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
           <DialogHeader>
             <DialogTitle>Add vertical peers</DialogTitle>
             <DialogDescription>
-              Same vertical, different products — suggested names for Meta Ad Library spy ({peerCountry}).
+              Same buyer intent, different products — not clones of your offer. Pick Meta Ad Library country below.
+              {peerVertical === "mmo_bizopp" ? (
+                <> Detected: make-money / phone-income info products (peers like Wifi Profits, not WiFi hardware).</>
+              ) : peerVertical === "cpg_supplement" ? (
+                <> Detected: supplements / CPG.</>
+              ) : null}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 mt-1">
@@ -2384,6 +2452,27 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
                   <p className="text-sm text-muted-foreground">No suggestions — type product names below.</p>
                 )}
                 <div className="space-y-1">
+                  <label className="text-xs font-medium text-foreground">Ad Library country</label>
+                  <Select
+                    value={peerCountry}
+                    onValueChange={(v) => {
+                      setPeerCountry(v);
+                      try { localStorage.setItem(`ads-library-country:${projectId}`, v); } catch { /* ignore */ }
+                    }}
+                  >
+                    <SelectTrigger className="h-9 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PEER_COUNTRIES.map((c) => (
+                        <SelectItem key={c.code} value={c.code}>
+                          {c.label} ({c.code})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
                   <label className="text-xs font-medium text-foreground">Other product names</label>
                   <Input
                     value={peerCustom}
@@ -2423,6 +2512,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   const [filter, setFilter] = useState<"all" | "image" | "video">("all");
   const [winnersOnly, setWinnersOnly] = useState(false);
   const [newOnly, setNewOnly] = useState(false);
+  const [hideOffTarget, setHideOffTarget] = useState(true);
   // Kept across reloads so the badges stay put for the whole visit, even though
   // the brand is stamped as seen as soon as they are shown.
   const [newIds, setNewIds] = useState<Set<number>>(new Set());
@@ -2435,6 +2525,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
   const [fileLabel, setFileLabel] = useState("");
   const [detailAd, setDetailAd] = useState<CompetitorAd | null>(null);
   const [scraping, setScraping] = useState(false);
+  const [scoringRelevance, setScoringRelevance] = useState(false);
   const [cfgOpen, setCfgOpen] = useState(false);
   const [savingCfg, setSavingCfg] = useState(false);
   const [libUrl, setLibUrl] = useState(competitor.ads_library_url || "");
@@ -2476,6 +2567,34 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
       }
     } finally { setScraping(false); }
   };
+
+  const scoreRelevance = async () => {
+    if (scoringRelevance) return;
+    setScoringRelevance(true);
+    try {
+      const r = await fetch(
+        `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/score-relevance`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ brandId: competitor.id, limit: 40, force: true }),
+        },
+      );
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || "Score failed");
+      toast({
+        title: data.scored
+          ? `Scored ${data.scored} ads with Jev${data.avg != null ? ` · avg ${data.avg}` : ""}`
+          : "No ads to score",
+      });
+      await load();
+    } catch (e) {
+      toast({ title: e instanceof Error ? e.message : "Score failed", variant: "destructive" });
+    } finally {
+      setScoringRelevance(false);
+    }
+  };
+
 
   const saveCfg = async () => {
     setSavingCfg(true);
@@ -2575,12 +2694,14 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
     .filter(a => filter === "all" || a.media_type === filter)
     .filter(a => !winnersOnly || winnerTier(a) !== null)
     .filter(a => !newOnly || isNew(a))
+    .filter(a => !hideOffTarget || a.relevance_label !== "off_target")
     .filter(a => !search || a.name.toLowerCase().includes(search.toLowerCase()) || a.headline.toLowerCase().includes(search.toLowerCase()) || a.hook.toLowerCase().includes(search.toLowerCase()))
     // Fresh creatives first, then by winner tier.
     .sort((a, b) => (isNew(b) ? 1 : 0) - (isNew(a) ? 1 : 0) || tierRank(a) - tierRank(b));
 
   const winnerCount = ads.filter(a => winnerTier(a) !== null).length;
   const newCount = ads.filter(isNew).length;
+  const offTargetCount = ads.filter(a => a.relevance_label === "off_target").length;
   const allSelected = filtered.length > 0 && filtered.every(a => selected.has(a.id));
   const toggleAll = () => allSelected ? setSelected(new Set()) : setSelected(new Set(filtered.map(a => a.id)));
 
@@ -2611,6 +2732,15 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
           </Button>
           <Button variant="outline" onClick={scrapeNow} disabled={scraping} className="gap-1.5 text-sm">
             {scraping ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />} Scrape now
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void scoreRelevance()}
+            disabled={scoringRelevance || !ads.length}
+            className="gap-1.5 text-sm"
+            title="Jev: is this ad comparable to our product?"
+          >
+            {scoringRelevance ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />} Score with Jev
           </Button>
           <Button onClick={() => setUploadOpen(true)} className="bg-primary text-white gap-1.5 text-sm">
             <Upload className="w-4 h-4" /> Add Ad
@@ -2685,6 +2815,14 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
             title="Creatives added since your last visit"
             className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${newOnly ? "bg-emerald-500 border-emerald-500 text-white" : "border-emerald-400/60 text-emerald-600 hover:bg-emerald-50"}`}>
             <Sparkles className="w-3.5 h-3.5" /> New ({newCount})
+          </button>
+        )}
+        {offTargetCount > 0 && (
+          <button
+            onClick={() => setHideOffTarget(v => !v)}
+            title={hideOffTarget ? "Off-target creatives hidden — click to show" : "Including off-target creatives — click to hide"}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg font-semibold border transition-colors ${hideOffTarget ? "border-slate-300 text-slate-600 bg-slate-50" : "bg-slate-600 border-slate-600 text-white"}`}>
+            {hideOffTarget ? `Hide off-target (${offTargetCount})` : `Show off-target (${offTargetCount})`}
           </button>
         )}
       </div>
@@ -2794,7 +2932,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
                   {/* New + Winner + Active badges (stacked) */}
                   <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
                     {isNew(ad) && <NewBadge />}
-                    <WinnerBadge ad={ad} />
+                    <WinnerBadge ad={ad} /><RelevanceBadge ad={ad} />
                     {(ad.ad_active === "true" || ad.is_active === "true") && (
                       <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500 text-white shadow-sm">ACTIVE</span>
                     )}
@@ -3059,7 +3197,7 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
                   : <AdPlaceholder ad={ad} index={idx} />}
                 <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
                   {ad.is_new && <NewBadge />}
-                  <WinnerBadge ad={ad} />
+                  <WinnerBadge ad={ad} /><RelevanceBadge ad={ad} />
                 </div>
                 <div className="absolute inset-x-0 bottom-0 opacity-0 group-hover:opacity-100 transition-opacity p-2">
                   <button onClick={e => { e.stopPropagation(); saveTpl(ad); }}
@@ -3980,6 +4118,16 @@ function ShotsLibraryView({
   } | null>(null);
   const [reelFootageLoading, setReelFootageLoading] = useState(true);
   const [reelPreparing, setReelPreparing] = useState(false);
+  const [reelBrief, setReelBrief] = useState("");
+  const [reelJob, setReelJob] = useState<{
+    id: string;
+    status: string;
+    progress?: string;
+    error?: string;
+    mediaBuyer?: string;
+  } | null>(null);
+  const [reelEngineConfigured, setReelEngineConfigured] = useState<boolean | null>(null);
+  const [reelStarting, setReelStarting] = useState(false);
 
   const loadReelFootage = async () => {
     setReelFootageLoading(true);
@@ -4016,8 +4164,8 @@ function ShotsLibraryView({
         return;
       }
       toast({
-        title: "Reel inventory ready",
-        description: `projectId: ${projectId} — use MCP wasabi-reel reel_import_cleaned_shots with this projectId (downloads locally). Optional b-roll: reel_generate_clip.`,
+        title: "Inventory ready",
+        description: "Footage counts are up to date. Start a video on the Claude Cloud reel engine below.",
       });
     } catch {
       toast({ title: "Prepare failed", variant: "destructive" });
@@ -4026,22 +4174,66 @@ function ShotsLibraryView({
     }
   };
 
-  const copyProjectId = async () => {
+  const loadReelJobs = async () => {
     try {
-      await navigator.clipboard.writeText(projectId);
-      toast({ title: "Project ID copied" });
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/reel/jobs`, { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 503) {
+        setReelEngineConfigured(false);
+        return;
+      }
+      setReelEngineConfigured(j.configured !== false);
+      const jobs = Array.isArray(j.jobs) ? j.jobs : [];
+      const active = jobs.find((x: { status?: string }) =>
+        ["queued", "running", "waiting_claude", "publishing"].includes(String(x.status || "")),
+      ) || jobs[0];
+      if (active) {
+        setReelJob({
+          id: active.id,
+          status: active.status,
+          progress: active.progress,
+          error: active.error,
+          mediaBuyer: j.mediaBuyer || active.mediaBuyer,
+        });
+      }
     } catch {
-      toast({ title: "Copy failed", variant: "destructive" });
+      setReelEngineConfigured(null);
     }
   };
 
-  const copyMcpImportCommand = async () => {
-    const prompt = `Import cleaned reel footage for projectId ${projectId} (includeFullAds), then follow reel-director gates, then reel_publish_to_wasabi with the same projectId and final reelDir.`;
+  const startReelEngineJob = async () => {
+    if (reelStarting) return;
+    setReelStarting(true);
     try {
-      await navigator.clipboard.writeText(prompt);
-      toast({ title: "MCP prompt copied", description: "Paste in Claude/Cursor with wasabi-reel enabled." });
+      const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/reel/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: "produce",
+          brief: reelBrief.trim() || undefined,
+          includeFullAds: true,
+        }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        toast({ title: j.error || "Could not start reel job", variant: "destructive" });
+        return;
+      }
+      setReelEngineConfigured(true);
+      setReelJob({
+        id: j.job.id,
+        status: j.job.status,
+        progress: j.job.progress,
+        mediaBuyer: j.mediaBuyer,
+      });
+      toast({
+        title: "Video job queued",
+        description: `Folder ${j.mediaBuyer}/${projectId} on the reel engine. Finished files land in Created videos.`,
+      });
     } catch {
-      toast({ title: "Copy failed", variant: "destructive" });
+      toast({ title: "Could not start reel job", variant: "destructive" });
+    } finally {
+      setReelStarting(false);
     }
   };
 
@@ -4063,8 +4255,14 @@ function ShotsLibraryView({
     } catch { if (!quiet) setShots([]); }
     finally { if (!quiet) setLoading(false); }
   };
-  useEffect(() => { load(); void loadReelFootage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
-  useLiveReload(() => { void load(true); void loadReelFootage(); });
+  useEffect(() => { load(); void loadReelFootage(); void loadReelJobs(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [projectId]);
+  useLiveReload(() => { void load(true); void loadReelFootage(); void loadReelJobs(); });
+  useEffect(() => {
+    if (!reelJob || !["queued", "running", "waiting_claude", "publishing"].includes(reelJob.status)) return;
+    const tmr = setInterval(() => { void loadReelJobs(); }, 8000);
+    return () => clearInterval(tmr);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reelJob?.id, reelJob?.status]);
 
   // While AI subtitle removal is running, refresh quietly until it settles.
   const cleaningCount = shots.filter(
@@ -4346,9 +4544,9 @@ function ShotsLibraryView({
           <div className="flex items-center gap-2 min-w-0">
             <Film className="w-4 h-4 shrink-0 text-muted-foreground" />
             <div>
-              <p className="text-xs font-semibold text-foreground">Reel Engine (local MCP + Wasabi inventory)</p>
+              <p className="text-xs font-semibold text-foreground">Create video (Claude Cloud reel engine)</p>
               <p className="text-[10px] text-muted-foreground leading-snug max-w-lg">
-                Setup: <b>scripts/setup-reel-mediabuyer.sh</b> · Guida: <b>reel/MEDIABUYER-SETUP.md</b>
+                Runs on the shared engine host — no MCP and no Claude on your laptop. Output folders: <code className="text-[9px]">mediaBuyer/projectId</code>.
               </p>
             </div>
           </div>
@@ -4370,13 +4568,28 @@ function ShotsLibraryView({
             </div>
           ) : null}
         </div>
-        <ol className="text-[10px] text-muted-foreground space-y-0.5 list-decimal list-inside max-w-2xl">
-          <li>Clean / split footage in this tab (Remove subs with AI when needed).</li>
-          <li><b>Prepare for Reel Engine</b> — inventory JSON on server (download happens locally via MCP).</li>
-          <li>Copy <b>projectId</b> for MCP <code className="text-[9px]">reel_import_cleaned_shots</code>.</li>
-          <li>In Claude/Cursor: import → skill <b>reel-director</b> (gates) → <code className="text-[9px]">reel_publish_to_wasabi</code>.</li>
-          <li>Finished video appears under project tab <b>Created videos</b>.</li>
-        </ol>
+        {reelEngineConfigured === false && (
+          <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+            Engine not connected yet. When the Claude Cloud host is up, ops set <code className="text-[9px]">REEL_ENGINE_URL</code> on Netlify — then this button works.
+          </p>
+        )}
+        <textarea
+          value={reelBrief}
+          onChange={(e) => setReelBrief(e.target.value)}
+          placeholder="Optional brief / angle for the reel (hooks, offer, language)…"
+          className="w-full min-h-[64px] text-xs rounded-md border border-border bg-background px-2 py-1.5 resize-y"
+        />
+        {reelJob && (
+          <p className="text-[10px] text-muted-foreground">
+            Job <code className="text-[9px]">{reelJob.id.slice(0, 8)}</code>
+            {reelJob.mediaBuyer ? <> · buyer <b>{reelJob.mediaBuyer}</b></> : null}
+            {" · "}
+            <b>{reelJob.status}</b>
+            {reelJob.progress ? ` — ${reelJob.progress}` : ""}
+            {reelJob.error ? <span className="text-red-600"> · {reelJob.error}</span> : null}
+            {reelJob.status === "done" ? " · check Created videos" : null}
+          </p>
+        )}
         <div className="flex flex-wrap items-center gap-1.5">
           <Button
             size="sm"
@@ -4386,23 +4599,16 @@ function ShotsLibraryView({
             className="h-7 text-xs gap-1">
             {reelPreparing
               ? <><Loader2 className="w-3 h-3 animate-spin" /> Preparing…</>
-              : "2. Prepare for Reel Engine"}
+              : "Refresh inventory"}
           </Button>
           <Button
             size="sm"
-            variant="ghost"
-            onClick={() => void copyProjectId()}
-            className="h-7 text-xs gap-1"
-            title="Copy projectId for MCP">
-            <Copy className="w-3 h-3" /> 3. projectId
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => void copyMcpImportCommand()}
-            className="h-7 text-xs gap-1"
-            title="Copy ready prompt for Claude">
-            <Copy className="w-3 h-3" /> Copy MCP import command
+            onClick={() => void startReelEngineJob()}
+            disabled={reelStarting || reelEngineConfigured === false}
+            className="h-7 text-xs gap-1 bg-primary text-white">
+            {reelStarting
+              ? <><Loader2 className="w-3 h-3 animate-spin" /> Starting…</>
+              : <><Sparkles className="w-3 h-3" /> Create video on engine</>}
           </Button>
         </div>
       </div>

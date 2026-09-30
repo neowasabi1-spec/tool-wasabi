@@ -28,17 +28,39 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
   }
 
+  const AD_LIST_COLS =
+    'id, project_id, brand_id, name, headline, hook, body_text, transcript, media_type, file_path, media_hash, is_winner, ad_active, ad_started_at, spend, impressions, clean_status, clean_full_path, clean_error, relevance_score, relevance_label, relevance_why, created_at';
+
   const [{ data, error }, seenAt] = await Promise.all([
     supabaseAdmin
       .from('competitor_ads')
-      .select('*')
+      .select(AD_LIST_COLS)
       .eq('project_id', id)
       .eq('brand_id', brandId)
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .limit(500),
     loadSeenAt(id),
   ]);
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    // Older DBs may lack optional columns — retry a leaner select.
+    if (/42703|PGRST204|column/i.test(error.message || '')) {
+      const lean = await supabaseAdmin
+        .from('competitor_ads')
+        .select(
+          'id, project_id, brand_id, name, headline, hook, body_text, media_type, file_path, is_winner, ad_active, ad_started_at, spend, impressions, created_at',
+        )
+        .eq('project_id', id)
+        .eq('brand_id', brandId)
+        .order('created_at', { ascending: false })
+        .limit(500);
+      if (lean.error) return NextResponse.json({ error: lean.error.message }, { status: 500 });
+      return NextResponse.json(
+        tagNewAds((lean.data || []) as { brand_id: number; created_at?: string }[], seenAt),
+      );
+    }
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
   // is_new lets the grid badge whatever the daily scrape added since the last
   // visit; the client stamps the brand as seen once it has rendered them.
   return NextResponse.json(tagNewAds((data || []) as { brand_id: number; created_at?: string }[], seenAt));

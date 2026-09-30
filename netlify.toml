@@ -93,3 +93,12 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
+
+# Jev AI jobs (ingest / templates / families) — long-running background worker.
+[functions."jev-jobs-background"]
+  timeout = 900
+
+# Jev ad relevance drain (all projects) — long-running background worker.
+[functions."ad-relevance-background"]
+  timeout = 900
+

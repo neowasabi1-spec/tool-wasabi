@@ -1,0 +1,66 @@
+{
+  "name": "talkshow-1990s-marketing-tools",
+  "description": "Cast modellato sul reel GoHighLevel del 2026-05-28 (ScreenRecording_05-28-2026 08-02-54). 5 archetipi-tool come ospiti trash + 1 protagonista calmo + 1 conduttrice. Test pensato per validare consistency di volti caricaturali su prompt action+emotion estremi (yelling, finger pointing, eyes popping).",
+  "characters": [
+    {
+      "id": "email-marketing",
+      "label": "EMAIL MARKETING",
+      "keyframePrompt": "Photoreal portrait, vertical 9:16, medium close-up. A brash 1990s American daytime talk show guest: woman in her late 40s, bleached blonde teased and feathered hair, heavy blue eyeshadow, frosted pink lipstick, large gold hoop earrings, leopard print blouse with deep V-neck, gold chain. Studio backdrop with purple gel lighting and out-of-focus audience. Neutral expression looking at camera, ready-for-conflict energy. Slightly degraded VHS-era television aesthetic, soft film grain. No on-screen text. Just a candid frame from a real 1990s talk show.",
+      "videoVariations": [
+        { "action": "yelling angrily at someone off-camera, pointing finger forward aggressively, mouth wide open", "duration": 5 },
+        { "action": "rolling eyes dramatically, crossing arms, sneering with disgust", "duration": 5 },
+        { "action": "standing up from chair, gesturing wildly with both hands while shouting", "duration": 5 }
+      ]
+    },
+    {
+      "id": "sms-marketing",
+      "label": "SMS MARKETING",
+      "keyframePrompt": "Photoreal portrait, vertical 9:16, medium close-up. A 1990s American daytime talk show guest: man in his 30s with prominent black mullet haircut, thick goatee, gold chain necklace, wearing a shiny acetate windbreaker with magenta, electric blue and lime green color blocks (early 90s shellsuit style). Tan skin, intense brown eyes, slightly sweaty forehead. Studio backdrop with purple gel lighting and blurred audience. Neutral expression looking at camera with attitude. Slightly degraded VHS-era television aesthetic. No on-screen text.",
+      "videoVariations": [
+        { "action": "shouting and gesturing emphatically with one hand raised, mouth open in mid-yell", "duration": 5 },
+        { "action": "leaning forward in chair, pointing accusingly at someone with both hands", "duration": 5 },
+        { "action": "standing up abruptly, throwing both arms in the air in disbelief", "duration": 5 }
+      ]
+    },
+    {
+      "id": "funnel-builder",
+      "label": "FUNNEL BUILDER",
+      "keyframePrompt": "Photoreal portrait, vertical 9:16, medium close-up. A 1990s American daytime talk show guest: man in his late 40s, slicked-back bleached blonde hair, ruddy weathered face, beige business suit with paisley tie, white shirt. Loud and confrontational energy. Studio backdrop with purple gel lighting and out-of-focus audience. Neutral expression looking at camera. Slightly degraded VHS-era television aesthetic.",
+      "videoVariations": [
+        { "action": "yelling intensely, jabbing index finger forward repeatedly", "duration": 5 },
+        { "action": "throwing arms wide in outrage, mouth open mid-shout", "duration": 5 },
+        { "action": "leaning forward aggressively, pointing at chest with thumb", "duration": 5 }
+      ]
+    },
+    {
+      "id": "crm-pipeline",
+      "label": "CRM PIPELINE",
+      "keyframePrompt": "Photoreal portrait, vertical 9:16, medium close-up. A 1990s American daytime talk show guest: man in his late 40s, dark curly hair, large 90s aviator-style oversized eyeglasses, sweaty pale face, white dress shirt with brown suspenders, loose striped tie. Wide-eyed bewildered expression. Studio backdrop with purple gel lighting and blurred audience. Slightly degraded VHS-era television aesthetic.",
+      "videoVariations": [
+        { "action": "shouting in disbelief, eyes popping wide open, hands clasped to head", "duration": 5 },
+        { "action": "leaning forward desperately, both hands open pleading toward camera", "duration": 5 },
+        { "action": "shaking head violently, slamming hand on table in front of him", "duration": 5 }
+      ]
+    },
+    {
+      "id": "protagonist-client",
+      "label": "PROTAGONIST (HighLevel client)",
+      "keyframePrompt": "Photoreal portrait, vertical 9:16, medium close-up. A handsome calm 1990s late-night talk show guest: man in his early 30s, dark brown styled hair, short beard, wearing a fitted dark navy blazer over a plain cream t-shirt. Sitting on a talk show armchair, hands relaxed on lap. Confident and amused expression looking off-camera toward an unseen host. Studio backdrop with warm tungsten lighting, city skyline backdrop visible behind. Slightly degraded VHS-era television aesthetic, but with cleaner image than the trash daytime show. No on-screen text.",
+      "videoVariations": [
+        { "action": "smiling and laughing softly, gesturing with both open hands toward camera while speaking", "duration": 5 },
+        { "action": "leaning back in chair confidently, slight nod, chuckling", "duration": 5 },
+        { "action": "leaning forward slightly to make a point, one hand counting on fingers", "duration": 5 }
+      ]
+    },
+    {
+      "id": "host-sally",
+      "label": "HOST (Sally-Jessy-Raphael archetype)",
+      "keyframePrompt": "Photoreal portrait, vertical 9:16, medium close-up. A 1990s American daytime talk show female host: woman in her late 40s, big curly auburn hair (long), bold red lipstick, large gold hoop earrings, wearing a fuchsia pink shoulder-padded blazer over black skirt. Holding a black handheld microphone. Confident broadcasting energy. Studio backdrop with purple gel lighting and blurred audience seating. Slightly degraded VHS-era television aesthetic. No on-screen text.",
+      "videoVariations": [
+        { "action": "speaking into microphone with energy, walking slightly toward camera, free hand gesturing", "duration": 5 },
+        { "action": "turning head to address audience off-camera right, raising microphone hand", "duration": 5 },
+        { "action": "smiling broadly while introducing someone, sweeping arm gesture toward off-camera left", "duration": 5 }
+      ]
+    }
+  ]
+}
