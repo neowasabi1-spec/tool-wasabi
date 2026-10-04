@@ -9,6 +9,7 @@ import { BrandRulesSection } from '@/components/projecthub/ads-creative/BrandRul
 import { AnalyticsSection } from '@/components/projecthub/analytics/AnalyticsSection';
 import { CompetitorLibrarySection } from '@/components/projecthub/competitor-library/CompetitorLibrarySection';
 import { AutopilotSection } from '@/components/projecthub/autopilot/AutopilotSection';
+import { LaunchToTrackerDialog } from '@/components/projecthub/LaunchToTrackerDialog';
 import { DashboardSection } from '@/components/projecthub/dashboard/DashboardSection';
 import {
   useGetProject,
@@ -47,6 +48,7 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState<Section>('dashboard');
   const [collapsed, setCollapsed] = useState(false);
+  const [launchOpen, setLaunchOpen] = useState(false);
 
   // Open the section requested via ?section=... (e.g. after launching the
   // Autopilot from /projects). Runs on the client only, so it survives SSR
@@ -168,7 +170,21 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
           <span className="text-xs text-muted-foreground">{project.name}</span>
           <span className="text-xs text-muted-foreground">/</span>
           <span className="text-xs font-medium text-foreground">{activeItem.label}</span>
+          <Button
+            size="sm"
+            className="ml-auto gap-1.5"
+            onClick={() => setLaunchOpen(true)}
+          >
+            <Rocket className="w-3.5 h-3.5" /> Launch
+          </Button>
         </header>
+
+        <LaunchToTrackerDialog
+          open={launchOpen}
+          onOpenChange={setLaunchOpen}
+          projectId={projectId}
+          projectName={project.name ?? ''}
+        />
 
         <main className="flex-1 overflow-y-auto">
           <div className="max-w-6xl mx-auto px-6 py-6 pb-12">
