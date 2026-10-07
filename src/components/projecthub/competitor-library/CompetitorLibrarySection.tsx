@@ -20,6 +20,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { getUploadUrl } from "@/lib/projecthub-storage";
+import { confirmDialog } from "@/components/ui/confirm";
 import { authFetch } from "@/lib/auth/client-fetch";
 import { PAGE_TYPE_OPTIONS } from "@/types";
 import { getSupabaseBrowser } from "@/lib/supabase-browser";
@@ -3716,12 +3717,31 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   useEffect(() => { load(); }, [projectId]);
   useLiveReload(() => { void load(true); });
 
-  const del = async (l: Landing) => {
-    setPreview(p => (p?.id === l.id ? null : p));
-    setLandings(p => p.filter(x => x.id !== l.id));
-    await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings/${l.id}`, { method: "DELETE" });
-    toast({ title: "Landing removed" });
+  const delMany = async (items: Landing[]) => {
+    if (!items.length) return;
+    const n = items.length;
+    const ok = await confirmDialog({
+      title: n === 1 ? "Delete this landing?" : `Delete this funnel (${n} steps)?`,
+      message: "This removes it from Competitor Landings.",
+      confirmText: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
+    const ids = new Set(items.map((i) => i.id));
+    setPreview((p) => (p && ids.has(p.id) ? null : p));
+    setLandings((p) => p.filter((x) => !ids.has(x.id)));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+    await Promise.all([...ids].map((id) =>
+      fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/landings/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    ));
+    toast({ title: n === 1 ? "Landing removed" : `${n} steps removed` });
   };
+
+  const del = (l: Landing) => delMany([l]);
 
   // Pull the saved HTML and hand it to the browser as a .html download, so the
   // page can be opened/edited offline without relying on the original link.
@@ -3810,9 +3830,9 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
           <span className="absolute bottom-2 right-2 flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/60 backdrop-blur-sm text-white opacity-0 group-hover:opacity-100 transition-opacity">
             <Eye className="w-3 h-3" /> Preview
           </span>
-          <button onClick={(e) => { e.stopPropagation(); del(l); }}
-            className="absolute top-2 right-2 p-1.5 rounded-lg bg-slate-900/45 backdrop-blur-sm text-white/90 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all"
-            title="Remove landing">
+          <button type="button" onClick={(e) => { e.stopPropagation(); void del(l); }}
+            className="absolute top-2 right-2 z-10 p-1.5 rounded-lg bg-slate-900/55 backdrop-blur-sm text-white hover:text-red-300 hover:bg-red-600/80 transition-colors"
+            title="Delete landing">
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -3960,6 +3980,13 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                   <span className="absolute bottom-2 right-2 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-primary/85 backdrop-blur-sm text-primary-foreground">
                     {f.items.length} step{f.items.length === 1 ? "" : "s"}
                   </span>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); void delMany(f.items); }}
+                    className="absolute top-2 right-2 z-10 p-1.5 rounded-lg bg-slate-900/55 backdrop-blur-sm text-white hover:text-red-300 hover:bg-red-600/80 transition-colors"
+                    title="Delete funnel">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
                 <div className="px-3 py-2.5">
                   <p className="text-sm font-semibold text-foreground truncate">{f.name}</p>

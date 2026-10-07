@@ -153,14 +153,17 @@ export function LaunchToTrackerDialog({
       ads,
     };
     const url = `${LAUNCH_TRACKER_ORIGIN}/campaigns#lt_draft=${encodeLaunchDraft(draft)}`;
-    const win = window.open(url, '_blank', 'noopener,noreferrer');
-    if (!win) {
-      toast({
-        title: 'Popup blocked',
-        description: 'Allow popups for this site, then click Launch again.',
-        variant: 'destructive',
-      });
-      return;
+    // Don't pass noopener in windowFeatures: Chrome then returns null even when
+    // the tab opened, and we were showing "Popup blocked" for a successful open.
+    const win = window.open(url, '_blank');
+    if (win) {
+      win.opener = null;
+    } else {
+      const a = document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.click();
     }
     toast({ title: 'Opened in Launch Tracker', description: 'Choose new or existing, then CBO or ABO.' });
     onOpenChange(false);

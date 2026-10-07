@@ -13,7 +13,6 @@ export function ChimeraImageModeToggle({
 }) {
   return (
     <div className="space-y-1.5">
-      <p className="text-sm font-medium leading-none">Landing images</p>
       <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-muted/40 p-0.5">
         {([
           ['affiliate', 'Affiliate'],

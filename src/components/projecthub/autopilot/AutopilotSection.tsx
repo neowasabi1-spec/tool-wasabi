@@ -153,7 +153,9 @@ export function AutopilotSection({
       setError('Enter at least the product name.');
       return;
     }
-    const missing = productSlots.filter((s) => !String(prices[s.key] || '').trim());
+    const missing = imageMode === 'affiliate'
+      ? []
+      : productSlots.filter((s) => !String(prices[s.key] || '').trim());
     if (missing.length) {
       setError(`Enter a price for: ${missing.map((s) => (
         s.role === 'main' ? 'main product' : (s.stepName || s.pageType || 'upsell')
@@ -243,6 +245,11 @@ export function AutopilotSection({
             disabled={running || launching}
           />
         </div>
+        <ChimeraImageModeToggle
+          value={imageMode}
+          onChange={setImageMode}
+          disabled={running || launching}
+        />
         <ChimeraFunnelPicker
           value={funnelPick}
           onChange={setFunnelPick}
@@ -252,12 +259,8 @@ export function AutopilotSection({
           slots={productSlots}
           productName={product}
           values={prices}
+          optional={imageMode === 'affiliate'}
           onChange={(key, value) => setPrices((prev) => ({ ...prev, [key]: value }))}
-          disabled={running || launching}
-        />
-        <ChimeraImageModeToggle
-          value={imageMode}
-          onChange={setImageMode}
           disabled={running || launching}
         />
         <ChimeraProductPhoto

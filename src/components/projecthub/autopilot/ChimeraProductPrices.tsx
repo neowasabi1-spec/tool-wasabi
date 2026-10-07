@@ -12,17 +12,22 @@ export function ChimeraProductPrices({
   values,
   onChange,
   disabled,
+  optional,
 }: {
   slots: ChimeraProductSlot[];
   productName: string;
   values: Record<string, string>;
   onChange: (key: string, price: string) => void;
   disabled?: boolean;
+  /** Affiliate offers already print the price on the pages. */
+  optional?: boolean;
 }) {
   const upsells = slots.filter((s) => s.role === 'upsell').length;
-  const headline = slots.length === 1
-    ? 'Price for this product'
-    : `Chimera will create ${slots.length} products — enter each price`;
+  const headline = optional
+    ? 'Price (optional)'
+    : slots.length === 1
+      ? 'Price for this product'
+      : `Chimera will create ${slots.length} products — enter each price`;
 
   return (
     <div className="rounded-lg border border-border bg-muted/30 p-4 space-y-3">
@@ -31,9 +36,11 @@ export function ChimeraProductPrices({
         <div>
           <p className="text-sm font-medium text-foreground">{headline}</p>
           <p className="text-xs text-muted-foreground mt-0.5">
-            {upsells > 0
-              ? `Read from the steps you ticked: main offer + ${upsells} upsell${upsells === 1 ? '' : 's'}/downsell${upsells === 1 ? '' : 's'}. Clone/Swipe prints these prices as-is.`
-              : 'No upsell or downsell selected — only the main offer needs a price.'}
+            {optional
+              ? 'Affiliate: the price is already on the pages. Leave this empty unless you want to override it.'
+              : upsells > 0
+                ? `Read from the steps you ticked: main offer + ${upsells} upsell${upsells === 1 ? '' : 's'}/downsell${upsells === 1 ? '' : 's'}. Clone/Swipe prints these prices as-is.`
+                : 'No upsell or downsell selected — only the main offer needs a price.'}
           </p>
         </div>
       </div>
