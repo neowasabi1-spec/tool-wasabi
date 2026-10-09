@@ -122,7 +122,12 @@ export async function submitAndPollGenerate(opts: {
     }),
   });
   const submit = await readJson(submitRes);
-  if (!submitRes.ok || submit.status === 'error' || !submit.statusUrl) {
+  if (!submitRes.ok || submit.status === 'error') {
+    throw new Error(String(submit.error || `${label} failed to start`));
+  }
+  const doneUrl = String(submit.url || '').trim();
+  if (submit.status === 'completed' && doneUrl) return doneUrl;
+  if (!submit.statusUrl) {
     throw new Error(String(submit.error || `${label} failed to start`));
   }
   return pollGenerateJob({ ...jobFrom(submit), onWait: opts.onWait, label });

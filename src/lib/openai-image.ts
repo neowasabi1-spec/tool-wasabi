@@ -92,7 +92,15 @@ async function bytesFromRef(url: string): Promise<{ buf: Buffer; mime: string } 
       if (buf.length < 100) return null;
       return { buf, mime: m[1] || 'image/png' };
     }
-    const res = await fetch(url, { signal: AbortSignal.timeout(45_000) });
+    const headers: Record<string, string> = {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    };
+    let res = await fetch(url, { signal: AbortSignal.timeout(45_000), headers });
+    if (!res.ok) {
+      res = await fetch(url, { signal: AbortSignal.timeout(45_000) });
+    }
     if (!res.ok) return null;
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length < 100) return null;
@@ -341,7 +349,9 @@ export async function waitGptImage2Job(job: GptImage2Job, timeoutMs: number): Pr
 function openAiSize(raw?: string): '1024x1024' | '1536x1024' | '1024x1536' | 'auto' {
   const s = mapSize(raw);
   if (s === '1024x1024' || s === '1536x1024' || s === '1024x1536' || s === 'auto') return s;
-  return '1024x1536';
+  if (s === '1792x1024' || s === '1920x1080') return '1536x1024';
+  if (s === '1024x1792' || s === '1080x1920') return '1024x1536';
+  return '1024x1024';
 }
 
 function openaiClient(timeoutMs: number): OpenAI | null {

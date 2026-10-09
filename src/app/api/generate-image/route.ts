@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { lastImageGenError, openaiGenerateImage, openaiImageKey } from '@/lib/openai-image';
 
-export const maxDuration = 30;
+export const maxDuration = 180;
 export const dynamic = 'force-dynamic';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -13,10 +14,9 @@ export const dynamic = 'force-dynamic';
 //                   the AI to invent a brand-new scene without supplying a
 //                   first frame)
 //
-// Each mode exposes a curated list of fal.ai models. The route is single-shot:
-// every invocation does ONE call to fal (submit OR status+result). Wait time
-// is handled entirely by the client polling loop, so we never hit Netlify's
-// 10s function wall.
+// Image generate/edit defaults to ChatGPT Image 2 on the OpenAI API (not fal).
+// Video modes still use fal.ai. Fal jobs are single-shot submit-or-poll so we
+// stay under the function wall; OpenAI image calls wait in this request.
 // ═══════════════════════════════════════════════════════════════════════════
 
 type Mode = 'text2image' | 'image2image' | 'image2video' | 'text2video';
@@ -221,11 +221,15 @@ const MODELS: Record<string, ModelDef> = {
 };
 
 const DEFAULT_MODELS: Record<Mode, string> = {
-  text2image: 'nano-banana-2',
-  image2image: 'nano-banana-2-edit',
+  text2image: 'gpt-image-2',
+  image2image: 'gpt-image-2-edit',
   image2video: 'seedance-2',
   text2video: 'seedance-2-t2v',
 };
+
+function isGptImageModel(modelKey: string): boolean {
+  return modelKey === 'gpt-image-2' || modelKey === 'gpt-image-2-edit';
+}
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -339,6 +343,11 @@ async function falSubmit(endpoint: string, input: Record<string, unknown>, apiKe
   });
   if (!res.ok) {
     const err = await res.text();
+    if (res.status === 422) {
+      throw new Error(
+        `fal.ai 422: the model could not fetch the source image (cloned-page URLs are often blocked). Use ChatGPT Image 2 Edit instead. ${err.substring(0, 280)}`,
+      );
+    }
     throw new Error(`fal.ai submit ${res.status}: ${err.substring(0, 500)}`);
   }
   return res.json();
@@ -395,20 +404,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'error', error: 'Body non valido' }, { status: 400 });
   }
 
-  const apiKey = getFalKey();
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        status: 'error',
-        error:
-          'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables) e ridepoia.',
-      },
-      { status: 500 },
-    );
-  }
-
-  // ── POLL ─────────────────────────────────────────────────────────────────
+  // ── POLL (fal queue only) ────────────────────────────────────────────────
   if (body.action === 'poll') {
+    const apiKey = getFalKey();
+    if (!apiKey) {
+      return NextResponse.json(
+        {
+          status: 'error',
+          error:
+            'FAL_KEY non configurata. Serve solo per i modelli video / fal, non per ChatGPT Image 2.',
+        },
+        { status: 500 },
+      );
+    }
     if (!body.requestId || !body.statusUrl || !body.responseUrl || !body.modelKey) {
       return NextResponse.json(
         { status: 'error', error: 'Missing requestId / statusUrl / responseUrl / modelKey' },
@@ -480,6 +488,64 @@ export async function POST(req: NextRequest) {
       : 'Style: vivid, saturated colors, high contrast, cinematic lighting.';
   const finalPrompt =
     mode === 'text2image' ? `${prompt}\n\n${styleHint}` : prompt;
+
+  // ChatGPT Image 2 goes through the OpenAI API, not fal.ai.
+  // fal queue 422s on cloned-page image URLs that its crawler cannot fetch.
+  if (isGptImageModel(modelKey)) {
+    if (!openaiImageKey()) {
+      return NextResponse.json(
+        {
+          status: 'error',
+          error: 'OPENAI_API_KEY is missing. Image generate/edit uses ChatGPT Image 2 on the OpenAI API.',
+        },
+        { status: 500 },
+      );
+    }
+    const refs = [
+      body.imageUrl,
+      body.secondaryImageUrl,
+      ...(Array.isArray(body.extraImageUrls) ? body.extraImageUrls : []),
+    ].filter((u): u is string => typeof u === 'string' && u.trim().length > 0);
+    try {
+      const url = await openaiGenerateImage({
+        prompt: finalPrompt,
+        imageUrls: mode === 'image2image' ? refs : undefined,
+        size: typeof body.size === 'string' ? body.size : undefined,
+        quality: 'medium',
+        timeoutMs: 160_000,
+        openaiOnly: true,
+      });
+      if (!url) {
+        return NextResponse.json(
+          { status: 'error', error: lastImageGenError() || 'ChatGPT Image 2 failed' },
+          { status: 502 },
+        );
+      }
+      return NextResponse.json({
+        status: 'completed',
+        url,
+        mediaType: 'image',
+        modelKey,
+        model: 'openai/gpt-image-2',
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      console.error('[generate-image] ChatGPT Image 2 error:', message);
+      return NextResponse.json({ status: 'error', error: message }, { status: 502 });
+    }
+  }
+
+  const apiKey = getFalKey();
+  if (!apiKey) {
+    return NextResponse.json(
+      {
+        status: 'error',
+        error:
+          'FAL_KEY non configurata. Settala nelle env var (Netlify > Site configuration > Environment variables) e ridepoia.',
+      },
+      { status: 500 },
+    );
+  }
 
   const input = modelDef.buildInput({
     prompt: finalPrompt,

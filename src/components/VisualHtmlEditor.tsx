@@ -2250,7 +2250,9 @@ async function extractImageAsDataUrl(
   maxDim: number = 1280,
   quality: number = 0.85,
 ): Promise<string | null> {
-  if (!imageUrl || !/^https?:\/\//i.test(imageUrl)) return null;
+  if (!imageUrl) return null;
+  if (imageUrl.startsWith('data:image/')) return imageUrl;
+  if (!/^https?:\/\//i.test(imageUrl)) return null;
 
   /* Strategia 1: Image element + canvas (richiede CORS sul server). */
   const viaCanvas = await new Promise<string | null>((resolve) => {
@@ -3007,7 +3009,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   /* ── AI Image / Video Generation ── */
   type AiMode = 'text2image' | 'image2image' | 'image2video' | 'text2video';
   const [aiMode, setAiMode] = useState<AiMode>('text2image');
-  const [aiModel, setAiModel] = useState<string>('nano-banana-2');
+  const [aiModel, setAiModel] = useState<string>('gpt-image-2');
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiSize, setAiSize] = useState<'1024x1024' | '1792x1024' | '1024x1792'>('1024x1024');
   const [aiStyle, setAiStyle] = useState<'vivid' | 'natural'>('vivid');
@@ -3151,16 +3153,16 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
 
   const AI_MODELS: Record<AiMode, { id: string; label: string; hint: string }[]> = {
     text2image: [
-      { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)', hint: 'Fast, high quality, default' },
-      { id: 'gpt-image-2', label: 'ChatGPT Image 2 (OpenAI)', hint: 'Top for text in images, expensive' },
+      { id: 'gpt-image-2', label: 'ChatGPT Image 2 (OpenAI)', hint: 'Default — generate, no fal' },
+      { id: 'nano-banana-2', label: 'Nano Banana 2 (Gemini 3.1 Flash)', hint: 'Fast via fal.ai' },
       { id: 'flux-schnell', label: 'FLUX Schnell', hint: 'Super fast (~2s), cheap' },
       { id: 'flux-dev', label: 'FLUX Dev', hint: 'Higher quality, slower' },
       { id: 'imagen4', label: 'Google Imagen 4 Fast', hint: 'Good for realism' },
     ],
     image2image: [
-      { id: 'nano-banana-2-edit', label: 'Nano Banana 2 Edit', hint: 'Targeted edit, preserves subject' },
-      { id: 'gpt-image-2-edit', label: 'ChatGPT Image 2 Edit (OpenAI)', hint: 'Fine editing, expensive' },
-      { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Advanced re-edit' },
+      { id: 'gpt-image-2-edit', label: 'ChatGPT Image 2 Edit (OpenAI)', hint: 'Default — loads the page image on the server' },
+      { id: 'nano-banana-2-edit', label: 'Nano Banana 2 Edit', hint: 'fal.ai — fails if the image URL is blocked' },
+      { id: 'flux-kontext', label: 'FLUX Pro Kontext', hint: 'Advanced re-edit via fal.ai' },
     ],
     image2video: [
       { id: 'seedance-2', label: 'Bytedance Seedance 2.0', hint: '5/10s, top quality, multi-resolution' },
@@ -3782,6 +3784,33 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
     setAiError('');
     setAiRevisedPrompt('');
     try {
+      const compactRef = async (url: string): Promise<string> => {
+        if (!url) return url;
+        if (url.startsWith('data:image/')) return url;
+        return (await extractImageAsDataUrl(url, 1280, 0.85)) || url;
+      };
+      const publishForFal = async (url: string | undefined): Promise<string | undefined> => {
+        if (!url || !url.startsWith('data:image/') || aiModel.startsWith('gpt-image-2')) return url;
+        try {
+          const blob = await (await fetch(url)).blob();
+          const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+          const file = new File([blob], `ai-source.${ext}`, { type: blob.type || 'image/jpeg' });
+          return await directSupabaseUpload(file);
+        } catch {
+          return url;
+        }
+      };
+      const imageUrl = await publishForFal(aiSourceImage ? await compactRef(aiSourceImage) : undefined);
+      const secondaryImageUrl = await publishForFal(
+        aiMode === 'image2image' && aiProductImage
+          ? await compactRef(aiProductImage)
+          : undefined,
+      );
+      const extraImageUrls =
+        aiMode === 'image2image' && aiExtraImages.length
+          ? await Promise.all(aiExtraImages.map(async (u) => (await publishForFal(await compactRef(u))) || u))
+          : undefined;
+
       const submitRes = await fetch('/api/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3791,16 +3820,9 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           prompt: finalPrompt,
           size: aiSize,
           style: aiStyle,
-          imageUrl: aiSourceImage || undefined,
-          // Seconda immagine (nostro prodotto) solo nell'edit image2image:
-          // i modelli Nano Banana 2 / GPT Image 2 edit la fondono con la
-          // sorgente per sostituire il prodotto.
-          secondaryImageUrl:
-            aiMode === 'image2image' && aiProductImage ? aiProductImage : undefined,
-          // Collage / immagini extra: si accodano alla sorgente nei modelli
-          // edit multi-immagine (Nano Banana 2 / GPT Image 2).
-          extraImageUrls:
-            aiMode === 'image2image' && aiExtraImages.length ? aiExtraImages : undefined,
+          imageUrl,
+          secondaryImageUrl,
+          extraImageUrls,
           duration:
             aiMode === 'image2video' || aiMode === 'text2video'
               ? aiVideoDuration
@@ -3859,8 +3881,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         throw new Error(data.error || 'No media returned by the model');
       }
 
-      const url = data.url;
+      let url = data.url;
       const mediaType = data.mediaType || 'image';
+      if (mediaType === 'image' && url.startsWith('data:image/')) {
+        try {
+          const blob = await (await fetch(url)).blob();
+          const ext = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+          const file = new File([blob], `ai-edit.${ext}`, { type: blob.type || 'image/png' });
+          url = await directSupabaseUpload(file);
+        } catch {
+          /* keep data URL if storage upload fails */
+        }
+      }
 
       if (mediaType === 'video') {
         // Replace the selected <img> with a looping muted <video> tag so the
@@ -3924,7 +3956,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       (e.childImgs && e.childImgs[0]?.src) ||
       e.childBg?.src ||
       '';
-    if (!cand || !/^https?:\/\//.test(cand)) return;
+    if (!cand || (!/^https?:\/\//.test(cand) && !cand.startsWith('data:image/'))) return;
     setAiSourceImage((prev) => prev || cand);
   }, [showAiImagePopup, aiMode, selectedElement]);
 
@@ -6273,14 +6305,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                         setAiContextText('');
                         setAiPrompt('');
                         setAiMode('text2image');
-                        setAiModel('nano-banana-2');
+                        setAiModel('gpt-image-2');
                         // Reset Swipe banner: questo è il flusso AI normale,
                         // non lo Swipe-for-Product.
                         setSwipeMediaKind(null);
                         // Pre-fill source image with the currently selected img,
                         // useful if the user immediately switches to Modifica/Anima.
                         const currentSrc = el.src;
-                        setAiSourceImage(currentSrc && /^https?:\/\//.test(currentSrc) ? currentSrc : '');
+                        setAiSourceImage(
+                          currentSrc && (/^https?:\/\//.test(currentSrc) || currentSrc.startsWith('data:image/'))
+                            ? currentSrc
+                            : '',
+                        );
                         setAiProductImage('');
                         setAiExtraImages([]);
                         sendToIframe({ type: 'cmd-get-context-text' });
@@ -6935,7 +6971,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white">Generate Media with AI</h3>
-                  <p className="text-[10px] text-violet-200">fal.ai — text-to-image, image edit and image-to-video</p>
+                  <p className="text-[10px] text-violet-200">ChatGPT Image 2 for generate/edit · fal.ai for video</p>
                 </div>
               </div>
               <button onClick={() => { if (aiGenerating) return; setShowAiImagePopup(false); setSwipeMediaKind(null); setAiExtraImages([]); }} className="p-1.5 rounded-lg hover:bg-white/20 transition-colors" disabled={aiGenerating}>
