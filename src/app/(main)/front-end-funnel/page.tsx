@@ -3001,9 +3001,7 @@ export default function FrontEndFunnel() {
       name,
       pageType,
       productId: '',
-      urlToSwipe: swipeHtml
-        ? `https://uploaded.local/${safeName}.html`
-        : swipeUrl || '',
+      urlToSwipe: swipeHtml || swipeUrl || `https://uploaded.local/${safeName}.html`,
       prompt: '',
       swipeStatus: 'pending',
       feedback: '',
@@ -3016,6 +3014,7 @@ export default function FrontEndFunnel() {
             duration_seconds: 0,
             cloned_at: new Date(),
             htmlUrl: swipeHtml,
+            source_url: swipeUrl || undefined,
           }
         : undefined,
     });
@@ -3053,9 +3052,7 @@ export default function FrontEndFunnel() {
           name,
           pageType,
           productId: '',
-          urlToSwipe: s.html
-            ? `https://uploaded.local/${safeName}.html`
-            : s.url || '',
+          urlToSwipe: s.html || s.url || `https://uploaded.local/${safeName}.html`,
           prompt: '',
           swipeStatus: 'pending',
           feedback: '',
@@ -3068,6 +3065,7 @@ export default function FrontEndFunnel() {
                 duration_seconds: 0,
                 cloned_at: new Date(),
                 htmlUrl: s.html,
+                source_url: s.url || undefined,
               }
             : undefined,
         });
@@ -4406,44 +4404,32 @@ export default function FrontEndFunnel() {
         // niente fetch — quell'URL non esiste. Usiamo direttamente l'HTML
         // gia' presente in clonedData.html. Tutto il resto del flusso resta
         // identico (sanitize, preview, save).
-        const isUploaded = url.startsWith('https://uploaded.local/');
-        let uploadedHtml = isUploaded ? (currentPage?.clonedData?.html || '') : '';
-        if (isUploaded && !uploadedHtml) {
-          // After a reload the JSONB strips HTML > 50KB, so clonedData.html is
-          // empty in memory. Recover from IndexedDB, then from the page_html
-          // server, BEFORE giving up. We must NEVER network-fetch an
-          // uploaded.local URL — that host does not exist (chrome/googlebot/
-          // jina all "fetch failed").
-          try {
-            const { loadHtmlBlob } = await import('@/lib/html-blob-store');
-            const idb = await loadHtmlBlob(pageId, 'clonedData');
-            uploadedHtml = idb?.html || '';
-          } catch { /* ignore — try server next */ }
-          if (!uploadedHtml) {
-            try {
-              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-              uploadedHtml =
-                (await fetchHtmlFromStorage(
-                  `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop`,
-                )) || '';
-            } catch { /* ignore */ }
-          }
-          if (!uploadedHtml) {
-            throw new Error(
-              'Uploaded HTML not found anymore (cleared cache or different device). ' +
-                'Re-upload the .html file for this step.',
-            );
-          }
-        }
-        if (!uploadedHtml) {
-          const tplHtmlUrl = currentPage?.clonedData?.htmlUrl;
-          if (tplHtmlUrl) {
-            try {
-              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-              const html = (await fetchHtmlFromStorage(tplHtmlUrl)) || '';
-              if (html && html.length > 30 && !/^\{/.test(html.trim())) uploadedHtml = html;
-            } catch { /* live clone below */ }
-          }
+        const {
+          resolvePageHtml,
+          isPersistedHtmlUrl,
+          isSyntheticUploadUrl,
+        } = await import('@/lib/funnel-html-storage');
+        const isUploaded = isSyntheticUploadUrl(url) || isPersistedHtmlUrl(url);
+        const sourceUrl = String((currentPage?.clonedData as { source_url?: string } | undefined)?.source_url || '');
+        const liveUrl = (
+          /^https?:\/\//i.test(url) && !isUploaded ? url : ''
+        ) || (
+          /^https?:\/\//i.test(sourceUrl) && !isSyntheticUploadUrl(sourceUrl) && !isPersistedHtmlUrl(sourceUrl)
+            ? sourceUrl : ''
+        );
+        let uploadedHtml = await resolvePageHtml({
+          pageId,
+          html: currentPage?.clonedData?.html || currentPage?.swipedData?.html || '',
+          htmlUrl:
+            (currentPage?.clonedData as { htmlUrl?: string } | undefined)?.htmlUrl
+            || (currentPage?.swipedData as { htmlUrl?: string } | undefined)?.htmlUrl
+            || '',
+          urlToSwipe: url,
+        });
+        if (!uploadedHtml && !liveUrl) {
+          throw new Error(
+            'Saved page HTML was not found. Pick the template again, or open Competitor Library and swipe the landing once more.',
+          );
         }
         let data: {
           content?: string;
@@ -4464,7 +4450,7 @@ export default function FrontEndFunnel() {
           const response = await fetch('/api/clone-funnel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: preserveScripts }),
+            body: JSON.stringify({ url: liveUrl || url, cloneMode: 'identical', viewport: cloneMobile ? 'both' : 'desktop', keepScripts: preserveScripts }),
           });
           data = await parseJsonResponseOrThrow<{
             content?: string;
@@ -4564,45 +4550,30 @@ export default function FrontEndFunnel() {
 
       } else if (mode === 'rewrite') {
         // All rewrites go through /api/quiz-rewrite (Anthropic Claude)
-        let htmlToRewrite = currentPage?.clonedData?.html || currentPage?.swipedData?.html || '';
-        const isUploadedRow = url.startsWith('https://uploaded.local/');
-        if (!htmlToRewrite) {
-          // Memory can be empty after a reload (JSONB strips HTML > 50KB).
-          // Recover from IndexedDB, then the page_html server, BEFORE any
-          // network clone — and NEVER network-fetch an uploaded.local URL.
-          try {
-            const { loadHtmlBlob } = await import('@/lib/html-blob-store');
-            const idb =
-              (await loadHtmlBlob(pageId, 'clonedData')) ||
-              (await loadHtmlBlob(pageId, 'swipedData'));
-            htmlToRewrite = idb?.html || '';
-          } catch { /* ignore — try server next */ }
-          if (!htmlToRewrite) {
-            try {
-              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-              const base = `/api/funnel-html?pageId=${encodeURIComponent(pageId)}`;
-              htmlToRewrite =
-                (await fetchHtmlFromStorage(`${base}&kind=cloned&variant=desktop`)) ||
-                (await fetchHtmlFromStorage(`${base}&kind=swiped&variant=desktop`)) ||
-                '';
-            } catch { /* ignore */ }
-          }
-          if (!htmlToRewrite && isUploadedRow) {
-            throw new Error(
-              'Uploaded HTML not found anymore (cleared cache or different device). ' +
-                'Re-upload the .html file for this step.',
-            );
-          }
-        }
-        if (!htmlToRewrite) {
-          const tplHtmlUrl = currentPage?.clonedData?.htmlUrl;
-          if (tplHtmlUrl) {
-            try {
-              const { fetchHtmlFromStorage } = await import('@/lib/funnel-html-storage');
-              const html = (await fetchHtmlFromStorage(tplHtmlUrl)) || '';
-              if (html && html.length > 30 && !/^\{/.test(html.trim())) htmlToRewrite = html;
-            } catch { /* clone live URL below */ }
-          }
+        const {
+          resolvePageHtml,
+          isPersistedHtmlUrl,
+          isSyntheticUploadUrl,
+        } = await import('@/lib/funnel-html-storage');
+        let htmlToRewrite = await resolvePageHtml({
+          pageId,
+          html: currentPage?.clonedData?.html || currentPage?.swipedData?.html || '',
+          htmlUrl:
+            (currentPage?.clonedData as { htmlUrl?: string } | undefined)?.htmlUrl
+            || (currentPage?.swipedData as { htmlUrl?: string } | undefined)?.htmlUrl
+            || '',
+          urlToSwipe: url,
+        });
+        const isUploadedRow = isSyntheticUploadUrl(url) || isPersistedHtmlUrl(url);
+        const rewriteSourceUrl = String((currentPage?.clonedData as { source_url?: string } | undefined)?.source_url || '');
+        const rewriteLive =
+          (/^https?:\/\//i.test(url) && !isUploadedRow ? url : '')
+          || (/^https?:\/\//i.test(rewriteSourceUrl) && !isSyntheticUploadUrl(rewriteSourceUrl) && !isPersistedHtmlUrl(rewriteSourceUrl)
+            ? rewriteSourceUrl : '');
+        if (!htmlToRewrite && isUploadedRow && !rewriteLive) {
+          throw new Error(
+            'Saved page HTML was not found. Pick the template again, or open Competitor Library and swipe the landing once more.',
+          );
         }
         const chosenAuditorEarly = auditorRef.current;
         let pageSwipeMap: SwipeAssetMap | undefined =
@@ -4625,7 +4596,7 @@ export default function FrontEndFunnel() {
           const cloneRes = await fetch('/api/clone-funnel', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, cloneMode: 'identical', viewport: 'desktop', keepScripts: preserveScripts }),
+            body: JSON.stringify({ url: rewriteLive || url, cloneMode: 'identical', viewport: 'desktop', keepScripts: preserveScripts }),
           });
           const cloneData = await parseJsonResponseOrThrow<{ content?: string; title?: string; error?: string }>(
             cloneRes,
@@ -7031,7 +7002,9 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                               templateId: selected
                                 ? pickerValueForTemplate(selected)
                                 : '',
-                              urlToSwipe: selected?.url_to_swipe || page.urlToSwipe,
+                              urlToSwipe: selected
+                                ? (selected.htmlUrl || selected.url_to_swipe || page.urlToSwipe)
+                                : page.urlToSwipe,
                               clonedData: selected
                                 ? {
                                     html: '',
@@ -7041,6 +7014,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
                                     duration_seconds: 0,
                                     cloned_at: new Date(),
                                     htmlUrl: selected.htmlUrl || undefined,
+                                    source_url: selected.url_to_swipe || undefined,
                                   }
                                 : page.clonedData,
                             }).catch(() => {});

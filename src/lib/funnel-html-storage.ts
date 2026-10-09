@@ -148,3 +148,68 @@ export async function fetchHtmlFromStorage(url: string): Promise<string | null> 
     return null;
   }
 }
+
+/** HTML we already saved (template, competitor landing, previous clone) —
+ *  not a live website URL to send to /api/clone-funnel. */
+export function isPersistedHtmlUrl(url?: string | null): boolean {
+  const u = String(url || '').trim();
+  if (!u) return false;
+  if (u.startsWith('/api/funnel-html')) return true;
+  if (/\/api\/funnel-html\?/i.test(u)) return true;
+  return false;
+}
+
+export function isSyntheticUploadUrl(url?: string | null): boolean {
+  const u = String(url || '').trim();
+  return /^https?:\/\/uploaded\.local\//i.test(u) || /^file:/i.test(u);
+}
+
+function htmlLooksReal(html?: string | null): html is string {
+  const t = String(html || '').trim();
+  return t.length > 40 && !t.startsWith('{');
+}
+
+/**
+ * Load HTML for Clone/Swipe without hitting a fake uploaded.local host.
+ * Order: in-memory blob → template/landing htmlUrl → urlToSwipe if it is
+ * a /api/funnel-html pointer → IndexedDB → this page's page_html row.
+ */
+export async function resolvePageHtml(opts: {
+  pageId: string;
+  html?: string | null;
+  htmlUrl?: string | null;
+  urlToSwipe?: string | null;
+}): Promise<string> {
+  if (htmlLooksReal(opts.html)) return opts.html;
+
+  const tried = new Set<string>();
+  const urls = [opts.htmlUrl, isPersistedHtmlUrl(opts.urlToSwipe) ? opts.urlToSwipe : '']
+    .map((u) => String(u || '').trim())
+    .filter(Boolean);
+  for (const u of urls) {
+    if (tried.has(u)) continue;
+    tried.add(u);
+    const html = await fetchHtmlFromStorage(u);
+    if (htmlLooksReal(html)) return html;
+  }
+
+  try {
+    const { loadHtmlBlob } = await import('./html-blob-store');
+    const idb =
+      (await loadHtmlBlob(opts.pageId, 'clonedData')) ||
+      (await loadHtmlBlob(opts.pageId, 'swipedData'));
+    if (htmlLooksReal(idb?.html)) return idb.html;
+  } catch { /* ignore */ }
+
+  const self = `/api/funnel-html?pageId=${encodeURIComponent(opts.pageId)}&kind=cloned&variant=desktop`;
+  if (!tried.has(self)) {
+    const html = await fetchHtmlFromStorage(self);
+    if (htmlLooksReal(html)) return html;
+  }
+  const selfSwiped = `/api/funnel-html?pageId=${encodeURIComponent(opts.pageId)}&kind=swiped&variant=desktop`;
+  if (!tried.has(selfSwiped)) {
+    const html = await fetchHtmlFromStorage(selfSwiped);
+    if (htmlLooksReal(html)) return html;
+  }
+  return '';
+}

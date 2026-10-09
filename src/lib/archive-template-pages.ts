@@ -54,6 +54,7 @@ export function listArchivePagesByType(
     const steps = (f.steps as {
       name?: string;
       page_type?: string;
+      page_id?: string;
       url_to_swipe?: string;
       prompt?: string;
       cloned_data?: ClonedShots;
@@ -62,6 +63,7 @@ export function listArchivePagesByType(
     for (const s of steps) {
       const t = normalizeArchiveType(s.page_type, knownCustomTypes);
       if (!map[t]) map[t] = [];
+      const htmlPageId = s.page_id || f.id;
       map[t].push({
         funnel_name: f.name,
         funnel_id: f.id,
@@ -80,7 +82,7 @@ export function listArchivePagesByType(
         htmlUrl:
           s.cloned_data?.htmlUrl ||
           s.swiped_data?.htmlUrl ||
-          `/api/funnel-html?pageId=${encodeURIComponent(f.id)}&kind=cloned&variant=desktop`,
+          `/api/funnel-html?pageId=${encodeURIComponent(htmlPageId)}&kind=cloned&variant=desktop`,
       });
     }
   }

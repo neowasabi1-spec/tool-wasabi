@@ -3671,15 +3671,17 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   // Add this landing as a swipe step in Clone/Swipe (front-end-funnel), then go there.
   const cloneSwipe = (l: Landing) => {
     const htmlUrl = l.html_url || "";
-    if (!htmlUrl) {
+    const live = l.url || "";
+    if (!htmlUrl && !live) {
       toast({ title: "This landing has no saved HTML to swipe", variant: "destructive" });
       return;
     }
     const q = new URLSearchParams({
-      swipe_html: htmlUrl,
       swipe_name: l.name || "Template",
       swipe_type: l.page_type || "landing",
     });
+    if (htmlUrl) q.set("swipe_html", htmlUrl);
+    if (live) q.set("swipe_url", live);
     router.push(`/front-end-funnel?${q.toString()}`);
   };
 
