@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { seedCompetitorBrandsFromResearch } from '@/lib/seed-competitors-from-research';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -105,16 +106,35 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   // restoreAutoPrunedBrands removed from GET hot path (was scanning brands on every live refresh).
 
-  const [{ data: brands, error }, stats] = await Promise.all([
-    supabaseAdmin
+  let { data: brands, error } = await supabaseAdmin
+    .from('competitor_brands')
+    .select(
+      'id, project_id, name, ads_library_url, scrape_count, frequency, brand_type, notes, is_active, last_scraped, created_at',
+    )
+    .eq('project_id', id)
+    .order('created_at', { ascending: false });
+
+  if (!error && !(brands || []).length) {
+    const { data: project } = await supabaseAdmin
+      .from('projects')
+      .select('name')
+      .eq('id', id)
+      .maybeSingle();
+    await seedCompetitorBrandsFromResearch(supabaseAdmin, id, {
+      ownName: String((project as { name?: string } | null)?.name || ''),
+    }).catch((e) => console.warn('[competitor-library] seed:', (e as Error).message));
+    const retry = await supabaseAdmin
       .from('competitor_brands')
       .select(
         'id, project_id, name, ads_library_url, scrape_count, frequency, brand_type, notes, is_active, last_scraped, created_at',
       )
       .eq('project_id', id)
-      .order('created_at', { ascending: false }),
-    loadStats(id),
-  ]);
+      .order('created_at', { ascending: false });
+    brands = retry.data;
+    error = retry.error;
+  }
+
+  const stats = await loadStats(id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 

@@ -2301,7 +2301,9 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
         <div className="py-24 text-center border-2 border-dashed border-border rounded-2xl">
           <Globe className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
           <p className="text-base font-semibold text-foreground mb-1">No competitors monitored</p>
-          <p className="text-sm text-muted-foreground mb-4">Add a competitor by entering its domain or ads library URL.</p>
+          <p className="text-sm text-muted-foreground mb-4 max-w-md mx-auto">
+            Chimera fills this from ad libraries. If Apify is over quota, it still saves named competitors from market research — open General Brief if this stays empty, then Discover.
+          </p>
           <div className="flex items-center justify-center gap-2 flex-wrap">
             <Button variant="outline" onClick={() => void runDiscoverDirect("category")} disabled={discovering} className="gap-1.5">
               {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}

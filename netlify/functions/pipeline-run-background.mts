@@ -15,6 +15,7 @@ import {
   angleRowFromParsed,
   generatedRowFromParsed,
 } from '../../src/lib/chimera-creative';
+import { seedCompetitorBrandsFromResearch } from '../../src/lib/seed-competitors-from-research';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -1416,6 +1417,17 @@ function cleanOfferUrl(raw: string): string {
   }
 }
 
+function brandNameFromHost(url: string): string {
+  try {
+    const u = new URL(url.startsWith('http') ? url : `https://${url}`);
+    const host = u.hostname.replace(/^www\./, '');
+    const base = host.split('.')[0] || host;
+    return base.charAt(0).toUpperCase() + base.slice(1);
+  } catch {
+    return 'Competitor';
+  }
+}
+
 /**
  * Affiliate runs: the funnel must show the promoted offer's own photos. Pull
  * them from the offer link into the project library before anything else.
@@ -1584,9 +1596,26 @@ CRITICAL RULES:
   const webhookFor = (platform: string): string =>
     shortApifyWebhookUrl({ base, projectId, platform, secret });
 
+  let seededNames: string[] = [];
+  try {
+    const extra = affiliate ? [] : (link && !isMetaAdLibrary(link)
+      ? [{ name: brandNameFromHost(link), blurb: `Competitor page: ${cleanOfferUrl(link)}`, url: cleanOfferUrl(link) }]
+      : []);
+    const seeded = await seedCompetitorBrandsFromResearch(supabase, projectId, {
+      researchText: research,
+      ownName: productName,
+      country,
+      extra,
+    });
+    seededNames = seeded.names;
+  } catch (e) {
+    console.warn('[pipeline] seed competitors:', (e as Error).message);
+  }
+
   // 2) Fire the scrapes across all three networks.
   const runs: string[] = [];
   const started: Array<{ platform: string; keyword: string; runId: string }> = [];
+  const quotaHit = () => runs.some((r) => /monthly usage hard limit|limit exceeded|quota|payment required/i.test(r));
 
   // Meta / Facebook — pasted library URL is a chosen competitor: keep every
   // ad (no include/exclude). Keyword searches stay filtered.
@@ -1600,30 +1629,39 @@ CRITICAL RULES:
   // one page alone runs 40 variants. The exact-name searches (affiliate) go
   // deep; the webhook groups ads per advertiser and the model judge keeps
   // only the ones that actually run this product.
-  const DEEP = 400;   // affiliate: brand / product-name searches
-  const WIDE = 100;   // category phrases, host names, TikTok, Google
-  const deepTerms = new Set(affiliate ? searchTerms.filter((t) => !offer.hosts.includes(t)).slice(0, 3) : []);
-  for (const kw of searchTerms) {
+  const DEEP = 80;
+  const WIDE = 40;
+  const metaTerms = searchTerms.slice(0, 4);
+  const otherTerms = searchTerms.slice(0, 2);
+  const deepTerms = new Set(affiliate ? metaTerms.filter((t) => !offer.hosts.includes(t)).slice(0, 2) : []);
+  for (const kw of metaTerms) {
+    if (quotaHit()) break;
     const metaCount = deepTerms.has(kw) ? DEEP : WIDE;
     const metaUrl = fbAdLibrarySearchUrl(kw, country);
     const run = await startApifyAdsRun(metaUrl, metaCount, webhookFor('meta'));
     if (run.ok) started.push({ platform: 'meta', keyword: kw, runId: run.runId! });
     else runs.push(`Meta(${kw}): ${run.error}`);
-
+  }
+  for (const kw of otherTerms) {
+    if (quotaHit()) break;
     const tk = await startApifyTiktokRun(kw, country, WIDE, webhookFor('tiktok'));
     if (tk.ok) started.push({ platform: 'tiktok', keyword: kw, runId: tk.runId! });
     else runs.push(`TikTok(${kw}): ${tk.error}`);
-
+    if (quotaHit()) break;
     const gg = await startApifyGoogleRun(kw, country, WIDE, webhookFor('google'));
     if (gg.ok) started.push({ platform: 'google', keyword: kw, runId: gg.runId! });
     else runs.push(`Google(${kw}): ${gg.error}`);
   }
 
   const byPlatform = (p: string) => started.filter((s) => s.platform === p).length;
+  const seededBit = seededNames.length
+    ? ` ${seededNames.length} competitor page${seededNames.length === 1 ? '' : 's'} saved to Competitor Library (${seededNames.slice(0, 6).join(', ')}${seededNames.length > 6 ? '…' : ''}).`
+    : '';
+  const quotaBit = quotaHit() ? ' Ad-library scrape hit the monthly Apify limit — creatives will arrive once the quota resets; names from research are already in the library.' : '';
   const summary =
     started.length > 0
-      ? `Competitor discovery started on ${started.length} run(s): Meta ${byPlatform('meta')}, TikTok ${byPlatform('tiktok')}, Google ${byPlatform('google')}. Advertisers, creatives (video/image) and their real landing pages will appear shortly in the Competitor Library.`
-      : `Competitor research: no runs started. ${runs.join(' | ')}`;
+      ? `Competitor discovery started on ${started.length} run(s): Meta ${byPlatform('meta')}, TikTok ${byPlatform('tiktok')}, Google ${byPlatform('google')}.${seededBit} Advertisers and creatives appear as scrapes finish.`
+      : `Competitor research: no ad-library runs started.${seededBit}${quotaBit} ${runs.join(' | ')}`;
 
   const output = [
     offerNote,
