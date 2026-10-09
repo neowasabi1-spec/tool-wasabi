@@ -130,6 +130,14 @@ export async function submitAndPollGenerate(opts: {
   if (!submit.statusUrl) {
     throw new Error(String(submit.error || `${label} failed to start`));
   }
+  const jobId = String(submit.requestId || '');
+  if (String(submit.statusUrl) === 'gpt-job' || jobId.startsWith('gptjob_')) {
+    void fetch('/.netlify/functions/generate-image-background', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jobId }),
+    }).catch(() => {});
+  }
   return pollGenerateJob({ ...jobFrom(submit), onWait: opts.onWait, label });
 }
 

@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { lastImageGenError, openaiGenerateImage, openaiImageKey } from '@/lib/openai-image';
+import { openaiImageKey } from '@/lib/openai-image';
+import {
+  GPT_JOB_MARKER,
+  isGptImageJobId,
+  newGptImageJobId,
+  readGenerateImageJob,
+  writeGenerateImageJob,
+} from '@/lib/generate-image-job';
 
-export const maxDuration = 180;
+export const maxDuration = 30;
 export const dynamic = 'force-dynamic';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -15,8 +22,8 @@ export const dynamic = 'force-dynamic';
 //                   first frame)
 //
 // Image generate/edit defaults to ChatGPT Image 2 on the OpenAI API (not fal).
-// Video modes still use fal.ai. Fal jobs are single-shot submit-or-poll so we
-// stay under the function wall; OpenAI image calls wait in this request.
+// Video modes still use fal.ai. Both paths are submit-or-poll so this Next
+// handler never waits on the model (OpenAI image gen is a background function).
 // ═══════════════════════════════════════════════════════════════════════════
 
 type Mode = 'text2image' | 'image2image' | 'image2video' | 'text2video';
@@ -404,8 +411,41 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ status: 'error', error: 'Body non valido' }, { status: 400 });
   }
 
-  // ── POLL (fal queue only) ────────────────────────────────────────────────
+  // ── POLL ─────────────────────────────────────────────────────────────────
   if (body.action === 'poll') {
+    if (isGptImageJobId(body.requestId) || body.statusUrl === GPT_JOB_MARKER) {
+      const jobId = String(body.requestId || '').trim();
+      if (!jobId) {
+        return NextResponse.json({ status: 'error', error: 'Missing job id' }, { status: 400 });
+      }
+      const job = await readGenerateImageJob(jobId);
+      if (!job) {
+        return NextResponse.json({ status: 'error', error: 'ChatGPT Image 2 job not found' }, { status: 404 });
+      }
+      if (job.status === 'completed' && job.url) {
+        return NextResponse.json({
+          status: 'completed',
+          url: job.url,
+          mediaType: 'image',
+          model: 'openai/gpt-image-2',
+          modelKey: body.modelKey || 'gpt-image-2',
+        });
+      }
+      if (job.status === 'error') {
+        return NextResponse.json(
+          { status: 'error', error: job.error || 'ChatGPT Image 2 failed' },
+          { status: 502 },
+        );
+      }
+      return NextResponse.json({
+        status: 'pending',
+        requestId: jobId,
+        statusUrl: GPT_JOB_MARKER,
+        responseUrl: GPT_JOB_MARKER,
+        modelKey: body.modelKey || 'gpt-image-2',
+      });
+    }
+
     const apiKey = getFalKey();
     if (!apiKey) {
       return NextResponse.json(
@@ -489,8 +529,7 @@ export async function POST(req: NextRequest) {
   const finalPrompt =
     mode === 'text2image' ? `${prompt}\n\n${styleHint}` : prompt;
 
-  // ChatGPT Image 2 goes through the OpenAI API, not fal.ai.
-  // fal queue 422s on cloned-page image URLs that its crawler cannot fetch.
+  // ChatGPT Image 2: queue a background function. Waiting here 504s on Netlify.
   if (isGptImageModel(modelKey)) {
     if (!openaiImageKey()) {
       return NextResponse.json(
@@ -506,33 +545,40 @@ export async function POST(req: NextRequest) {
       body.secondaryImageUrl,
       ...(Array.isArray(body.extraImageUrls) ? body.extraImageUrls : []),
     ].filter((u): u is string => typeof u === 'string' && u.trim().length > 0);
-    try {
-      const url = await openaiGenerateImage({
-        prompt: finalPrompt,
-        imageUrls: mode === 'image2image' ? refs : undefined,
-        size: typeof body.size === 'string' ? body.size : undefined,
-        quality: 'medium',
-        timeoutMs: 160_000,
-        openaiOnly: true,
-      });
-      if (!url) {
-        return NextResponse.json(
-          { status: 'error', error: lastImageGenError() || 'ChatGPT Image 2 failed' },
-          { status: 502 },
-        );
-      }
-      return NextResponse.json({
-        status: 'completed',
-        url,
-        mediaType: 'image',
-        modelKey,
-        model: 'openai/gpt-image-2',
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      console.error('[generate-image] ChatGPT Image 2 error:', message);
-      return NextResponse.json({ status: 'error', error: message }, { status: 502 });
+    const jobId = newGptImageJobId();
+    const writeErr = await writeGenerateImageJob(jobId, {
+      status: 'pending',
+      prompt: finalPrompt,
+      imageUrls: mode === 'image2image' ? refs : [],
+      size: typeof body.size === 'string' ? body.size : undefined,
+      createdAt: Date.now(),
+    });
+    if (writeErr) {
+      return NextResponse.json({ status: 'error', error: writeErr }, { status: 500 });
     }
+    const origin = (process.env.URL || process.env.DEPLOY_PRIME_URL || req.nextUrl.origin).replace(/\/$/, '');
+    let queued = false;
+    try {
+      const kick = await fetch(`${origin}/.netlify/functions/generate-image-background`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      queued = kick.status === 202 || kick.ok;
+    } catch {
+      queued = false;
+    }
+    return NextResponse.json({
+      status: 'pending',
+      requestId: jobId,
+      statusUrl: GPT_JOB_MARKER,
+      responseUrl: GPT_JOB_MARKER,
+      modelKey,
+      mediaType: 'image',
+      model: 'openai/gpt-image-2',
+      queued,
+    });
   }
 
   const apiKey = getFalKey();

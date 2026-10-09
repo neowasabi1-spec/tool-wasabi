@@ -3847,6 +3847,18 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
         throw new Error(data.error || 'Generation error');
       }
 
+      if (
+        data.status === 'pending'
+        && data.requestId
+        && (data.statusUrl === 'gpt-job' || data.requestId.startsWith('gptjob_'))
+      ) {
+        void fetch('/.netlify/functions/generate-image-background', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: data.requestId }),
+        }).catch(() => {});
+      }
+
       const POLL_DEADLINE = Date.now() + 5 * 60_000;
       while (data.status === 'pending' && data.requestId) {
         if (Date.now() > POLL_DEADLINE) {

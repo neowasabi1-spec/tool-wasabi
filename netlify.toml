@@ -94,6 +94,11 @@
 [[plugins]]
   package = "@netlify/plugin-nextjs"
 
+# Editor ChatGPT Image 2 generate/edit — must not run on the Next handler
+# (Netlify returns HTML 504 if OpenAI takes longer than the idle cutoff).
+[functions."generate-image-background"]
+  timeout = 900
+
 # Jev AI jobs (ingest / templates / families) — long-running background worker.
 [functions."jev-jobs-background"]
   timeout = 900
