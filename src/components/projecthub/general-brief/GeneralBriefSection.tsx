@@ -394,6 +394,50 @@ function GeneralBriefTabContent({ projectId, files, projectName, projectDescript
         )}
       </div>
 
+      {/* Angle Matrix (Chimera) */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm flex items-center gap-2">
+            <FileText className="w-4 h-4 text-primary" /> Angle Matrix
+          </h3>
+          <UploadBtn projectId={projectId} fileType="angles" label="Add document" accept=".pdf,.doc,.docx,.txt,.md,.markdown" />
+        </div>
+        {byType("angles").length === 0 ? (
+          <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+            <FileText className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground italic">No angle matrix yet — Chimera Protocol writes it here</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {byType("angles").map(f => (
+              <FileRow key={f.id} file={{ ...f, project_id: projectId } as any} onDelete={deleteFile} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Ads copy (Chimera) */}
+      <div className="bg-card border border-border rounded-xl p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="font-semibold text-sm flex items-center gap-2">
+            <FileText className="w-4 h-4 text-primary" /> Ads (Meta / TikTok / Google)
+          </h3>
+          <UploadBtn projectId={projectId} fileType="ads" label="Add document" accept=".pdf,.doc,.docx,.txt,.md,.markdown" />
+        </div>
+        {byType("ads").length === 0 ? (
+          <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
+            <FileText className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground italic">No ads document yet — Chimera Protocol writes it here</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {byType("ads").map(f => (
+              <FileRow key={f.id} file={{ ...f, project_id: projectId } as any} onDelete={deleteFile} />
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Mockup */}
       <div className="bg-card border border-border rounded-xl p-5 space-y-4">
         <div className="flex items-center justify-between">

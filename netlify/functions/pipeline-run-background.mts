@@ -9,6 +9,12 @@ import { fetchPageText, pageTextBlock } from '../../src/lib/page-text';
 import { wellFormed } from '../../src/lib/well-formed';
 import { openaiGenerateImage, lastImageGenError, openaiImageKey } from '../../src/lib/openai-image';
 import { numberSequentialOfferType, numberPagesOfferTypes } from '../../src/lib/step-offer';
+import {
+  parseAngles,
+  parseMultiPlatformAds,
+  angleRowFromParsed,
+  generatedRowFromParsed,
+} from '../../src/lib/chimera-creative';
 
 /**
  * Background function (up to 15 min) that RUNS the Project Autopilot pipeline
@@ -252,65 +258,9 @@ function marketDirective(input: PipelineInput): string {
 
 function isMetaAdLibrary(url: string): boolean { return /facebook\.com\/ads\/library/i.test(url); }
 
-/** One angle parsed out of the Angle Matrix produced by the angle step. */
-interface AngleItem { name: string; body: string; }
-
-/** Parse the Angle Matrix. Each angle starts with a markdown heading of the
- *  form "## ANGLE N — <name>" (we also tolerate "### ANGLE:" / "ANGLE:"). */
-function parseAngles(raw: string): AngleItem[] {
-  const lines = (raw || '').split('\n');
-  const items: AngleItem[] = [];
-  let cur: AngleItem | null = null;
-  const headRe = /^#{2,3}\s*ANGLE\s*\d*\s*[—:\-–]\s*(.+?)\s*$/i;
-  const altRe = /^ANGLE\s*\d*\s*[—:\-–]\s*(.+?)\s*$/i;
-  for (const ln of lines) {
-    const m = ln.match(headRe) || ln.match(altRe);
-    if (m) {
-      if (cur) items.push(cur);
-      cur = { name: m[1].replace(/[*_`]/g, '').trim().slice(0, 200), body: '' };
-    } else if (cur) {
-      cur.body += (cur.body ? '\n' : '') + ln;
-    }
-  }
-  if (cur) items.push(cur);
-  return items.map((a) => ({ name: a.name, body: a.body.trim() })).filter((a) => a.name);
-}
-
 type AdPlatform = 'meta' | 'tiktok' | 'google';
+interface AngleItem { name: string; body: string; }
 interface PlatformAd { angle: string; platform: AdPlatform; text: string; }
-
-/** Parse the multi-platform ads output. Angles are separated by a line of
- *  "---"; inside each block, platform sections are marked [META] / [TIKTOK] /
- *  [GOOGLE] (case-insensitive). */
-function parseMultiPlatformAds(raw: string): PlatformAd[] {
-  const out: PlatformAd[] = [];
-  const blocks = (raw || '').split(/\n-{3,}\s*\n/g).map((b) => b.trim()).filter(Boolean);
-  for (const b of blocks) {
-    const nameM = b.match(/^#{0,3}\s*ANGLE\s*\d*\s*[—:\-–]\s*(.+?)\s*$/im);
-    const angle = (nameM ? nameM[1] : 'Concept').replace(/[*_`]/g, '').trim().slice(0, 200);
-    const markers: Array<{ p: AdPlatform; re: RegExp }> = [
-      { p: 'meta', re: /\[\s*META\s*\]/i },
-      { p: 'tiktok', re: /\[\s*TIKTOK\s*\]/i },
-      { p: 'google', re: /\[\s*GOOGLE\s*\]/i },
-    ];
-    const hits = markers
-      .map((m) => ({ p: m.p, idx: b.search(m.re) }))
-      .filter((h) => h.idx >= 0)
-      .sort((a, c) => a.idx - c.idx);
-    if (hits.length === 0) {
-      // No platform markers — keep the whole block under META so nothing is lost.
-      out.push({ angle, platform: 'meta', text: b });
-      continue;
-    }
-    for (let i = 0; i < hits.length; i++) {
-      const start = hits[i].idx;
-      const end = i + 1 < hits.length ? hits[i + 1].idx : b.length;
-      const text = b.slice(start, end).replace(/^\[[^\]]+\]\s*/, '').trim();
-      if (text) out.push({ angle, platform: hits[i].p, text });
-    }
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Real competitor search (Facebook Ad Library via Apify)
@@ -1747,8 +1697,21 @@ Build the prioritized Angle Matrix now, best angle first.`;
   // Persist for machine consumption (the ads step reads it back) + a downloadable doc.
   const fileSaved = await saveSectionFile(supabase, projectId, 'angles', 'Angle Matrix', content);
 
+  let anglesSaved = 0;
+  try {
+    await supabase.from('creative_angles').delete().eq('project_id', projectId);
+    const rows = angles.map((a) => angleRowFromParsed(projectId, a));
+    if (rows.length) {
+      const { error: angErr } = await supabase.from('creative_angles').insert(rows);
+      if (!angErr) anglesSaved = rows.length;
+      else console.warn('[pipeline] creative_angles insert:', angErr.message);
+    }
+  } catch (e) {
+    console.warn('[pipeline] creative_angles:', (e as Error).message);
+  }
+
   return {
-    summary: `${angles.length || 6} angles prioritized (Angle Matrix)${fileSaved ? ' — saved as a document.' : '.'}`,
+    summary: `${anglesSaved || angles.length || 6} angles prioritized (Angle Matrix)${fileSaved ? ' — saved as a document in General Brief.' : '.'}${anglesSaved ? ' Visible in Creative → New Creatives.' : ''}`,
     output: content,
   };
 }
@@ -1818,6 +1781,8 @@ Write the 9 platform-ready ads now.`;
 
   const ads = parseMultiPlatformAds(raw);
 
+  const fileSaved = await saveSectionFile(supabase, projectId, 'ads', 'Ads Meta TikTok Google', raw);
+
   let saved = 0;
   if (ads.length > 0) {
     const rows = ads.map((a) => ({
@@ -1829,11 +1794,34 @@ Write the 9 platform-ready ads now.`;
     }));
     const { error } = await supabase.from('creative_outputs').insert(rows);
     if (!error) saved = rows.length;
+    else console.warn('[pipeline] creative_outputs insert:', error.message);
+  }
+
+  let boardSaved = 0;
+  try {
+    const { data: prevGen } = await supabase
+      .from('creative_generated')
+      .select('id, generation_notes')
+      .eq('project_id', projectId);
+    const chimeraIds = ((prevGen || []) as Array<{ id: number; generation_notes?: string }>)
+      .filter((r) => String(r.generation_notes || '').startsWith('[CHIMERA]'))
+      .map((r) => r.id);
+    if (chimeraIds.length) {
+      await supabase.from('creative_generated').delete().in('id', chimeraIds);
+    }
+    const boardRows = ads.map((a, i) => generatedRowFromParsed(projectId, a, i));
+    if (boardRows.length) {
+      const { error: genErr } = await supabase.from('creative_generated').insert(boardRows);
+      if (!genErr) boardSaved = boardRows.length;
+      else console.warn('[pipeline] creative_generated insert:', genErr.message);
+    }
+  } catch (e) {
+    console.warn('[pipeline] creative_generated:', (e as Error).message);
   }
 
   const angleCount = new Set(ads.map((a) => a.angle)).size;
   return {
-    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${saved ? ` — saved to Creative (${saved}).` : '.'}`,
+    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${fileSaved ? ' — saved as a document in General Brief.' : ''}${boardSaved || saved ? ` Visible in Creative → New Creatives (${boardSaved || saved}).` : '.'}`,
     output: raw,
   };
 }

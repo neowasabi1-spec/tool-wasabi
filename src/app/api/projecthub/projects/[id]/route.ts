@@ -15,6 +15,17 @@ import { canAccessProject } from '@/lib/auth/project-access';
 
 export const dynamic = 'force-dynamic';
 
+/** Metadata only — never `select('*')`. Chimera writes a multi-thousand-word
+ *  RMBC blob into `market_research` JSONB; pulling that on every project
+ *  open times out Postgres (57014) and the UI looks empty even though
+ *  `project_files` already has the documents. */
+const PROJECT_DETAIL_COLS =
+  'id, name, status, description, domain, notes, created_at, updated_at, thumbnail_path, product_brief_sections, owner_user_id, brief';
+const PROJECT_DETAIL_COLS_LEGACY =
+  'id, name, status, description, domain, notes, created_at, updated_at, owner_user_id, brief';
+const PROJECT_DETAIL_COLS_MIN =
+  'id, name, status, description, domain, notes, created_at, updated_at, owner_user_id';
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } },
@@ -27,11 +38,31 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  const { data: project, error } = await supabaseAdmin
+  let { data: project, error } = await supabaseAdmin
     .from('projects')
-    .select('*')
+    .select(PROJECT_DETAIL_COLS)
     .eq('id', id)
     .single();
+
+  if (error && /thumbnail_path|product_brief_sections|brief/i.test(error.message || '')) {
+    const retry = await supabaseAdmin
+      .from('projects')
+      .select(PROJECT_DETAIL_COLS_LEGACY)
+      .eq('id', id)
+      .single();
+    if (retry.error && /brief/i.test(retry.error.message || '')) {
+      const min = await supabaseAdmin
+        .from('projects')
+        .select(PROJECT_DETAIL_COLS_MIN)
+        .eq('id', id)
+        .single();
+      project = min.data;
+      error = min.error;
+    } else {
+      project = retry.data;
+      error = retry.error;
+    }
+  }
 
   if (error || !project) {
     return NextResponse.json(
@@ -89,7 +120,7 @@ export async function PATCH(
     .from('projects')
     .update(update)
     .eq('id', id)
-    .select()
+    .select(PROJECT_DETAIL_COLS)
     .single();
 
   if (error && /thumbnail_path|product_brief_sections/i.test(error.message || '')) {
@@ -105,7 +136,7 @@ export async function PATCH(
       .from('projects')
       .update(update)
       .eq('id', id)
-      .select()
+      .select(PROJECT_DETAIL_COLS_MIN)
       .single();
     data = retry.data;
     error = retry.error;

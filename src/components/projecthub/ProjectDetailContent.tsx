@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { useQueryClient } from '@tanstack/react-query';
 import { FunnelTab } from '@/components/projecthub/funnel-builder/FunnelTab';
 import { GeneralBriefSection } from '@/components/projecthub/general-brief/GeneralBriefSection';
 import { AdsCreativeShell } from '@/components/projecthub/ads-creative/AdsCreativeShell';
@@ -15,6 +16,8 @@ import {
   useGetProject,
   getGetProjectQueryKey,
 } from '@/lib/projecthub-api';
+import { useLiveReload } from '@/lib/live-refresh';
+import { mergeProjectFiles } from '@/lib/projecthub-legacy';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { getUploadUrl } from '@/lib/projecthub-storage';
@@ -46,9 +49,11 @@ const SECTIONS = [
 
 export function ProjectDetailContent({ projectId }: { projectId: string }) {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [activeSection, setActiveSection] = useState<Section>('dashboard');
   const [collapsed, setCollapsed] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
+  const [liveFiles, setLiveFiles] = useState<ProjectFile[] | null>(null);
 
   // Open the section requested via ?section=... (e.g. after launching the
   // Autopilot from /projects). Runs on the client only, so it survives SSR
@@ -62,6 +67,22 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
 
   const { data: project, isLoading } = useGetProject(projectId, {
     query: { enabled: !!projectId, queryKey: getGetProjectQueryKey(projectId) },
+  });
+
+  const refreshFiles = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      const r = await fetch(`/api/projecthub/projects/${projectId}/files`, { cache: 'no-store' });
+      if (!r.ok) return;
+      const rows = await r.json();
+      if (Array.isArray(rows)) setLiveFiles(rows);
+    } catch { /* keep last */ }
+  }, [projectId]);
+
+  useEffect(() => { void refreshFiles(); }, [refreshFiles]);
+  useLiveReload(() => {
+    void queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
+    void refreshFiles();
   });
 
   if (isLoading) {
@@ -92,7 +113,10 @@ export function ProjectDetailContent({ projectId }: { projectId: string }) {
     );
   }
 
-  const files: ProjectFile[] = (project as { files?: ProjectFile[] }).files || [];
+  const fromProject: ProjectFile[] = (project as { files?: ProjectFile[] }).files || [];
+  const files: ProjectFile[] = liveFiles
+    ? mergeProjectFiles(liveFiles, fromProject.filter((f) => f.id < 0))
+    : fromProject;
   const activeItem = SECTIONS.find(s => s.id === activeSection)!;
 
   return (

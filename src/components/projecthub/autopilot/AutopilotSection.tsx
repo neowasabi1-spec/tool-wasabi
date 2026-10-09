@@ -15,7 +15,9 @@ import { ChimeraImageModeToggle, type ChimeraImageMode } from '@/components/proj
 import { ChimeraProductPhoto } from '@/components/projecthub/autopilot/ChimeraProductPhoto';
 import { ChimeraProductPrices } from '@/components/projecthub/autopilot/ChimeraProductPrices';
 import { productsFromSelectedSteps } from '@/lib/archive-placement';
-import { useLiveReload } from '@/lib/live-refresh';
+import { emitLiveRefresh, useLiveReload } from '@/lib/live-refresh';
+import { useQueryClient } from '@tanstack/react-query';
+import { getGetProjectQueryKey } from '@/lib/projecthub-api';
 
 const EMPTY_FUNNEL: ChimeraFunnelPick = { funnelId: '', steps: [] };
 
@@ -74,6 +76,7 @@ export function AutopilotSection({
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   // When the funnel swipe step STARTS (seen going pending → running while we
   // watch), move to Clone/Swipe: that's where the pages being rewritten live.
@@ -108,6 +111,8 @@ export function AutopilotSection({
       if (!ACTIVE(data) && !swipeBusy) {
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = null;
+        void queryClient.invalidateQueries({ queryKey: getGetProjectQueryKey(projectId) });
+        emitLiveRefresh();
         loadHistory();
       }
     } catch { /* ignore transient */ }
