@@ -7,6 +7,7 @@
     "studio": "remotion studio remotion/index.ts",
     "preview": "remotion preview remotion/index.ts",
     "render": "tsx scripts/render-only.ts",
+    "cover-subs": "tsx scripts/cover-subs.ts",
     "recalc-props": "tsx scripts/recalc-props.ts",
     "reel": "tsx scripts/generate-reel.ts",
     "scene-map": "tsx scripts/scene-map.ts",

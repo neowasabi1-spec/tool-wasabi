@@ -4,6 +4,7 @@ import { BasicReel } from "./compositions/BasicReel";
 import { TalkingHeadReel } from "./compositions/TalkingHeadReel";
 import { ProductShowcase } from "./compositions/ProductShowcase";
 import { TextOverlayReel } from "./compositions/TextOverlayReel";
+import { CoverSubs } from "./compositions/CoverSubs";
 import { KineticNumber } from "./components/KineticNumber";
 import { KineticDashboard } from "./components/KineticDashboard";
 import { DemoCard } from "./components/dashboards/DemoCard";
@@ -98,6 +99,19 @@ export const RemotionRoot: React.FC = () => {
         height={HEIGHT}
         schema={ProductShowcaseSchema}
         defaultProps={defaultProductShowcase}
+      />
+      <Composition
+        id="CoverSubs"
+        component={CoverSubs}
+        durationInFrames={FPS * 10}
+        fps={FPS}
+        width={WIDTH}
+        height={HEIGHT}
+        defaultProps={{
+          videoUrl: "",
+          bands: [{ top: 0.72, height: 0.22, color: "#111111" }],
+          captions: [{ text: "New line", startFrame: 0, endFrame: 90 }],
+        }}
       />
       <Composition
         id="TextOverlayReel"
