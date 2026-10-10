@@ -5728,6 +5728,7 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {topAds.map(({ ad, spend }, i) => {
               const reach = typeof ad.reach === "number" && ad.reach > 0 ? ad.reach : null;
+              const days = daysRunning(ad);
               return (
                 <div key={ad.id}
                   onClick={() => setDetailAd(ad)}
@@ -5743,6 +5744,12 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
                     {reach != null && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-500/10 text-sky-600">
                         <Eye className="w-3 h-3" />{fmtCompact(reach)}
+                      </span>
+                    )}
+                    {days !== null && (
+                      <span title={ad.ad_started_at ? `Running since ${formatDate(ad.ad_started_at)}` : undefined}
+                        className="inline-flex items-center gap-0.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-700">
+                        <Calendar className="w-3 h-3" />{days}d
                       </span>
                     )}
                   </div>
