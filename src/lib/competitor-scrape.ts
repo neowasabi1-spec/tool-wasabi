@@ -19,7 +19,7 @@ import { transcribeVideo } from '@/lib/transcribe';
 import { absolutizeUrlsInHtml } from '@/lib/spa-rescue';
 import { extractLandingMediaFromHtml, isJunkLandingHost } from '@/lib/landing-media';
 import { isOnNiche } from '@/lib/competitor-relevance';
-import { hostOf, judgeAdvertisers, sameOfferEvidence, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
+import { distinctiveOfferTokens, hostOf, judgeAdvertisers, sameOfferEvidence, type AdvertiserCard, type ProductProfile } from '@/lib/competitor-judge';
 import { shortApifyWebhookUrl } from '@/lib/discovery-lexicon';
 import { htmlToReadableText } from '@/lib/page-text';
 import { fbAdLibrarySearchUrl } from '@/lib/ads-library-url';
@@ -256,7 +256,13 @@ export async function saveCompetitorLandings(
   projectId: string,
   urls: string[],
   platformLabel = '',
-  opts: { collectMedia?: boolean; htmlCache?: Map<string, { html: string; finalUrl: string }>; deadline?: number } = {},
+  opts: {
+    collectMedia?: boolean;
+    htmlCache?: Map<string, { html: string; finalUrl: string }>;
+    deadline?: number;
+    /** When set, skip pages whose text never names this offer. */
+    offerTokens?: string[];
+  } = {},
 ): Promise<number> {
   const collectMedia = opts.collectMedia !== false;
   const MAX = 30;
@@ -284,6 +290,15 @@ export async function saveCompetitorLandings(
     let html = fetched.html;
     const pageUrl = fetched.finalUrl || url;
     if (!html || html.length < 200) continue;
+    const offerTokens = (opts.offerTokens || []).map((t) => t.toLowerCase()).filter((t) => t.length >= 4);
+    if (offerTokens.length) {
+      const plain = html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .toLowerCase();
+      if (!offerTokens.some((t) => plain.includes(t))) continue;
+    }
     try { html = absolutizeUrlsInHtml(html, pageUrl); } catch { /* keep raw */ }
     html = html.slice(0, 3_000_000);
 
@@ -591,6 +606,7 @@ export async function ingestDataset(opts: {
       collectMedia: opts.collectMedia !== false,
       htmlCache,
       deadline: HARD_DEADLINE + 20_000,
+      offerTokens: opts.product?.affiliate ? distinctiveOfferTokens(opts.product) : undefined,
     }).catch(() => 0);
   }
 
