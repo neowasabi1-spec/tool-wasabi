@@ -138,7 +138,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const result = ((brands || []) as BrandRow[]).map((b) => {
+  const result = ((brands || []) as BrandRow[])
+    .filter((b) => !String(b.notes || '').startsWith('auto_pruned_not_same_product'))
+    .map((b) => {
     const s = stats.get(b.id);
     const paths = (s?.preview_paths || []).filter(Boolean);
     const types = (s?.preview_types || []).filter(Boolean);

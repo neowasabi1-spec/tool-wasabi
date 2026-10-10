@@ -89,6 +89,19 @@ export function sameOfferEvidence(product: ProductProfile, card: AdvertiserCard)
   return hit ? `names the offer (${hit})` : '';
 }
 
+/** Ad copy with challenge pages and the injected "Page:" line removed. */
+function readableAdText(card: AdvertiserCard): string {
+  return (card.samples || [])
+    .join('\n')
+    .replace(/^page:\s*.*$/gim, '')
+    .replace(/checking your browser[\s\S]*/gi, '')
+    .replace(/just a moment[. ]*/gi, '')
+    .replace(/enable javascript[\s\S]*/gi, '')
+    .replace(/attention required[\s\S]*/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Does the text name the product? Case/spacing/hyphen-insensitive ("JellyStick" = "Jelly Stick"). */
 export function mentionsProduct(text: string, names: string[]): string {
   const hay = text.toLowerCase().replace(/[\s\-_.]+/g, '');
@@ -121,6 +134,14 @@ export async function judgeAdvertisers(
   const pending: AdvertiserCard[] = [];
   for (const c of cards) {
     if (!product.affiliate) { pending.push(c); continue; }
+    // A bot-wall or empty scrape is not an ad for this offer. Landing-URL
+    // keyword hits (the search that found the page) must not keep it.
+    const visible = readableAdText(c);
+    const named = distinctiveOfferTokens(product).some((t) => `${c.name} ${visible}`.toLowerCase().includes(t));
+    if (visible.length < 40 && !named) {
+      out.set(c.id, { id: c.id, competitor: false, why: 'no readable ad for this product' });
+      continue;
+    }
     const why = sameOfferEvidence(product, c);
     if (!why) out.set(c.id, { id: c.id, competitor: false, why: 'different product — no offer name or domain' });
     else if (!why.startsWith('names ')) out.set(c.id, { id: c.id, competitor: true, why });

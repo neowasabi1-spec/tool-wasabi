@@ -67,6 +67,10 @@ function isVerticalPeer(b: { brand_type?: string | null }): boolean {
   return String(b.brand_type || "") === "inspiration";
 }
 
+function isAutoPruned(b: { notes?: string | null }): boolean {
+  return String(b.notes || "").startsWith("auto_pruned_not_same_product");
+}
+
 type CompetitorWithStats = {
   id: number;
   project_id: string;
@@ -2082,7 +2086,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       if (r.ok) {
         const all = await r.json();
         setCompetitors(Array.isArray(all)
-          ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c))
+          ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c) && !isAutoPruned(c))
           : []);
       }
     } finally { if (!silent) setLoading(false); }
@@ -2090,6 +2094,19 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
 
   useEffect(() => { load(); }, [projectId]);
   useLiveReload(() => { void load(true); });
+
+  // Drop pages that are not this offer, then refresh the grid. Once per visit.
+  useEffect(() => {
+    let cancel = false;
+    void (async () => {
+      await fetch(
+        `${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/prune-same-product`,
+        { method: 'POST' },
+      ).catch(() => {});
+      if (!cancel) await load(true);
+    })();
+    return () => { cancel = true; };
+  }, [projectId]);
 
   const openPeers = async () => {
     setPeersOpen(true);
