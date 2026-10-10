@@ -10,7 +10,8 @@ import {
  * Background function that LOCALIZES an existing creative video: it keeps the
  * cleaned footage (or original if none), replaces the audio with a voiceover
  * from the job's copy, and burns matching subtitles. No shot pool — the
- * visual is the source video itself, looped or trimmed to the voiceover length.
+ * visual is the source video itself. The new voice is sped up or slowed
+ * so it lasts as long as that footage. Original audio is dropped.
  *
  * Triggered by the ads/[adId]/build-video route with mode 'localize'.
  * Body: { jobId, projectId, brandId, adId }
@@ -31,6 +32,16 @@ function findCaptionFont(): string | null {
     try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
   }
   return null;
+}
+
+/** ffmpeg atempo is only valid in 0.5–2. Chain filters to reach the real speed. */
+function atempoChain(speed: number): string {
+  const parts: string[] = [];
+  let r = Math.min(4, Math.max(0.5, speed));
+  while (r > 2) { parts.push('atempo=2.0'); r /= 2; }
+  while (r < 0.5) { parts.push('atempo=0.5'); r /= 0.5; }
+  parts.push(`atempo=${r.toFixed(3)}`);
+  return parts.join(',');
 }
 
 function assTime(sec: number): string {
@@ -159,41 +170,45 @@ export default async (req: Request) => {
 
     // 1. Voiceover: one clip per line, so subtitles can be timed to each line.
     const sceneAudios: string[] = [];
-    const durs: number[] = [];
+    let durs: number[] = [];
     for (let i = 0; i < scenes.length; i++) {
       const mp3 = path.join(workDir, `vo_${i}.mp3`);
       await ttsScene(scenes[i], voice, mp3);
       durs.push(Math.max(0.8, await probeDuration(mp3)));
       sceneAudios.push(mp3);
     }
-    const total = durs.reduce((a, b) => a + b, 0);
+    const spoken = durs.reduce((a, b) => a + b, 0);
 
     const aList = path.join(workDir, 'a_list.txt');
     fs.writeFileSync(aList, sceneAudios.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'));
-    const voiceFile = path.join(workDir, 'voice.mp3');
-    await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', aList, '-c', 'copy', voiceFile]);
+    const voiceRaw = path.join(workDir, 'voice-raw.mp3');
+    await run(FFMPEG, ['-y', '-f', 'concat', '-safe', '0', '-i', aList, '-c', 'copy', voiceRaw]);
 
-    // 2. Original footage, same aspect as the source (landscape stays landscape).
-    // Fitted to the voiceover length: looped if shorter, trimmed if longer.
+    // 2. Picture only: drop the original soundtrack. Keep the source length.
     const raw = path.join(workDir, 'raw.mp4');
     await downloadSource(supabase, sourcePath, raw);
     const norm = path.join(workDir, 'norm.mp4');
     const { w: frameW, h: frameH } = await keepSourceFrame(raw, norm);
     const srcDur = await probeDuration(norm);
     const visual = path.join(workDir, 'visual.mp4');
-    if (srcDur >= total - 0.05) {
-      await run(FFMPEG, ['-y', '-i', norm, '-t', total.toFixed(2), '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
+    await run(FFMPEG, ['-y', '-i', norm, '-an',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
+
+    // Speed the voice so it lasts as long as the footage (0.5×–2×, chained if needed).
+    const speed = Math.min(2, Math.max(0.5, spoken / Math.max(0.8, srcDur)));
+    const voiceFile = path.join(workDir, 'voice.mp3');
+    if (Math.abs(speed - 1) > 0.03) {
+      await run(FFMPEG, ['-y', '-i', voiceRaw, '-filter:a', atempoChain(speed), voiceFile]);
+      durs = durs.map((d) => d / speed);
     } else {
-      await run(FFMPEG, ['-y', '-stream_loop', '-1', '-i', norm, '-t', total.toFixed(2), '-an',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-pix_fmt', 'yuv420p', visual]);
+      fs.copyFileSync(voiceRaw, voiceFile);
     }
-    log(`source ${srcDur.toFixed(1)}s ${frameW}x${frameH} ${srcDur >= total ? 'trimmed' : 'looped'} to ${total.toFixed(1)}s`);
+    log(`source ${srcDur.toFixed(1)}s ${frameW}x${frameH}, voice ${spoken.toFixed(1)}s at ${speed.toFixed(2)}x`);
 
     // 3. Mux voiceover onto the footage.
     const base = path.join(workDir, 'base.mp4');
     await run(FFMPEG, ['-y', '-i', visual, '-i', voiceFile,
-      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-shortest',
+      '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-t', srcDur.toFixed(2),
       // faststart so the browser can stream it; otherwise the moov atom lands at
       // the end and the player only shows the first second over a range request.
       '-movflags', '+faststart', base]);
