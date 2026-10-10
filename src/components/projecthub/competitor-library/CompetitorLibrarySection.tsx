@@ -546,6 +546,42 @@ function useCloneBag(): CloneBag {
   return ctx;
 }
 
+const coherenceCache = new Map<string, string>();
+
+/** Plain-text reminder of the landings in this clone, so remakes stay on that offer. */
+async function coherenceFromLandings(landings: CloneLanding[]): Promise<string> {
+  const key = landings.map((l) => l.id).join(",");
+  const hit = coherenceCache.get(key);
+  if (hit) return hit;
+  const parts: string[] = [];
+  for (const l of landings.slice(0, 4)) {
+    let text = "";
+    if (l.html_url) {
+      try {
+        const res = await fetch(l.html_url);
+        if (res.ok) {
+          text = (await res.text())
+            .replace(/<script[\s\S]*?<\/script>/gi, " ")
+            .replace(/<style[\s\S]*?<\/style>/gi, " ")
+            .replace(/<[^>]+>/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 900);
+        }
+      } catch { /* name and url still anchor the offer */ }
+    }
+    parts.push(`LANDING ${l.name} — ${l.url}\n${text || l.name}`);
+  }
+  const brief = [
+    "COHERENCE WITH THE CHOSEN LANDINGS (mandatory):",
+    "This creative is being remade for the landings below. Same product, same promise, same offer, same visual world, same call to action.",
+    "Do not introduce a different product, brand, or claim.",
+    parts.join("\n\n"),
+  ].join("\n");
+  coherenceCache.set(key, brief);
+  return brief;
+}
+
 function downloadCreative(ad: { file_path: string; name?: string; media_type?: string }) {
   if (!ad.file_path) return;
   const isRemote = /^https?:\/\//i.test(ad.file_path);
@@ -855,6 +891,7 @@ function CreativeDetailPanel({
   onOpenCreated?: () => void;
 }) {
   const { toast } = useToast();
+  const cloneBag = useContext(CloneContext);
   const [copied, setCopied] = useState(false);
   const [text, setText] = useState(ad.body_text || "");
   const [transcript, setTranscript] = useState(ad.transcript || "");
@@ -870,15 +907,23 @@ function CreativeDetailPanel({
   const [generating, setGenerating] = useState(false);
   const [script, setScript] = useState(ad.rewritten_script || "");
   const [scriptCopied, setScriptCopied] = useState(false);
+  const cloneBrief = async () => {
+    if (!cloneBag?.landings.length || !cloneBag.ads.some((a) => a.id === ad.id)) return "";
+    return coherenceFromLandings(cloneBag.landings);
+  };
   const generateScript = async () => {
     setGenerating(true);
     try {
+      const brief = await cloneBrief();
       const r = await fetch(
         `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/rewrite-script`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ product, angle }),
+          body: JSON.stringify({
+            product: product || brief.slice(0, 600),
+            angle: [angle, brief].filter(Boolean).join("\n\n"),
+          }),
         },
       );
       const j = await r.json().catch(() => ({}));
@@ -1115,10 +1160,11 @@ function CreativeDetailPanel({
       toast({ title: "Upload a photo of your product first", variant: "destructive" });
       return;
     }
-    if (mode === "edit" && imgEdit.trim().length < 4) {
+      if (mode === "edit" && imgEdit.trim().length < 4) {
       toast({ title: "Describe the change you want", variant: "destructive" });
       return;
     }
+    const locked = await cloneBrief();
     setImgBusy(mode);
     setImgErr("");
     try {
@@ -1152,13 +1198,16 @@ function CreativeDetailPanel({
         prompt = [
           `Replace the competitor product in this ad with ${productName || "our product"}.`,
           "The FIRST image is the ad layout to keep. The SECOND image is our exact packshot — put that product in their place.",
-          "Keep the same format, framing, people, colors, style and on-image text.",
+          locked
+            ? "Keep the format, framing, people and style. Rewrite the on-image offer so it matches the chosen landings, not the competitor's product."
+            : "Keep the same format, framing, people, colors, style and on-image text.",
         ].join(" ");
       } else if (mode === "recreate") {
         prompt = `Keep this image's layout, people, product, colors and composition. Rewrite EVERY visible text (headlines, labels, badges, captions, CTAs, small print) into ${language}. Do not add new claims or new objects. The result must look like the same ad in ${language}.`;
       } else {
         prompt = `Edit this image as requested, keep everything else the same: ${imgEdit.trim()}`;
       }
+      if (locked) prompt = `${prompt}\n\n${locked}`;
 
       const saveRes = await fetch(
         `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`,
@@ -1203,6 +1252,7 @@ function CreativeDetailPanel({
     }
     const count = Math.max(1, Math.min(6, Math.round(Number(createCount) || 1)));
     const productName = (imgProduct || product || "").trim();
+    const locked = await cloneBrief();
     const twists = [
       "a different headline wording",
       "a shifted badge and a tighter crop",
@@ -1231,13 +1281,15 @@ function CreativeDetailPanel({
             "Keep the same layout, people, product, offer and format.",
             `Change only this: ${twist}.`,
             "It must still read as the same ad, not a new concept.",
-          ].join(" ")
+            locked,
+          ].filter(Boolean).join(" ")
           : [
             `Brand-new ad ${i} of ${count}${name ? ` for ${name}` : ""}, inspired by this one.`,
             "Keep the same offer, but invent new people, setting, composition and headline.",
             `This version's angle: ${twist}.`,
             "Do not copy the original layout.",
-          ].join(" ");
+            locked,
+          ].filter(Boolean).join(" ");
         setCreateStep(`${i} of ${count} · ChatGPT Image 2`);
         const endpoint = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brand_id}/ads/${ad.id}/remake-image`;
         const startRes = await fetch(endpoint, {
@@ -6228,11 +6280,13 @@ function CloneTray({ projectId }: { projectId: string }) {
         } catch { /* next file */ }
       }
 
+      const brief = await coherenceFromLandings(bag.landings);
       const steps = bag.landings.slice(0, 8).map((l) => ({
         html: l.html_url,
         url: l.url,
         name: l.name,
         type: l.page_type || "landing",
+        prompt: brief,
       }));
       const swipe = `/front-end-funnel?swipe_steps=${encodeURIComponent(JSON.stringify(steps))}`;
       window.open(swipe, "_blank");

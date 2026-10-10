@@ -3037,7 +3037,7 @@ export default function FrontEndFunnel() {
     if (!raw) return;
     swipeStepsDoneRef.current = true;
 
-    let steps: Array<{ url?: string; html?: string; name?: string; type?: string }> = [];
+    let steps: Array<{ url?: string; html?: string; name?: string; type?: string; prompt?: string }> = [];
     try { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) steps = parsed; } catch { steps = []; }
 
     (async () => {
@@ -3053,7 +3053,7 @@ export default function FrontEndFunnel() {
           pageType,
           productId: '',
           urlToSwipe: s.html || s.url || `https://uploaded.local/${safeName}.html`,
-          prompt: '',
+          prompt: (s.prompt || '').slice(0, 4000),
           swipeStatus: 'pending',
           feedback: '',
           clonedData: s.html
