@@ -157,6 +157,39 @@ function daysRunning(ad: CompetitorAd): number | null {
   return Math.max(0, Math.floor((Date.now() - t) / 86_400_000));
 }
 
+function indexAdRunDays(ads: Array<Pick<CompetitorAd, "ad_started_at" | "landing_url">>) {
+  const byUrl = new Map<string, number>();
+  const byHost = new Map<string, number>();
+  for (const ad of ads) {
+    const d = daysRunning(ad as CompetitorAd);
+    const raw = (ad.landing_url || "").trim();
+    if (d === null || !raw) continue;
+    const url = raw.split("?")[0].replace(/\/$/, "").toLowerCase();
+    const host = hostOf(raw);
+    const bump = (map: Map<string, number>, key: string) => {
+      if (!key) return;
+      const prev = map.get(key);
+      if (prev === undefined || d > prev) map.set(key, d);
+    };
+    bump(byUrl, url);
+    bump(byHost, host);
+  }
+  return { byUrl, byHost };
+}
+
+function landingRunDays(
+  landing: { url?: string },
+  idx: { byUrl: Map<string, number>; byHost: Map<string, number> },
+): number | null {
+  const raw = (landing.url || "").trim();
+  if (!raw) return null;
+  const url = raw.split("?")[0].replace(/\/$/, "").toLowerCase();
+  if (idx.byUrl.has(url)) return idx.byUrl.get(url)!;
+  const host = hostOf(raw);
+  if (host && idx.byHost.has(host)) return idx.byHost.get(host)!;
+  return null;
+}
+
 type WinnerTier = "winner" | "promising" | null;
 
 function winnerTier(ad: CompetitorAd): WinnerTier {
@@ -3553,6 +3586,11 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const [categories, setCategories] = useState<string[]>([]);
   const [newCat, setNewCat] = useState("");
   const [addingCat, setAddingCat] = useState(false);
+  const [landingSort, setLandingSort] = useState<"name" | "days">("name");
+  const [runIndex, setRunIndex] = useState<{ byUrl: Map<string, number>; byHost: Map<string, number> }>({
+    byUrl: new Map(),
+    byHost: new Map(),
+  });
 
   const toggleSelect = (id: string, e?: MouseEvent) => {
     e?.stopPropagation();
@@ -3732,6 +3770,11 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
         const data = await r.json();
         setLandings(Array.isArray(data) ? data : []);
       }
+      const rc = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/creatives`);
+      if (rc.ok) {
+        const ads = await rc.json();
+        if (Array.isArray(ads)) setRunIndex(indexAdRunDays(ads));
+      }
       if (!silent) void fillLandingLibrary(projectId);
     } finally { if (!silent) setLoading(false); }
   };
@@ -3802,7 +3845,14 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
       name,
       items: items.slice().sort((a, b) => stepNum(a.name) - stepNum(b.name) || a.created_at.localeCompare(b.created_at)),
     }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => {
+      if (landingSort === "days") {
+        const da = Math.max(-1, ...a.items.map((l) => landingRunDays(l, runIndex) ?? -1));
+        const db = Math.max(-1, ...b.items.map((l) => landingRunDays(l, runIndex) ?? -1));
+        if (db !== da) return db - da;
+      }
+      return a.name.localeCompare(b.name);
+    });
   const openItems = openFolder ? (folders.find(f => f.name === openFolder)?.items || []) : [];
   const selectable = openFolder ? openItems : filtered;
   const allSelected = selectable.length > 0 && selectable.every(l => selected.has(l.id));
@@ -3812,6 +3862,7 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const card = (l: Landing) => {
     const host = hostOf(l.url);
     const isSelected = selected.has(l.id);
+    const days = landingRunDays(l, runIndex);
     return (
       <div key={l.id}
         onClick={() => setPreview(l)}
@@ -3827,6 +3878,12 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
           ) : <Globe className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />}
           <span className="text-[11px] font-medium text-muted-foreground truncate flex-1">{host || l.name}</span>
+          {days !== null && (
+            <span title="Longest ad still pointing at this page"
+              className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-700 flex-shrink-0">
+              {days}d
+            </span>
+          )}
           <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground uppercase tracking-wide flex-shrink-0">
             {l.page_type || "landing"}
           </span>
@@ -3873,9 +3930,22 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
             Landing &amp; funnel pages saved from the browser extension. Each funnel is one folder — open it to see every step.
           </p>
         </div>
-        <div className="relative min-w-56">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-          <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search landings..." className="pl-8 h-9 text-sm" />
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30">
+            {([
+              ["name", "Name"],
+              ["days", "Days running"],
+            ] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setLandingSort(id)}
+                className={`px-2.5 py-1 text-xs rounded-md font-medium ${landingSort === id ? "bg-white shadow-sm text-foreground" : "text-muted-foreground"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="relative min-w-56">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search landings..." className="pl-8 h-9 text-sm" />
+          </div>
         </div>
       </div>
 
@@ -5407,6 +5477,8 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
   const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
+  const [adSort, setAdSort] = useState<"spend" | "days">("spend");
+  const [landingSort, setLandingSort] = useState<"count" | "days">("count");
   const [detailAd, setDetailAd] = useState<CreativeWithBrand | null>(null);
   const [tplItems, setTplItems] = useState<SaveAdTemplateItem[]>([]);
 
@@ -5504,9 +5576,11 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
   const topAds = useMemo(() =>
     [...creatives]
       .map(ad => ({ ad, spend: estSpendNumber(ad, countryByBrand.get(ad.brand_id) || "") }))
-      .sort((a, b) => b.spend - a.spend)
+      .sort((a, b) => adSort === "days"
+        ? (daysRunning(b.ad) ?? -1) - (daysRunning(a.ad) ?? -1)
+        : b.spend - a.spend)
       .slice(0, 12),
-    [creatives, countryByBrand]);
+    [creatives, countryByBrand, adSort]);
 
   const latest = useMemo(() =>
     [...creatives]
@@ -5514,17 +5588,25 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
       .slice(0, 5),
     [creatives]);
 
+  const runIndex = useMemo(() => indexAdRunDays(creatives), [creatives]);
+
   const topLandings = useMemo(() => {
-    const map = new Map<string, { host: string; count: number; screenshot?: string; url: string }>();
+    const map = new Map<string, { host: string; count: number; screenshot?: string; url: string; days: number | null }>();
     for (const l of landings) {
       const host = hostOf(l.url) || l.name;
-      const cur = map.get(host) || { host, count: 0, screenshot: l.screenshot, url: l.url };
+      const days = landingRunDays(l, runIndex);
+      const cur = map.get(host) || { host, count: 0, screenshot: l.screenshot, url: l.url, days };
       cur.count += 1;
+      if (days !== null && (cur.days === null || days > cur.days)) cur.days = days;
       if (!cur.screenshot && l.screenshot) cur.screenshot = l.screenshot;
       map.set(host, cur);
     }
-    return [...map.values()].sort((a, b) => b.count - a.count).slice(0, 6);
-  }, [landings]);
+    return [...map.values()]
+      .sort((a, b) => landingSort === "days"
+        ? (b.days ?? -1) - (a.days ?? -1)
+        : b.count - a.count)
+      .slice(0, 6);
+  }, [landings, runIndex, landingSort]);
 
   const donut = [
     { name: "Image", value: stats.images, color: "#3b82f6" },
@@ -5690,7 +5772,20 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
       {/* ── TOP LANDING PAGES ── */}
       {topLandings.length > 0 && (
         <div className="bg-card border border-border rounded-2xl p-4">
-          <p className="text-sm font-bold text-foreground flex items-center gap-1.5 mb-3"><LayoutTemplate className="w-4 h-4 text-primary" /> Top landing pages</p>
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <p className="text-sm font-bold text-foreground flex items-center gap-1.5"><LayoutTemplate className="w-4 h-4 text-primary" /> Top landing pages</p>
+            <div className="ml-auto flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30">
+              {([
+                ["count", "Pages"],
+                ["days", "Days running"],
+              ] as const).map(([id, label]) => (
+                <button key={id} type="button" onClick={() => setLandingSort(id)}
+                  className={`px-2.5 py-1 text-xs rounded-md font-medium ${landingSort === id ? "bg-white shadow-sm text-foreground" : "text-muted-foreground"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {topLandings.map(l => (
               <div key={l.host} className="flex items-center gap-3 border border-border rounded-xl p-2">
@@ -5705,7 +5800,10 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
                       onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
                     {l.host}
                   </p>
-                  <p className="text-[11px] text-muted-foreground">{l.count} page{l.count === 1 ? "" : "s"} saved</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    {l.count} page{l.count === 1 ? "" : "s"} saved
+                    {l.days !== null ? ` · ${l.days}d running` : ""}
+                  </p>
                 </div>
               </div>
             ))}
@@ -5718,7 +5816,17 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
         <div className="flex items-center gap-2 mb-3">
           <Flame className="w-4 h-4 text-orange-500" />
           <h4 className="text-base font-bold text-foreground">Top Ads</h4>
-          <span className="text-[11px] text-muted-foreground">ranked by estimated spend</span>
+          <div className="ml-auto flex items-center gap-1 border border-border rounded-lg p-0.5 bg-muted/30">
+            {([
+              ["spend", "Spend"],
+              ["days", "Days running"],
+            ] as const).map(([id, label]) => (
+              <button key={id} type="button" onClick={() => setAdSort(id)}
+                className={`px-2.5 py-1 text-xs rounded-md font-medium ${adSort === id ? "bg-white shadow-sm text-foreground" : "text-muted-foreground"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         {topAds.length === 0 ? (
           <div className="py-12 text-center border-2 border-dashed border-border rounded-2xl text-sm text-muted-foreground">
