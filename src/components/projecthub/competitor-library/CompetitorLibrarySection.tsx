@@ -4185,6 +4185,21 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
               className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">
               <Bookmark className="w-3.5 h-3.5" /> Save funnel to Templates
             </button>
+            <button type="button" onClick={() => {
+              const picked = openItems.filter((l) => selected.has(l.id));
+              const rows = (picked.length ? picked : openItems).map((l) => ({
+                id: l.id,
+                name: l.name || hostOf(l.url) || "Landing",
+                url: l.url || "",
+                html_url: l.html_url || "",
+                page_type: l.page_type || "landing",
+              }));
+              cloneBag.addLandings(rows);
+              toast({ title: `${rows.length} landing${rows.length === 1 ? "" : "s"} added to Clone` });
+            }}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border border-border text-foreground hover:bg-muted transition-colors">
+              <Copy className="w-3.5 h-3.5" /> Add to Clone
+            </button>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {openItems.map(card)}
@@ -6304,8 +6319,8 @@ function CloneTray({ projectId }: { projectId: string }) {
   if (!bag.ads.length && !bag.landings.length) return null;
 
   const run = async () => {
-    if (!bag.landings.length || !bag.ads.length) {
-      toast({ title: "Pick at least one creative and one landing", variant: "destructive" });
+    if (!bag.ads.length && !bag.landings.length) {
+      toast({ title: "Pick a video, an image, or a landing", variant: "destructive" });
       return;
     }
     setBusy(true);
@@ -6332,7 +6347,9 @@ function CloneTray({ projectId }: { projectId: string }) {
         } catch { /* next file */ }
       }
 
-      const brief = await coherenceFromLandings(bag.landings);
+      const brief = bag.landings.length
+        ? await coherenceFromLandings(bag.landings)
+        : "No landing was chosen. Keep the original video's promise and rewrite it onto our product.";
       const pageIds: string[] = [];
       for (const l of bag.landings.slice(0, 8)) {
         const live = /^https?:\/\//i.test(l.url || "") ? l.url : "";
@@ -6375,7 +6392,8 @@ function CloneTray({ projectId }: { projectId: string }) {
         }
         pageIds.push(created.id);
       }
-      if (!pageIds.length) throw new Error("Could not create the landing pages to swipe");
+      if (bag.landings.length && !pageIds.length) throw new Error("Could not create the landing pages to swipe");
+      if (pageIds.length) {
       const swipeRes = await fetch("/api/chimera/swipe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -6384,6 +6402,7 @@ function CloneTray({ projectId }: { projectId: string }) {
       if (!swipeRes.ok) {
         const j = await swipeRes.json().catch(() => ({})) as { error?: string };
         throw new Error(j.error || "Landing swipe did not start");
+      }
       }
 
       let images = 0;
@@ -6421,8 +6440,7 @@ function CloneTray({ projectId }: { projectId: string }) {
             if (!queued.ok) {
               const j = await queued.json().catch(() => ({})) as { error?: string };
               problems.push(j.error || "Video clean did not start");
-              continue;
-            }
+            } else {
             const deadline = Date.now() + 12 * 60_000;
             let ready = false;
             while (Date.now() < deadline) {
@@ -6434,11 +6452,9 @@ function CloneTray({ projectId }: { projectId: string }) {
                 break;
               }
             }
-            if (!ready) {
-              if (!problems.length || !/clean/i.test(problems[problems.length - 1] || "")) {
-                problems.push("Video clean is still running");
-              }
-              continue;
+            if (!ready && (!problems.length || !/clean/i.test(problems[problems.length - 1] || ""))) {
+              problems.push("Video clean is still running");
+            }
             }
           }
           let heard = await fetch(`${base}/transcribe`).then((r) => r.json()).catch(() => ({})) as { transcript?: string; status?: string; error?: string };
@@ -6507,11 +6523,11 @@ function CloneTray({ projectId }: { projectId: string }) {
           }
         }
       }
-      window.open("/front-end-funnel", "_blank");
+      if (pageIds.length) window.open("/front-end-funnel", "_blank");
       toast({
         title: "Swipe started",
         description: [
-          `${pageIds.length} landing${pageIds.length === 1 ? "" : "s"} in the landing swipe.`,
+          pageIds.length ? `${pageIds.length} landing${pageIds.length === 1 ? "" : "s"} in the landing swipe.` : "",
           images ? `${images} image swipe${images === 1 ? "" : "s"}.` : "",
           videos ? `${videos} video script${videos === 1 ? "" : "s"}.` : "",
           problems[0] || "",
