@@ -31,6 +31,7 @@ interface StepState {
   summary?: string;
   output?: string;
   error?: string;
+  progress?: { done: number; total: number; label: string };
 }
 
 interface Job {
@@ -335,6 +336,16 @@ export function AutopilotSection({
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-foreground">{s.label}</span>
                       </div>
+                      {s.status === 'running' && s.progress && s.progress.total > 0 && (
+                        <div className="mt-1.5 max-w-xs">
+                          <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-primary transition-[width] duration-500"
+                              style={{ width: `${Math.min(100, Math.round((s.progress.done / s.progress.total) * 100))}%` }}
+                            />
+                          </div>
+                        </div>
+                      )}
                       {s.summary && (
                         <p className="text-xs text-muted-foreground mt-0.5">{s.summary}</p>
                       )}

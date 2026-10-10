@@ -1758,64 +1758,129 @@ Build the prioritized Angle Matrix now, best angle first.`;
 // STEP 5 — Ads (top 3 angles × Meta / TikTok / Google, in the market language)
 // ---------------------------------------------------------------------------
 
-async function runAds(supabase: SupabaseClient, projectId: string, input: PipelineInput): Promise<StepResult> {
+const AD_PLATFORMS: Array<{ key: 'meta' | 'tiktok' | 'google'; label: string; format: string; maxTokens: number }> = [
+  {
+    key: 'meta',
+    label: 'Meta',
+    maxTokens: 1400,
+    format: `[META]
+PRIMARY TEXT: <3-6 lines, hook-first, scroll-stopping: benefit + mechanism + proof + soft CTA>
+HEADLINE: <max ~40 chars>
+DESCRIPTION: <max ~30 chars>`,
+  },
+  {
+    key: 'tiktok',
+    label: 'TikTok',
+    maxTokens: 1600,
+    format: `[TIKTOK]
+HOOK: <the spoken first 3 seconds>
+SCRIPT: <4-6 beats, native UGC / talking-to-camera; each beat on its own line>
+ON-SCREEN TEXT: <short captions>
+CTA: <spoken call to action>`,
+  },
+  {
+    key: 'google',
+    label: 'Google',
+    maxTokens: 900,
+    format: `[GOOGLE]
+HEADLINES: <h1> | <h2> | <h3> | <h4> (each max ~30 chars)
+DESCRIPTIONS: <d1> | <d2> (each max ~90 chars)`,
+  },
+];
+
+async function runAds(
+  supabase: SupabaseClient,
+  projectId: string,
+  input: PipelineInput,
+  onProgress?: (p: { done: number; total: number; label: string }) => Promise<void>,
+): Promise<StepResult> {
   const project = await loadProject(supabase, projectId);
   const productName = (project.name as string) || input.product || '';
   const research = sectionContentFrom(project.market_research);
   const brief = typeof project.brief === 'string' && project.brief.trim() ? (project.brief as string) : sectionContentFrom(project.brief);
   const swipe = await loadCompetitorSwipe(supabase, projectId);
   const angleDoc = await loadSectionFileText(supabase, projectId, 'angles');
+  const parsedAngles = parseAngles(angleDoc).slice(0, 3);
+  const angles = [0, 1, 2].map((i) => parsedAngles[i] || {
+    name: `Angle ${i + 1}`,
+    body: angleDoc || 'Derive this angle from the market research. Make it distinct from the other two.',
+  });
 
   const geo = marketGeo(input);
   const langLine = geo
     ? `Write ALL AD COPY in the LOCAL LANGUAGE actually spoken by consumers in ${geo} (e.g. German for a German market). These are production assets shown to real buyers — NOT English, unless ${geo} is English-speaking. Keep the section LABELS (META/TIKTOK/GOOGLE, HEADLINE, etc.) in English.`
     : `Write the ad copy in the market's local language (infer it from the product/market). Keep the section LABELS in English.`;
 
-  const instructions = `You are an elite direct-response copywriter producing PLATFORM-READY ads.
-Take the TOP 3 angles from the ANGLE MATRIX provided (angles are already ordered best-first — use ANGLE 1, 2 and 3). For EACH of those 3 angles write ONE ad for EACH platform: Meta, TikTok (UGC), Google. That is 3 angles × 3 platforms = 9 ads.
+  const swipeBit = swipe
+    ? `# REAL COMPETITOR ADS (swipe — model the winning register, don't copy)\n\n${swipe.slice(0, 6000)}`
+    : '';
+  const total = angles.length * AD_PLATFORMS.length;
+  const blocks: string[] = [];
+  let done = 0;
+  const failures: string[] = [];
+
+  const report = async (label: string) => {
+    if (onProgress) await onProgress({ done, total, label });
+  };
+
+  await report('Preparing 9 ads');
+
+  for (let ai = 0; ai < angles.length; ai++) {
+    const angle = angles[ai];
+    const platformBlocks: string[] = [];
+    for (const platform of AD_PLATFORMS) {
+      await report(`Angle ${ai + 1}/3 · ${platform.label}`);
+      const instructions = `You are an elite direct-response copywriter producing ONE platform-ready ad.
 ${langLine}
 Model what WORKS in the real competitor ads (the swipe) — the emotional register and hook patterns validated in this market — but do NOT copy them: express OUR angle and OUR unique mechanism.
 
-Use EXACTLY this format. Separate the 3 angle blocks with a line containing only "---":
+Write ONLY this one ad, in EXACTLY this format (no intro, no extra commentary):
 
-## ANGLE 1 — <the angle name from the matrix>
+## ANGLE ${ai + 1} — ${angle.name}
 
-[META]
-PRIMARY TEXT: <3-6 lines, hook-first, scroll-stopping: benefit + mechanism + proof + soft CTA>
-HEADLINE: <max ~40 chars>
-DESCRIPTION: <max ~30 chars>
-
-[TIKTOK]
-HOOK: <the spoken first 3 seconds>
-SCRIPT: <4-6 beats, native UGC / talking-to-camera; each beat on its own line>
-ON-SCREEN TEXT: <short captions>
-CTA: <spoken call to action>
-
-[GOOGLE]
-HEADLINES: <h1> | <h2> | <h3> | <h4> (each max ~30 chars)
-DESCRIPTIONS: <d1> | <d2> (each max ~90 chars)
-
----
-(then ANGLE 2, then ANGLE 3, same structure)
+${platform.format}
 
 Rules:
-- Ads must be specific and immediately usable — no placeholders, no "[insert benefit]".
+- The ad must be specific and immediately usable — no placeholders, no "[insert benefit]".
 - Respect platform norms (Meta = story/benefit; TikTok = native UGC hook + script; Google = tight keyworded headlines).
 - Keep claims defensible (no unsupported medical/legal claims).`;
 
-  const userMessage = `Product: ${productName}
+      const userMessage = `Product: ${productName}
 ${input.description ? `\nDescription:\n${input.description}` : ''}
 
-# ANGLE MATRIX (use the top 3, best-first)
+# THIS ANGLE (write the ${platform.label} ad for this angle only)
 
-${angleDoc || '(No angle matrix found — derive the 3 strongest angles from the market research, best-first.)'}
+${angle.name}
+${angle.body.slice(0, 2500)}
 
-${swipe ? `# REAL COMPETITOR ADS (swipe — model the winning register, don't copy)\n\n${swipe}` : ''}
+${swipeBit}
 
-Write the 9 platform-ready ads now.`;
+Write the ${platform.label} ad now.`;
 
-  const raw = await callClaude({ task: 'ad', instructions, brief, marketResearch: research, userMessage, maxTokens: 8000 });
-  if (!raw) throw new Error('Ads step returned empty output');
+      try {
+        const piece = await callClaude({
+          task: 'ad',
+          instructions,
+          brief,
+          marketResearch: research,
+          userMessage,
+          maxTokens: platform.maxTokens,
+          timeoutMs: 120_000,
+        });
+        if (piece.trim()) platformBlocks.push(piece.trim());
+        else failures.push(`Angle ${ai + 1} ${platform.label}: empty`);
+      } catch (e) {
+        failures.push(`Angle ${ai + 1} ${platform.label}: ${(e as Error).message?.slice(0, 180) || 'failed'}`);
+        console.warn('[pipeline] ads piece:', (e as Error).message);
+      }
+      done += 1;
+      await report(`Angle ${ai + 1}/3 · ${platform.label} done`);
+    }
+    if (platformBlocks.length) blocks.push(platformBlocks.join('\n\n'));
+  }
+
+  const raw = blocks.join('\n\n---\n\n').trim();
+  if (!raw) throw new Error(`Ads step returned empty output${failures.length ? ` (${failures[0]})` : ''}`);
 
   const ads = parseMultiPlatformAds(raw);
 
@@ -1858,8 +1923,9 @@ Write the 9 platform-ready ads now.`;
   }
 
   const angleCount = new Set(ads.map((a) => a.angle)).size;
+  const failBit = failures.length ? ` ${failures.length} piece(s) failed.` : '';
   return {
-    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${fileSaved ? ' — saved as a document in General Brief.' : ''}${boardSaved || saved ? ` Visible in Creative → New Creatives (${boardSaved || saved}).` : '.'}`,
+    summary: `${ads.length || 9} platform-ready ads across ${angleCount || 3} angles (Meta/TikTok/Google)${fileSaved ? ' — saved as a document in General Brief.' : ''}${boardSaved || saved ? ` Visible in Creative → New Creatives (${boardSaved || saved}).` : '.'}${failBit}`,
     output: raw,
   };
 }
@@ -2372,9 +2438,22 @@ export default async (req: Request) => {
     await persistSteps({ status: 'running', current_step: key, error: null });
 
     try {
-      const result = await runner(supabase, projectId, input);
+      const report = async (progress: { done: number; total: number; label: string }) => {
+        steps[idx] = {
+          ...steps[idx],
+          status: 'running',
+          summary: `${progress.label} — ${progress.done}/${progress.total}`,
+          progress,
+        };
+        await persistSteps({ status: 'running', current_step: key });
+      };
+      const result = key === 'ads'
+        ? await runAds(supabase, projectId, input, report)
+        : await runner(supabase, projectId, input);
+      const finished = { ...steps[idx] };
+      delete finished.progress;
       steps[idx] = {
-        ...steps[idx],
+        ...finished,
         status: 'completed',
         summary: result.summary,
         output: (result.output || '').slice(0, STEP_OUTPUT_PREVIEW_CHARS),
