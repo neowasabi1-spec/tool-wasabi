@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, type MouseEvent, type ReactNode } from "react";
+import { useState, useRef, useEffect, useMemo, useContext, createContext, type MouseEvent, type ReactNode } from "react";
 import { useLiveReload } from "@/lib/live-refresh";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -515,6 +515,37 @@ async function setWinnerFlag(projectId: string, brandId: number, adId: number, n
 // Force a download of a creative. Local (storage) files go through the
 // file-proxy with `download=1` (Content-Disposition: attachment); remote URLs
 // are opened directly (best effort — cross-origin can't always be forced).
+type CloneAd = {
+  id: number;
+  brandId: number;
+  name: string;
+  file_path: string;
+  media_type: string;
+  headline?: string;
+  hook?: string;
+  body_text?: string;
+};
+type CloneLanding = {
+  id: string;
+  name: string;
+  url: string;
+  html_url: string;
+  page_type: string;
+};
+type CloneBag = {
+  ads: CloneAd[];
+  landings: CloneLanding[];
+  addAds: (rows: CloneAd[]) => void;
+  addLandings: (rows: CloneLanding[]) => void;
+  clear: () => void;
+};
+const CloneContext = createContext<CloneBag | null>(null);
+function useCloneBag(): CloneBag {
+  const ctx = useContext(CloneContext);
+  if (!ctx) throw new Error("Clone bag missing");
+  return ctx;
+}
+
 function downloadCreative(ad: { file_path: string; name?: string; media_type?: string }) {
   if (!ad.file_path) return;
   const isRemote = /^https?:\/\//i.test(ad.file_path);
@@ -2576,6 +2607,7 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
 
 // ── COMPETITOR DETAIL VIEW ──
 function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { projectId: string; competitor: CompetitorWithStats; onBack: () => void; onOpenCreated?: () => void }) {
+  const cloneBag = useCloneBag();
   const { toast } = useToast();
   const [ads, setAds] = useState<CompetitorAd[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2936,6 +2968,22 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
               <Button size="sm" onClick={() => saveToTemplates(Array.from(selected))}
                 variant="ghost" className="gap-1.5 h-8 text-xs px-3 text-muted-foreground">
                 <Bookmark className="w-3.5 h-3.5" /> Templates
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs px-3" onClick={() => {
+                const rows = ads.filter((a) => selected.has(a.id) && a.file_path).map((a) => ({
+                  id: a.id,
+                  brandId: a.brand_id || competitor.id,
+                  name: a.headline || a.name || "Ad",
+                  file_path: a.file_path,
+                  media_type: a.media_type,
+                  headline: a.headline,
+                  hook: a.hook,
+                  body_text: a.body_text,
+                }));
+                cloneBag.addAds(rows);
+                toast({ title: `${rows.length} creative${rows.length === 1 ? "" : "s"} added to Clone` });
+              }}>
+                <Copy className="w-3.5 h-3.5" /> Add to Clone
               </Button>
             </div>
           )}
@@ -3568,6 +3616,7 @@ function LandingLivePreview({ landing }: { landing: Landing }) {
 function CompetitorLandingsView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const router = useRouter();
+  const cloneBag = useCloneBag();
   const [landings, setLandings] = useState<Landing[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
@@ -3969,6 +4018,19 @@ function CompetitorLandingsView({ projectId }: { projectId: string }) {
                 {savingTpl
                   ? <><RefreshCw className="w-3 h-3 animate-spin" /> Saving...</>
                   : <><Bookmark className="w-3.5 h-3.5" /> Save to Templates</>}
+              </Button>
+              <Button size="sm" variant="outline" className="gap-1.5 h-8 text-xs px-3" onClick={() => {
+                const rows = landings.filter((l) => selected.has(l.id)).map((l) => ({
+                  id: l.id,
+                  name: l.name || hostOf(l.url) || "Landing",
+                  url: l.url || "",
+                  html_url: l.html_url || "",
+                  page_type: l.page_type || "landing",
+                }));
+                cloneBag.addLandings(rows);
+                toast({ title: `${rows.length} landing${rows.length === 1 ? "" : "s"} added to Clone` });
+              }}>
+                <Copy className="w-3.5 h-3.5" /> Add to Clone
               </Button>
             </div>
           )}
@@ -6125,11 +6187,132 @@ const LIBRARY_TABS = [
 
 const BUILD_WATCH_KEY = (projectId: string) => `ph-video-build:${projectId}`;
 
+function encodeLaunchDraft(draft: unknown): string {
+  const json = JSON.stringify(draft);
+  const b64 = btoa(unescape(encodeURIComponent(json)));
+  return encodeURIComponent(b64);
+}
+
+function CloneTray({ projectId }: { projectId: string }) {
+  const bag = useCloneBag();
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  if (!bag.ads.length && !bag.landings.length) return null;
+
+  const run = async () => {
+    if (!bag.landings.length || !bag.ads.length) {
+      toast({ title: "Pick at least one creative and one landing", variant: "destructive" });
+      return;
+    }
+    setBusy(true);
+    try {
+      for (const ad of bag.ads) {
+        downloadCreative(ad);
+        await new Promise((r) => setTimeout(r, 350));
+      }
+      for (const l of bag.landings) {
+        if (!l.html_url) continue;
+        try {
+          const res = await fetch(l.html_url);
+          if (!res.ok) continue;
+          const html = await res.text();
+          const blob = new Blob([html], { type: "text/html" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = `${(l.name || "landing").replace(/[^\w.-]+/g, "-").slice(0, 80)}.html`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+          await new Promise((r) => setTimeout(r, 350));
+        } catch { /* next file */ }
+      }
+
+      const steps = bag.landings.slice(0, 8).map((l) => ({
+        html: l.html_url,
+        url: l.url,
+        name: l.name,
+        type: l.page_type || "landing",
+      }));
+      const swipe = `/front-end-funnel?swipe_steps=${encodeURIComponent(JSON.stringify(steps))}`;
+      window.open(swipe, "_blank");
+
+      const website = bag.landings.find((l) => /^https?:\/\//i.test(l.url))?.url || "";
+      const origin = (process.env.NEXT_PUBLIC_LAUNCH_TRACKER_URL || "https://launch-tracker-murex.vercel.app").replace(/\/+$/, "");
+      const ads = bag.ads.map((c) => {
+        const video = c.media_type === "video";
+        const path = getUploadUrl(c.file_path);
+        const asset = /^https?:\/\//i.test(path) ? path : `${window.location.origin}${path.startsWith("/") ? path : `/${path}`}`;
+        const primary = [c.hook, c.body_text].filter(Boolean).join("\n\n");
+        return {
+          name: (c.name || "Creative").slice(0, 120),
+          format: video ? "SINGLE_VIDEO" : "SINGLE_IMAGE",
+          primary_text: primary,
+          headline: c.headline || "",
+          description: "",
+          image_url: video ? "" : asset,
+          video_url: video ? asset : "",
+          website_url: website,
+          display_link: hostOf(website),
+          cta: "LEARN_MORE",
+        };
+      });
+      const draft = {
+        ts: Date.now(),
+        source: "clone",
+        project_id: projectId,
+        campaign: { name: "Clone", offer: "", flow: "" },
+        website_url: website,
+        ads,
+      };
+      window.open(`${origin}/campaigns#lt_draft=${encodeLaunchDraft(draft)}`, "_blank");
+      toast({
+        title: "Clone started",
+        description: "Landings are opening in Clone/Swipe. Creatives and HTML are downloading. Launch Tracker has the draft.",
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="sticky bottom-3 z-20 flex items-center gap-3 rounded-xl border border-primary/30 bg-card px-4 py-2.5 shadow-lg">
+      <Copy className="w-4 h-4 text-primary shrink-0" />
+      <p className="text-sm text-foreground">
+        <span className="font-semibold">Clone</span>
+        <span className="text-muted-foreground"> · {bag.ads.length} creative{bag.ads.length === 1 ? "" : "s"} · {bag.landings.length} landing{bag.landings.length === 1 ? "" : "s"}</span>
+      </p>
+      <div className="ml-auto flex items-center gap-2">
+        <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={bag.clear}>Clear</Button>
+        <Button size="sm" className="h-8 text-xs gap-1.5" disabled={busy} onClick={() => void run()}>
+          {busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Copy className="w-3.5 h-3.5" />}
+          Clone
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const [tab, setTab] = useState<Tab>("overview");
   const [selected, setSelected] = useState<CompetitorWithStats | null>(null);
   const [adsView, setAdsView] = useState<"by" | "all">("by");
+  const [cloneAds, setCloneAds] = useState<CloneAd[]>([]);
+  const [cloneLandings, setCloneLandings] = useState<CloneLanding[]>([]);
+  const cloneValue: CloneBag = {
+    ads: cloneAds,
+    landings: cloneLandings,
+    addAds: (rows) => setCloneAds((prev) => {
+      const ids = new Set(prev.map((a) => a.id));
+      return [...prev, ...rows.filter((r) => r.file_path && !ids.has(r.id))];
+    }),
+    addLandings: (rows) => setCloneLandings((prev) => {
+      const ids = new Set(prev.map((a) => a.id));
+      return [...prev, ...rows.filter((r) => !ids.has(r.id))];
+    }),
+    clear: () => { setCloneAds([]); setCloneLandings([]); },
+  };
   const [buildWatch, setBuildWatch] = useState<{ brandId: number; status: string; error?: string } | null>(null);
   const buildPoll = useRef<ReturnType<typeof setInterval> | null>(null);
   const buildPollCount = useRef(0);
@@ -6232,6 +6415,7 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
   // If viewing a competitor detail, stay in ads view regardless
   if (selected) {
     return (
+      <CloneContext.Provider value={cloneValue}>
       <div className="space-y-4">
         {/* Tab bar */}
         <div className="flex items-center gap-1 border-b border-border pb-0">
@@ -6247,11 +6431,14 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
         </div>
         {buildBanner}
         <CompetitorDetail projectId={projectId} competitor={selected} onBack={() => setSelected(null)} onOpenCreated={() => { setTab("created"); setSelected(null); }} />
+        <CloneTray projectId={projectId} />
       </div>
+      </CloneContext.Provider>
     );
   }
 
   return (
+    <CloneContext.Provider value={cloneValue}>
     <div className="space-y-4">
       {/* Tab bar */}
       <div className="flex items-center gap-1 border-b border-border pb-0">
@@ -6295,6 +6482,8 @@ export function CompetitorLibrarySection({ projectId }: { projectId: string }) {
             : <AllCreativesView projectId={projectId} onOpenCreated={() => { setTab("created"); setSelected(null); }} />}
         </div>
       )}
+      <CloneTray projectId={projectId} />
     </div>
+    </CloneContext.Provider>
   );
 }
