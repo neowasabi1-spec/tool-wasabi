@@ -6411,15 +6411,31 @@ function CloneTray({ projectId }: { projectId: string }) {
       for (const ad of bag.ads) {
         const base = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brandId}/ads/${ad.id}`;
         if (ad.media_type === "video") {
-          const r = await fetch(`${base}/rewrite-script`, {
+          const scriptRes = await fetch(`${base}/rewrite-script`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ product: brief.slice(0, 600), angle: brief }),
           });
-          if (r.ok) videos += 1;
+          const scriptJson = await scriptRes.json().catch(() => ({})) as { error?: string; script?: string };
+          const script = String(scriptJson.script || "").trim();
+          if (!scriptRes.ok || script.length < 20) {
+            problems.push(scriptJson.error || "Video needs a transcript before it can be swiped");
+            continue;
+          }
+          const buildRes = await fetch(`${base}/build-video`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: "localize",
+              voice: "alloy",
+              copySource: "custom",
+              script,
+            }),
+          });
+          if (buildRes.ok) videos += 1;
           else {
-            const j = await r.json().catch(() => ({})) as { error?: string };
-            problems.push(j.error || "Video script failed");
+            const j = await buildRes.json().catch(() => ({})) as { error?: string };
+            problems.push(j.error || "Video build failed");
           }
         } else if (!productImageUrl) {
           continue;
