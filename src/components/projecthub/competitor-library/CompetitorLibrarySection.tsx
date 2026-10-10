@@ -6386,14 +6386,28 @@ function CloneTray({ projectId }: { projectId: string }) {
         throw new Error(j.error || "Landing swipe did not start");
       }
 
-      const imagePrompt = [
-        "Swipe this ad onto the chosen landings.",
-        "Keep the layout. The offer, product, claims and call to action must match those landings.",
-        brief,
-      ].join("\n\n");
       let images = 0;
       let videos = 0;
       const problems: string[] = [];
+      let productImageUrl = "";
+      let productName = "";
+      const firstImage = bag.ads.find((a) => a.media_type !== "video" && a.file_path);
+      if (firstImage) {
+        const prep = await fetch(
+          `/api/projecthub/projects/${projectId}/competitor-library/${firstImage.brandId}/ads/${firstImage.id}/remake-image`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "prepare" }) },
+        );
+        const pj = await prep.json().catch(() => ({})) as { productImageUrl?: string; productName?: string };
+        productImageUrl = String(pj.productImageUrl || "");
+        productName = String(pj.productName || "");
+        if (!productImageUrl) problems.push("Image swipe needs the project product photo");
+      }
+      const imagePrompt = [
+        `Replace the competitor product in this ad with ${productName || "our product"}.`,
+        "The FIRST image is the ad layout to keep. The SECOND image is our exact packshot — put that product in their place.",
+        "Keep the format, framing, people and style. Rewrite the on-image offer so it matches the chosen landings.",
+        brief.slice(0, 1200),
+      ].join("\n");
       for (const ad of bag.ads) {
         const base = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brandId}/ads/${ad.id}`;
         if (ad.media_type === "video") {
@@ -6407,11 +6421,18 @@ function CloneTray({ projectId }: { projectId: string }) {
             const j = await r.json().catch(() => ({})) as { error?: string };
             problems.push(j.error || "Video script failed");
           }
+        } else if (!productImageUrl) {
+          continue;
         } else {
           const r = await fetch(`${base}/remake-image`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "start", prompt: imagePrompt, mode: "swipe" }),
+            body: JSON.stringify({
+              action: "start",
+              prompt: imagePrompt,
+              productImageUrl,
+              mode: "swipe",
+            }),
           });
           if (r.ok) images += 1;
           else {
