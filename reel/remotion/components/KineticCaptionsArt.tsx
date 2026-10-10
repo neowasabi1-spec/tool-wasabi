@@ -87,6 +87,8 @@ interface Props {
   /** Colore parola-hero / accento (default oro). */
   accentColor?: string;
   strokePx?: number;
+  /** hero = la parola più lunga resta oro. spoken = si illumina la parola detta ora. */
+  accentMode?: "hero" | "spoken";
 }
 
 interface MWord {
@@ -110,6 +112,7 @@ export const KineticCaptionsArt: React.FC<Props> = ({
   color: baseColor = WHITE,
   accentColor = GOLD,
   strokePx = 3,
+  accentMode = "hero",
 }) => {
   const frame = useCurrentFrame();
 
@@ -221,9 +224,10 @@ export const KineticCaptionsArt: React.FC<Props> = ({
               ? interpolate(frame, [w.startFrame, w.startFrame + 5, w.startFrame + 15], [1, 1.08, 1.02], { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.out(Easing.quad) })
               : 1;
 
-            const color = isHero ? accentColor : baseColor;
-            const wordOpacity = isHero ? 1 : isSpoken ? 1 : 0.34;
-            const glow = isHero;
+            const lit = accentMode === "spoken" ? isActive : isHero;
+            const color = lit ? accentColor : baseColor;
+            const wordOpacity = lit ? 1 : isSpoken ? 1 : 0.34;
+            const glow = lit;
 
             return (
               <span

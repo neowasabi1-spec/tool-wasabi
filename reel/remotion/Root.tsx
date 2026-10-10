@@ -109,8 +109,7 @@ export const RemotionRoot: React.FC = () => {
         height={HEIGHT}
         defaultProps={{
           videoUrl: "",
-          bands: [{ top: 0.72, height: 0.22, color: "#111111" }],
-          captions: [{ text: "New line", startFrame: 0, endFrame: 90 }],
+          blocks: [],
         }}
       />
       <Composition

@@ -8,10 +8,10 @@ import { join, resolve } from "node:path";
 /**
  * Cover burned-in subtitles with a solid band and burn new lines.
  * Run on the reel server (the machine that already renders Remotion):
- *   pnpm cover-subs --input clip.mp4 --output pulito.mp4 --captions captions.json
+ *   pnpm cover-subs --input clip.mp4 --output pulito.mp4 --scenes scenes.json
  *
- * captions.json: [{ "text": "...", "startSec": 0, "endSec": 1.4 }, ...]
- * Optional: --top 0.72 --height 0.22
+ * scenes.json: [{ "startSec", "endSec", "text", "box": { "left", "top", "width", "height" } }, ...]
+ * Box values are fractions of the frame. One box per scene.
  */
 
 const args = process.argv.slice(2);
@@ -22,12 +22,10 @@ const flag = (name: string) => {
 
 const input = resolve(flag("--input"));
 const output = resolve(flag("--output"));
-const captionsPath = flag("--captions");
-const top = Number(flag("--top") || "0.72");
-const height = Number(flag("--height") || "0.22");
+const blocksPath = flag("--blocks");
 
 if (!input || !output || !existsSync(input)) {
-  console.error("Uso: pnpm cover-subs --input clip.mp4 --output pulito.mp4 [--captions file.json] [--top 0.72] [--height 0.22]");
+  console.error("Uso: pnpm cover-subs --input clip.mp4 --output pulito.mp4 --scenes scenes.json");
   process.exit(1);
 }
 
@@ -75,17 +73,31 @@ try {
   const meta = await probe(input);
   const fps = 30;
   const durationInFrames = Math.max(1, Math.round(meta.dur * fps));
-  let captions: Array<{ text: string; startSec: number; endSec: number }> = [];
-  if (captionsPath && existsSync(resolve(captionsPath))) {
-    captions = JSON.parse(await (await import("node:fs/promises")).readFile(resolve(captionsPath), "utf8"));
-  }
+  const readJson = async (p: string) => {
+    if (!p || !existsSync(resolve(p))) return [];
+    return JSON.parse(await (await import("node:fs/promises")).readFile(resolve(p), "utf8"));
+  };
+  type WordIn = { text: string; startSec: number; endSec: number };
+  type BlockIn = {
+    style: "card" | "stroke";
+    startSec: number;
+    endSec: number;
+    box: { left: number; top: number; width: number; height: number };
+    words: WordIn[];
+  };
+  const blockIn = (await readJson(blocksPath)) as BlockIn[];
   const props = {
     videoUrl: `http://127.0.0.1:${port}/video.mp4`,
-    bands: [{ top, height, color: "#111111" }],
-    captions: captions.map((c) => ({
-      text: c.text,
-      startFrame: Math.round(c.startSec * fps),
-      endFrame: Math.round(c.endSec * fps),
+    blocks: blockIn.map((b) => ({
+      style: b.style,
+      startFrame: Math.round(b.startSec * fps),
+      endFrame: Math.round(b.endSec * fps),
+      box: b.box,
+      words: b.words.map((w) => ({
+        text: w.text,
+        startFrame: Math.round(w.startSec * fps),
+        endFrame: Math.max(Math.round(w.startSec * fps) + 1, Math.round(w.endSec * fps)),
+      })),
     })),
   };
 
