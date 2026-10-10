@@ -20,6 +20,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { getUploadUrl } from "@/lib/projecthub-storage";
+import { createFunnelPage } from "@/lib/supabase-operations";
 import { confirmDialog } from "@/components/ui/confirm";
 import { authFetch } from "@/lib/auth/client-fetch";
 import { PAGE_TYPE_OPTIONS } from "@/types";
@@ -6296,12 +6297,6 @@ const LIBRARY_TABS = [
 
 const BUILD_WATCH_KEY = (projectId: string) => `ph-video-build:${projectId}`;
 
-function encodeLaunchDraft(draft: unknown): string {
-  const json = JSON.stringify(draft);
-  const b64 = btoa(unescape(encodeURIComponent(json)));
-  return encodeURIComponent(b64);
-}
-
 function CloneTray({ projectId }: { projectId: string }) {
   const bag = useCloneBag();
   const { toast } = useToast();
@@ -6338,48 +6333,83 @@ function CloneTray({ projectId }: { projectId: string }) {
       }
 
       const brief = await coherenceFromLandings(bag.landings);
-      const steps = bag.landings.slice(0, 8).map((l) => ({
-        html: l.html_url,
-        url: l.url,
-        name: l.name,
-        type: l.page_type || "landing",
-        prompt: brief,
-      }));
-      const swipe = `/front-end-funnel?swipe_steps=${encodeURIComponent(JSON.stringify(steps))}`;
-      window.open(swipe, "_blank");
-
-      const website = bag.landings.find((l) => /^https?:\/\//i.test(l.url))?.url || "";
-      const origin = (process.env.NEXT_PUBLIC_LAUNCH_TRACKER_URL || "https://launch-tracker-murex.vercel.app").replace(/\/+$/, "");
-      const ads = bag.ads.map((c) => {
-        const video = c.media_type === "video";
-        const path = getUploadUrl(c.file_path);
-        const asset = /^https?:\/\//i.test(path) ? path : `${window.location.origin}${path.startsWith("/") ? path : `/${path}`}`;
-        const primary = [c.hook, c.body_text].filter(Boolean).join("\n\n");
-        return {
-          name: (c.name || "Creative").slice(0, 120),
-          format: video ? "SINGLE_VIDEO" : "SINGLE_IMAGE",
-          primary_text: primary,
-          headline: c.headline || "",
-          description: "",
-          image_url: video ? "" : asset,
-          video_url: video ? asset : "",
-          website_url: website,
-          display_link: hostOf(website),
-          cta: "LEARN_MORE",
-        };
+      const pageIds: string[] = [];
+      for (const l of bag.landings.slice(0, 8)) {
+        const created = await createFunnelPage({
+          name: (l.name || "Landing").slice(0, 80),
+          page_type: l.page_type || "landing",
+          project_id: projectId,
+          product_id: null,
+          url_to_swipe: l.html_url || l.url,
+          prompt: brief,
+          swipe_status: "pending",
+          cloned_data: l.html_url
+            ? {
+                html: "",
+                title: l.name,
+                htmlUrl: l.html_url,
+                source_url: l.url,
+                method_used: "template",
+                cloned_at: new Date().toISOString(),
+              }
+            : null,
+        });
+        if (created?.id) pageIds.push(created.id);
+      }
+      if (!pageIds.length) throw new Error("Could not create the landing pages to swipe");
+      const swipeRes = await fetch("/api/chimera/swipe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, pageIds, imageMode: "internal" }),
       });
-      const draft = {
-        ts: Date.now(),
-        source: "clone",
-        project_id: projectId,
-        campaign: { name: "Clone", offer: "", flow: "" },
-        website_url: website,
-        ads,
-      };
-      window.open(`${origin}/campaigns#lt_draft=${encodeLaunchDraft(draft)}`, "_blank");
+      if (!swipeRes.ok) {
+        const j = await swipeRes.json().catch(() => ({})) as { error?: string };
+        throw new Error(j.error || "Landing swipe did not start");
+      }
+
+      const imagePrompt = [
+        "Swipe this ad onto the chosen landings.",
+        "Keep the layout. The offer, product, claims and call to action must match those landings.",
+        brief,
+      ].join("\n\n");
+      let images = 0;
+      let videos = 0;
+      const problems: string[] = [];
+      for (const ad of bag.ads) {
+        const base = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brandId}/ads/${ad.id}`;
+        if (ad.media_type === "video") {
+          const r = await fetch(`${base}/rewrite-script`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ product: brief.slice(0, 600), angle: brief }),
+          });
+          if (r.ok) videos += 1;
+          else {
+            const j = await r.json().catch(() => ({})) as { error?: string };
+            problems.push(j.error || "Video script failed");
+          }
+        } else {
+          const r = await fetch(`${base}/remake-image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "start", prompt: imagePrompt, mode: "swipe" }),
+          });
+          if (r.ok) images += 1;
+          else {
+            const j = await r.json().catch(() => ({})) as { error?: string };
+            problems.push(j.error || "Image swipe failed");
+          }
+        }
+      }
+      window.open("/front-end-funnel", "_blank");
       toast({
-        title: "Clone started",
-        description: "Landings are opening in Clone/Swipe. Creatives and HTML are downloading. Launch Tracker has the draft.",
+        title: "Swipe started",
+        description: [
+          `${pageIds.length} landing${pageIds.length === 1 ? "" : "s"} in the landing swipe.`,
+          images ? `${images} image swipe${images === 1 ? "" : "s"}.` : "",
+          videos ? `${videos} video script${videos === 1 ? "" : "s"}.` : "",
+          problems[0] || "",
+        ].filter(Boolean).join(" "),
       });
     } finally {
       setBusy(false);
