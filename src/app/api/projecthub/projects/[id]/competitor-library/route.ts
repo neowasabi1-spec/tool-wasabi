@@ -165,6 +165,30 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     };
   });
 
+  const { data: offRows } = await supabaseAdmin
+    .from('competitor_ads')
+    .select('brand_id, file_path')
+    .eq('project_id', id)
+    .eq('relevance_label', 'off_target')
+    .limit(2000);
+  const offByBrand = new Map<number, Set<string>>();
+  for (const row of (offRows || []) as Array<{ brand_id: number; file_path?: string | null }>) {
+    const set = offByBrand.get(row.brand_id) || new Set<string>();
+    if (row.file_path) set.add(row.file_path);
+    offByBrand.set(row.brand_id, set);
+  }
+  for (const brand of result) {
+    const off = offByBrand.get(brand.id);
+    if (!off?.size) continue;
+    brand.ads_count = Math.max(0, brand.ads_count - off.size);
+    if (brand.previews?.length) {
+      brand.previews = brand.previews.filter((p) => !off.has(p.file_path));
+      const first = brand.previews[0];
+      brand.preview_path = first?.file_path || '';
+      brand.preview_type = first?.media_type || '';
+    }
+  }
+
   return NextResponse.json(result);
 }
 

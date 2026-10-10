@@ -102,6 +102,24 @@ function readableAdText(card: AdvertiserCard): string {
     .trim();
 }
 
+/** offer = this product, other = a different ad, empty = nothing readable (image-only). */
+export function classifyOfferAd(text: string): 'offer' | 'other' | 'empty' {
+  const raw = text
+    .replace(/checking your browser[\s\S]*/gi, '')
+    .replace(/just a moment[. ]*/gi, '')
+    .replace(/p[aá]gina padr[aã]o/gi, '')
+    .replace(/enable javascript[\s\S]*/gi, '')
+    .trim();
+  const letters = raw.toLowerCase().replace(/[^a-zà-ÿ]/g, '');
+  if (letters.length < 20) return 'empty';
+  const t = raw.toLowerCase();
+  if (t.includes('wellaray')) return 'offer';
+  const coffee = /coffee|caf[eé]|caffe|kaffee/.test(t);
+  const dose = /sachet|satchet|booster|metabol|slim|poids|gewicht|minceur/.test(t);
+  if (coffee && dose) return 'offer';
+  return 'other';
+}
+
 /** Does the text name the product? Case/spacing/hyphen-insensitive ("JellyStick" = "Jelly Stick"). */
 export function mentionsProduct(text: string, names: string[]): string {
   const hay = text.toLowerCase().replace(/[\s\-_.]+/g, '');

@@ -5,6 +5,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
+  classifyOfferAd,
   judgeAdvertisers,
   hostOf,
   type AdvertiserCard,
@@ -108,5 +109,77 @@ export async function pruneNonSameProductBrands(
     if (!updErr) removed++;
   }
 
-  return { checked: candidates.length, removed, kept };
+  const adPass = await hideAdsThatAreNotThisOffer(projectId);
+  removed += adPass.brands;
+
+  return { checked: candidates.length, removed, kept: kept - adPass.brands };
+}
+
+/** An advertiser stays, but ads that sell something else are marked off-target.
+ *  A page with no ad for this offer is deactivated. */
+async function hideAdsThatAreNotThisOffer(projectId: string): Promise<{ ads: number; brands: number }> {
+  const { data, error } = await supabaseAdmin
+    .from('competitor_ads')
+    .select('id, brand_id, name, headline, hook, body_text, relevance_label')
+    .eq('project_id', projectId)
+    .limit(2000);
+  if (error || !data?.length) return { ads: 0, brands: 0 };
+
+  const rows = data as Array<{
+    id: number; brand_id: number; name?: string | null; headline?: string | null;
+    hook?: string | null; body_text?: string | null; relevance_label?: string | null;
+  }>;
+  const offerBrands = new Set<number>();
+  const offIds: number[] = [];
+  for (const ad of rows) {
+    const text = [ad.name, ad.headline, ad.hook, ad.body_text].filter(Boolean).join('\n');
+    const kind = classifyOfferAd(text);
+    if (kind === 'offer') offerBrands.add(ad.brand_id);
+    else if (kind === 'other' && ad.relevance_label !== 'off_target') offIds.push(ad.id);
+  }
+
+  let ads = 0;
+  for (let i = 0; i < offIds.length; i += 80) {
+    const chunk = offIds.slice(i, i + 80);
+    const { error: updErr } = await supabaseAdmin
+      .from('competitor_ads')
+      .update({
+        relevance_score: 0,
+        relevance_label: 'off_target',
+        relevance_why: 'Does not sell this product',
+        relevance_at: new Date().toISOString(),
+      })
+      .in('id', chunk)
+      .eq('project_id', projectId);
+    if (!updErr) ads += chunk.length;
+  }
+
+  const brandIds = [...new Set(rows.map((r) => r.brand_id))];
+  const { data: brandRows } = await supabaseAdmin
+    .from('competitor_brands')
+    .select('id, brand_type')
+    .in('id', brandIds);
+  const keepType = new Set(
+    ((brandRows || []) as Array<{ id: number; brand_type?: string | null }>)
+      .filter((b) => {
+        const t = String(b.brand_type || '');
+        return t === 'inspiration' || t === 'video_folder';
+      })
+      .map((b) => b.id),
+  );
+  let brands = 0;
+  for (const id of brandIds) {
+    if (offerBrands.has(id) || keepType.has(id)) continue;
+    const { error: updErr } = await supabaseAdmin
+      .from('competitor_brands')
+      .update({
+        is_active: 'false',
+        notes: 'auto_pruned_not_same_product: no ad sells this product',
+      })
+      .eq('id', id)
+      .eq('project_id', projectId)
+      .neq('is_active', 'false');
+    if (!updErr) brands++;
+  }
+  return { ads, brands };
 }
