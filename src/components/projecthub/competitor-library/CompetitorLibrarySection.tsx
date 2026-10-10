@@ -6335,26 +6335,45 @@ function CloneTray({ projectId }: { projectId: string }) {
       const brief = await coherenceFromLandings(bag.landings);
       const pageIds: string[] = [];
       for (const l of bag.landings.slice(0, 8)) {
+        const live = /^https?:\/\//i.test(l.url || "") ? l.url : "";
+        let html = "";
+        if (l.html_url) {
+          try {
+            const res = await fetch(l.html_url);
+            if (res.ok) html = await res.text();
+          } catch { /* worker can still fetch the live URL */ }
+        }
         const created = await createFunnelPage({
           name: (l.name || "Landing").slice(0, 80),
           page_type: l.page_type || "landing",
           project_id: projectId,
           product_id: null,
-          url_to_swipe: l.html_url || l.url,
+          url_to_swipe: live || l.html_url,
           prompt: brief,
           swipe_status: "pending",
-          cloned_data: l.html_url
-            ? {
-                html: "",
-                title: l.name,
-                htmlUrl: l.html_url,
-                source_url: l.url,
-                method_used: "template",
-                cloned_at: new Date().toISOString(),
-              }
-            : null,
+          cloned_data: {
+            html: "",
+            title: l.name,
+            source_url: live,
+            method_used: "template",
+            cloned_at: new Date().toISOString(),
+          },
         });
-        if (created?.id) pageIds.push(created.id);
+        if (!created?.id) continue;
+        if (html.length > 500) {
+          const saved = await fetch("/api/funnel-html", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              pageId: created.id,
+              kind: "cloned",
+              variant: "desktop",
+              html,
+            }),
+          });
+          if (!saved.ok) throw new Error("Could not store the landing HTML for swipe");
+        }
+        pageIds.push(created.id);
       }
       if (!pageIds.length) throw new Error("Could not create the landing pages to swipe");
       const swipeRes = await fetch("/api/chimera/swipe", {
