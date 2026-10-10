@@ -3265,6 +3265,8 @@ type CreativeWithBrand = CompetitorAd & { brand_name: string };
 
 function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onOpenCreated?: () => void }) {
   const { toast } = useToast();
+  const cloneBag = useCloneBag();
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   const [creatives, setCreatives] = useState<CreativeWithBrand[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -3367,6 +3369,43 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
         )}
       </div>
 
+      {filtered.length > 0 && (
+        <div className="flex items-center gap-3 bg-muted/30 border border-border rounded-xl px-4 py-2.5">
+          <button type="button" className="flex items-center gap-2 text-xs font-medium text-foreground"
+            onClick={() => {
+              const ids = filtered.map((a) => a.id);
+              const allOn = ids.every((id) => picked.has(id));
+              setPicked(allOn ? new Set() : new Set(ids));
+            }}>
+            {filtered.length > 0 && filtered.every((a) => picked.has(a.id))
+              ? <CheckSquare className="w-4 h-4 text-primary" />
+              : <Square className="w-4 h-4 text-muted-foreground" />}
+            {filtered.every((a) => picked.has(a.id)) ? "Deselect all" : "Select all"}
+          </button>
+          {picked.size > 0 && (
+            <>
+              <span className="text-xs text-muted-foreground border-l border-border pl-3">{picked.size} selected</span>
+              <Button size="sm" className="ml-auto h-8 text-xs gap-1.5" onClick={() => {
+                const rows = creatives.filter((a) => picked.has(a.id) && a.file_path).map((a) => ({
+                  id: a.id,
+                  brandId: a.brand_id,
+                  name: a.headline || a.name || "Ad",
+                  file_path: a.file_path,
+                  media_type: a.media_type,
+                  headline: a.headline,
+                  hook: a.hook,
+                  body_text: a.body_text,
+                }));
+                cloneBag.addAds(rows);
+                toast({ title: `${rows.length} creative${rows.length === 1 ? "" : "s"} added to Clone` });
+              }}>
+                <Copy className="w-3.5 h-3.5" /> Add to Clone
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading...</div>
       ) : filtered.length === 0 ? (
@@ -3380,12 +3419,30 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
           {filtered.map((ad, idx) => (
             <div key={ad.id} onClick={() => setDetailAd(ad)}
               className={`group relative rounded-2xl overflow-hidden bg-card border-2 hover:shadow-lg transition-all cursor-pointer
-                ${ad.is_new ? "border-emerald-500/70" : "border-transparent hover:border-border"}`}>
+                ${picked.has(ad.id) ? "border-primary" : ad.is_new ? "border-emerald-500/70" : "border-transparent hover:border-border"}`}>
               <CardMetrics ad={ad} country={countryByBrand.get(ad.brand_id)} />
               <div className="aspect-[4/5] relative overflow-hidden rounded-xl">
                 {ad.file_path
                   ? <MediaThumb path={ad.file_path} type={ad.media_type} className="w-full h-full" />
                   : <AdPlaceholder ad={ad} index={idx} />}
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPicked((p) => {
+                      const n = new Set(p);
+                      n.has(ad.id) ? n.delete(ad.id) : n.add(ad.id);
+                      return n;
+                    });
+                  }}
+                  className={`absolute top-2 right-2 z-10 w-5 h-5 rounded-md border-2 flex items-center justify-center ${picked.has(ad.id) ? "bg-primary border-primary" : "bg-white/80 border-white/60"}`}
+                  title={picked.has(ad.id) ? "Deselect" : "Select"}>
+                  {picked.has(ad.id) && (
+                    <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+                      <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  )}
+                </button>
                 <div className="absolute top-2 left-2 flex flex-col items-start gap-1">
                   {ad.is_new && <NewBadge />}
                   <WinnerBadge ad={ad} /><RelevanceBadge ad={ad} />
