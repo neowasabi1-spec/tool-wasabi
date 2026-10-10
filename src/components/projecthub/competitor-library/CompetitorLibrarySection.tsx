@@ -6441,6 +6441,26 @@ function CloneTray({ projectId }: { projectId: string }) {
               continue;
             }
           }
+          let heard = await fetch(`${base}/transcribe`).then((r) => r.json()).catch(() => ({})) as { transcript?: string; status?: string; error?: string };
+          if (String(heard.transcript || "").trim().length < 20) {
+            const started = await fetch(`${base}/transcribe`, { method: "POST" });
+            if (!started.ok) {
+              const j = await started.json().catch(() => ({})) as { error?: string };
+              problems.push(j.error || "Transcript did not start");
+              continue;
+            }
+            const deadline = Date.now() + 4 * 60_000;
+            while (Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 4000));
+              heard = await fetch(`${base}/transcribe`).then((r) => r.json()).catch(() => ({})) as { transcript?: string; status?: string; error?: string };
+              if (String(heard.transcript || "").trim().length >= 20) break;
+              if (heard.status === "error") break;
+            }
+          }
+          if (String(heard.transcript || "").trim().length < 20) {
+            problems.push(heard.error || "Transcript did not finish");
+            continue;
+          }
           const scriptRes = await fetch(`${base}/rewrite-script`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },

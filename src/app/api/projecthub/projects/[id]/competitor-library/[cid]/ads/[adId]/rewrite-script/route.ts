@@ -32,6 +32,7 @@ REWRITE (mandatory):
 - All wording is ORIGINAL. Never copy sentences from the transcript.
 - Swap the offer, claims and specifics to the USER'S product.
 - Be compliance-aware: no unverifiable medical/financial/legal guarantees, no "cure", no income/again promises. Use softened, defensible phrasing.
+- If ON-SCREEN GRAPHICS are listed, the spoken lines must follow that picture in order. Do not narrate a product, gesture, or claim that is not on screen in that beat.
 
 OUTPUT FORMAT (plain text, no markdown fences):
 HOOK: <1-2 lines>
@@ -114,6 +115,26 @@ export async function POST(
 
   const productLine = product || projectName || 'MY PRODUCT (describe in the script generically)';
 
+  let graphics = '';
+  try {
+    const { data: shots } = await supabaseAdmin
+      .from('competitor_shots')
+      .select('start_sec, duration_sec, action, context, people, caption')
+      .eq('ad_id', adIdNum)
+      .eq('project_id', id)
+      .order('start_sec', { ascending: true })
+      .limit(24);
+    const lines = ((shots || []) as Array<{
+      start_sec?: number; duration_sec?: number; action?: string; context?: string; people?: string; caption?: string;
+    }>).map((s) => {
+      const bits = [s.action, s.caption, s.context, s.people].map((v) => String(v || '').trim()).filter(Boolean);
+      if (!bits.length) return '';
+      const t = Number.isFinite(s.start_sec) ? `${Math.round(Number(s.start_sec))}s` : '';
+      return `${t ? t + ' — ' : ''}${bits.join(' · ')}`;
+    }).filter(Boolean);
+    if (lines.length) graphics = lines.join('\n');
+  } catch { /* shots are optional context */ }
+
   const userMsg = [
     `MY PRODUCT / OFFER: ${productLine}`,
     angle ? `DESIRED ANGLE: ${angle}` : '',
@@ -121,6 +142,8 @@ export async function POST(
     '',
     a.headline ? `Competitor headline: ${a.headline}` : '',
     a.hook ? `Competitor hook: ${a.hook}` : '',
+    '',
+    graphics ? `ON-SCREEN GRAPHICS (what the viewer sees, in order — the new script must stay aligned with this):\n${graphics}` : '',
     '',
     'COMPETITOR WINNING TRANSCRIPT:',
     transcript.slice(0, 8000),
