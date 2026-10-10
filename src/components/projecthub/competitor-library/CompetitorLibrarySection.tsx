@@ -6411,6 +6411,36 @@ function CloneTray({ projectId }: { projectId: string }) {
       for (const ad of bag.ads) {
         const base = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brandId}/ads/${ad.id}`;
         if (ad.media_type === "video") {
+          const cleanNow = await fetch(`${base}/clean-video`).then((r) => r.json()).catch(() => ({})) as { status?: string; cleanPath?: string };
+          if (!(cleanNow.status === "done" && cleanNow.cleanPath)) {
+            const queued = await fetch(`${base}/clean-video`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ mode: "clean" }),
+            });
+            if (!queued.ok) {
+              const j = await queued.json().catch(() => ({})) as { error?: string };
+              problems.push(j.error || "Video clean did not start");
+              continue;
+            }
+            const deadline = Date.now() + 12 * 60_000;
+            let ready = false;
+            while (Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 5000));
+              const st = await fetch(`${base}/clean-video`).then((r) => r.json()).catch(() => ({})) as { status?: string; cleanPath?: string; error?: string };
+              if (st.status === "done" && st.cleanPath) { ready = true; break; }
+              if (st.status === "error") {
+                problems.push(st.error || "Video clean failed");
+                break;
+              }
+            }
+            if (!ready) {
+              if (!problems.length || !/clean/i.test(problems[problems.length - 1] || "")) {
+                problems.push("Video clean is still running");
+              }
+              continue;
+            }
+          }
           const scriptRes = await fetch(`${base}/rewrite-script`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
