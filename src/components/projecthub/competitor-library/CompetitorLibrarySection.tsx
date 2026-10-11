@@ -6434,7 +6434,11 @@ function CloneTray({ projectId }: { projectId: string }) {
           const scriptRes = await fetch(`${base}/rewrite-script`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ product: brief.slice(0, 600), angle: brief }),
+            body: JSON.stringify({
+              product: brief.slice(0, 600),
+              angle: brief,
+              transcript: String(heard.transcript || ""),
+            }),
           });
           const scriptJson = await scriptRes.json().catch(() => ({})) as { error?: string; script?: string };
           const script = String(scriptJson.script || "").trim();

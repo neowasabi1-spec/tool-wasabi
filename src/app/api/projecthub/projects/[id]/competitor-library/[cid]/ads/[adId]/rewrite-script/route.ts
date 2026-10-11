@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
+import { readCompetitorTranscript } from '@/lib/competitor-ads';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,8 +94,12 @@ export async function POST(
   if (!adQuery.data) return NextResponse.json({ error: 'Creative not found' }, { status: 404 });
 
   const a = adQuery.data as AdRow;
+  const fromClient = String(body.transcript || '').trim();
   const spoken = String(a.transcript || '').trim();
-  const transcript = spoken || (a.media_type === 'video' ? '' : String(a.body_text || '').trim());
+  const fromFile = spoken.length >= 20 ? '' : await readCompetitorTranscript(id, adIdNum);
+  const transcript = [fromClient, spoken, fromFile, String(a.body_text || '')]
+    .map((v) => v.trim())
+    .find((v) => v.length >= 20) || '';
   if (transcript.length < 20) {
     return NextResponse.json(
       { error: 'No script to rewrite yet. Use “Extract text” to transcribe the video first.' },
