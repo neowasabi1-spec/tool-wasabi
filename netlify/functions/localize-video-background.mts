@@ -92,7 +92,11 @@ export default async (req: Request) => {
   const supabase = getSupabase();
   const startedAt = Date.now();
   const elapsed = () => `${Math.round((Date.now() - startedAt) / 1000)}s`;
-  const log = (...a: unknown[]) => console.log('[localize-bg]', `job#${jobId}`, elapsed(), ...a);
+  const trail: string[] = [];
+  const log = (...a: unknown[]) => {
+    trail.push([elapsed(), ...a.map(String)].join(' '));
+    console.log('[localize-bg]', `job#${jobId}`, elapsed(), ...a);
+  };
 
   const { data: claimed } = await supabase
     .from('video_build_jobs')
@@ -211,6 +215,13 @@ export default async (req: Request) => {
       blocks = applyFixes(blocks, issues, frameW, frameH);
     }
     if (issues.length) {
+      // Keep the rejected render and what the check saw, so the failure can be looked at.
+      try {
+        const report = path.join(workDir, 'rejected.json');
+        fs.writeFileSync(report, JSON.stringify({ issues, blocks, hints: plan.hints, cues, trail }, null, 1));
+        await uploadFile(supabase, `${projectId}/generated/rejected/${jobId}.json`, report, 'application/json');
+        await uploadFile(supabase, `${projectId}/generated/rejected/${jobId}.mp4`, finalFile, 'video/mp4');
+      } catch { /* the error below matters more */ }
       const at = [...new Set(issues.map((x) => x.t.toFixed(1)))].slice(0, 5).join('s, ');
       throw new Error(`Original subtitles still show at ${at}s. Video was not published.`);
     }
