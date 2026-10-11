@@ -233,6 +233,12 @@ export default async (req: Request) => {
       t += durs[i];
     }
     log(`captions: ${cues.length} cues from ${scenes.length} spoken line(s)`);
+    const labeled = cues.map((c) => c.text).filter((t) => /\b(hook|script|cta|on-screen)\b/i.test(t));
+    if (!cues.length || labeled.length) {
+      throw new Error(labeled.length
+        ? `Captions still say “${labeled[0]}”. Video was not published.`
+        : 'No captions to burn. Video was not published.');
+    }
     fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues, frameW, frameH));
 
     let fontArg = '';
@@ -252,8 +258,26 @@ export default async (req: Request) => {
         '-movflags', '+faststart', finalFile],
         { cwd: workDir });
     } catch (e) {
-      log(`subtitle burn failed, using base: ${(e as Error).message}`);
-      fs.copyFileSync(base, finalFile);
+      throw new Error(`Subtitles were not burned, so the video was not published. ${(e as Error).message}`);
+    }
+
+    const checkAt = Math.min(Math.max(0.4, cues[0].start + 0.15), Math.max(0.4, srcDur - 0.2));
+    const rawFrame = path.join(workDir, 'check.raw');
+    await run(FFMPEG, ['-y', '-ss', checkAt.toFixed(2), '-i', finalFile, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', rawFrame]);
+    const rgb = fs.readFileSync(rawFrame);
+    const y0 = Math.max(0, Math.round(SUB_BAND * frameH) - 36);
+    const y1 = Math.min(frameH, y0 + 72);
+    let dark = 0;
+    let seen = 0;
+    for (let y = y0; y < y1; y++) {
+      for (let x = 0; x < frameW; x += 3) {
+        const i = (y * frameW + x) * 3;
+        seen++;
+        if (rgb[i] + rgb[i + 1] + rgb[i + 2] < 90) dark++;
+      }
+    }
+    if (seen === 0 || dark / seen < 0.18) {
+      throw new Error('The caption box does not cover the original line. Video was not published.');
     }
 
     const thumb = path.join(workDir, 'thumb.jpg');
