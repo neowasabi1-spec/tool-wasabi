@@ -5,6 +5,9 @@ import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
   keepSourceFrame, downloadSource, grabThumb, uploadFile,
 } from './_shared/video';
+import {
+  buildSceneAss, originalStillVisible, readShots, type CaptionShot,
+} from './_shared/caption-cover';
 
 /**
  * Background function that LOCALIZES an existing creative video: it keeps the
@@ -239,7 +242,12 @@ export default async (req: Request) => {
         ? `Captions still say “${labeled[0]}”. Video was not published.`
         : 'No captions to burn. Video was not published.');
     }
-    fs.writeFileSync(path.join(workDir, 'subs.ass'), buildAss(cues, frameW, frameH));
+    const shots = await readShots(visual, srcDur, frameW, frameH, workDir);
+    if (!shots.length) throw new Error('No burned-in caption was found, so the video was not published.');
+    log(`scenes ${shots.length}: ${shots.map((s) => `${s.style}@${s.box.top.toFixed(2)}`).join(' ')}`);
+    let placed: CaptionShot[] = shots;
+    const writeAss = (list: CaptionShot[]) => fs.writeFileSync(path.join(workDir, 'subs.ass'), buildSceneAss(cues, list, frameW, frameH));
+    writeAss(placed);
 
     let fontArg = '';
     const fontSrc = findCaptionFont();
@@ -261,32 +269,38 @@ export default async (req: Request) => {
       throw new Error(`Subtitles were not burned, so the video was not published. ${(e as Error).message}`);
     }
 
-    const checkAt = Math.min(Math.max(0.4, cues[0].start + 0.15), Math.max(0.4, srcDur - 0.2));
-    const before = path.join(workDir, 'before.raw');
-    const after = path.join(workDir, 'after.raw');
-    const dump = (src: string, dest: string) => run(FFMPEG, ['-y', '-ss', checkAt.toFixed(2), '-i', src, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', dest]);
-    await dump(base, before);
-    await dump(finalFile, after);
-    const a = fs.readFileSync(before);
-    const b = fs.readFileSync(after);
-    const y0 = Math.round(frameH * 0.45);
-    const y1 = Math.round(frameH * 0.85);
-    let ink = 0;
-    let still = 0;
-    for (let y = y0; y < y1; y += 2) {
-      for (let x = 4; x < frameW - 4; x += 2) {
-        const i = (y * frameW + x) * 3;
-        const lum = a[i] + a[i + 1] + a[i + 2];
-        if (lum < 700) continue;
-        const n = (y * frameW + x + 3) * 3;
-        if (a[n] + a[n + 1] + a[n + 2] > 120) continue;
-        ink++;
-        const diff = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
-        if (diff < 40) still++;
+    const uncovered = async (list: CaptionShot[]) => {
+      const bad: number[] = [];
+      for (let i = 0; i < list.length; i++) {
+        const mid = (list[i].start + list[i].end) / 2;
+        const before = path.join(workDir, `b-${i}.raw`);
+        const after = path.join(workDir, `a-${i}.raw`);
+        await run(FFMPEG, ['-y', '-ss', mid.toFixed(3), '-i', base, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', before]);
+        await run(FFMPEG, ['-y', '-ss', mid.toFixed(3), '-i', finalFile, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', after]);
+        if (originalStillVisible(fs.readFileSync(before), fs.readFileSync(after), frameW, frameH, list[i].box)) bad.push(i);
       }
+      return bad;
+    };
+    let missed = await uncovered(placed);
+    if (missed.length) {
+      placed = placed.map((s, i) => missed.includes(i) ? {
+        ...s,
+        box: {
+          left: Math.max(0, s.box.left - 0.03),
+          top: Math.max(0, s.box.top - 0.02),
+          width: Math.min(1, s.box.width + 0.06),
+          height: Math.min(0.5, s.box.height + 0.04),
+        },
+      } : s);
+      writeAss(placed);
+      await run(FFMPEG, ['-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy',
+        '-movflags', '+faststart', finalFile],
+        { cwd: workDir });
+      missed = await uncovered(placed);
     }
-    if (ink > 40 && still / ink > 0.45) {
-      throw new Error('The original subtitles are still visible. Video was not published.');
+    if (missed.length) {
+      throw new Error(`Original subtitles still show in ${missed.length} scene${missed.length === 1 ? '' : 's'}. Video was not published.`);
     }
 
     const thumb = path.join(workDir, 'thumb.jpg');
