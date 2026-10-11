@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import {
   getSupabase, run, FFMPEG, makeWorkDir, probeDuration, ttsScene,
   keepSourceFrame, downloadSource, grabThumb, uploadFile,
 } from './_shared/video';
 import {
-  buildSceneAss, originalStillVisible, readShots, type CaptionShot,
+  applyFixes, buildCoverAss, checkCover, coverFontsDir, hasVision, planCover,
+  type CaptionCue, type CoverIssue, type Reading,
 } from './_shared/caption-cover';
 
 /**
@@ -20,11 +20,6 @@ import {
  * Body: { jobId, projectId, brandId, adId }
  */
 
-const CAPTION_FONT = 'Anton';
-// White letters with a black stroke, on the original line, so the new
-// caption covers the burned-in one. No background box.
-const SUB_BAND = 0.66;
-
 function spokenOnly(raw: string): string {
   let s = String(raw || '').replace(/\r/g, '');
   const block = /SCRIPT\s*:\s*([\s\S]*?)(?=\b(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
@@ -36,18 +31,6 @@ function spokenOnly(raw: string): string {
     .trim();
 }
 
-function findCaptionFont(): string | null {
-  const candidates = [
-    path.join(process.cwd(), 'netlify/functions/_assets/caption.ttf'),
-    path.join(process.cwd(), '_assets/caption.ttf'),
-  ];
-  try { candidates.push(fileURLToPath(new URL('./_assets/caption.ttf', import.meta.url))); } catch { /* not ESM */ }
-  for (const c of candidates) {
-    try { if (fs.existsSync(c)) return c; } catch { /* ignore */ }
-  }
-  return null;
-}
-
 /** ffmpeg atempo is only valid in 0.5–2. Chain filters to reach the real speed. */
 function atempoChain(speed: number): string {
   const parts: string[] = [];
@@ -56,28 +39,6 @@ function atempoChain(speed: number): string {
   while (r < 0.5) { parts.push('atempo=0.5'); r /= 0.5; }
   parts.push(`atempo=${r.toFixed(3)}`);
   return parts.join(',');
-}
-
-function assTime(sec: number): string {
-  const cs = Math.max(0, Math.round(sec * 100));
-  const h = Math.floor(cs / 360000);
-  const m = Math.floor((cs % 360000) / 6000);
-  const s = Math.floor((cs % 6000) / 100);
-  const c = cs % 100;
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${h}:${p(m)}:${p(s)}.${p(c)}`;
-}
-
-function wrapCaption(text: string, maxChars: number): string {
-  const words = text.replace(/\s+/g, ' ').trim().toUpperCase().split(' ').filter(Boolean);
-  const lines: string[] = [];
-  let line = '';
-  for (const w of words) {
-    if (line && (line.length + 1 + w.length) > maxChars) { lines.push(line); line = w; }
-    else line = line ? `${line} ${w}` : w;
-  }
-  if (line) lines.push(line);
-  return lines.slice(0, 2).join('\\N').replace(/\{/g, '(').replace(/\}/g, ')');
 }
 
 /** 3–5 word bites so captions flip with the voice instead of sitting as a wall. */
@@ -116,38 +77,6 @@ function cuesForScene(
     t += len;
   }
   return cues;
-}
-
-function buildAss(
-  cues: { start: number; end: number; text: string }[],
-  W: number, H: number,
-): string {
-  const fontSize = Math.max(36, Math.round(H * 0.034));
-  const maxChars = Math.max(12, Math.min(18, Math.round(14 * (W / 1080))));
-  const header = [
-    '[Script Info]',
-    'ScriptType: v4.00+',
-    `PlayResX: ${W}`,
-    `PlayResY: ${H}`,
-    'WrapStyle: 0',
-    'ScaledBorderAndShadow: yes',
-    '',
-    '[V4+ Styles]',
-    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
-      'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
-      'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,${CAPTION_FONT},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,` +
-      '1,0,0,0,100,100,0,0,1,6,2,5,60,60,60,1',
-    '',
-    '[Events]',
-    'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
-  ];
-  const y = Math.round(SUB_BAND * H);
-  const x = Math.round(W / 2);
-  const events = cues.map((c) =>
-    `Dialogue: 0,${assTime(c.start)},${assTime(c.end)},Default,,0,0,0,,` +
-    `{\\an5\\pos(${x},${y})}${wrapCaption(c.text, maxChars)}`);
-  return [...header, ...events].join('\n') + '\n';
 }
 
 export default async (req: Request) => {
@@ -229,7 +158,7 @@ export default async (req: Request) => {
 
     // 4. Subtitles: short 3–5 word bites timed inside each spoken line, so
     // they flip with the voice instead of sitting as a wall of text.
-    const cues: { start: number; end: number; text: string }[] = [];
+    const cues: CaptionCue[] = [];
     let t = 0;
     for (let i = 0; i < scenes.length; i++) {
       cues.push(...cuesForScene(scenes[i], t, durs[i]));
@@ -242,65 +171,39 @@ export default async (req: Request) => {
         ? `Captions still say “${labeled[0]}”. Video was not published.`
         : 'No captions to burn. Video was not published.');
     }
-    const shots = await readShots(visual, srcDur, frameW, frameH, workDir);
-    if (!shots.length) throw new Error('No burned-in caption was found, so the video was not published.');
-    log(`scenes ${shots.length}: ${shots.map((s) => `${s.style}@${s.box.top.toFixed(2)}`).join(' ')}`);
-    let placed: CaptionShot[] = shots;
-    const writeAss = (list: CaptionShot[]) => fs.writeFileSync(path.join(workDir, 'subs.ass'), buildSceneAss(cues, list, frameW, frameH));
-    writeAss(placed);
-
-    let fontArg = '';
-    const fontSrc = findCaptionFont();
-    if (fontSrc) {
-      const fontDir = path.join(workDir, 'fonts');
-      fs.mkdirSync(fontDir, { recursive: true });
-      fs.copyFileSync(fontSrc, path.join(fontDir, 'caption.ttf'));
-      fontArg = ':fontsdir=fonts';
-    } else {
-      log('WARNING: caption font not found — subtitles may not render');
-    }
+    // 5. Cover the burned-in captions: each phrase's lines are read by the
+    // vision model and measured in the pixels, the new line goes on plates
+    // of that size, then every phrase is checked frame by frame and widened
+    // where old letters still show.
+    if (!hasVision()) throw new Error('No vision model key is set, so the original captions cannot be checked. Video was not published.');
+    const plan = await planCover(visual, srcDur, frameW, frameH, workDir, log);
+    if (!plan.blocks.length) throw new Error('No burned-in caption was found, so the video was not published.');
+    const fonts = coverFontsDir(workDir);
+    if (!fonts) throw new Error('Caption fonts are missing from the function bundle. Video was not published.');
     const finalFile = path.join(workDir, 'final.mp4');
-    try {
-      await run(FFMPEG, ['-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy',
-        '-movflags', '+faststart', finalFile],
-        { cwd: workDir });
-    } catch (e) {
-      throw new Error(`Subtitles were not burned, so the video was not published. ${(e as Error).message}`);
-    }
-
-    const uncovered = async (list: CaptionShot[]) => {
-      const bad: number[] = [];
-      for (let i = 0; i < list.length; i++) {
-        const mid = (list[i].start + list[i].end) / 2;
-        const before = path.join(workDir, `b-${i}.raw`);
-        const after = path.join(workDir, `a-${i}.raw`);
-        await run(FFMPEG, ['-y', '-ss', mid.toFixed(3), '-i', base, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', before]);
-        await run(FFMPEG, ['-y', '-ss', mid.toFixed(3), '-i', finalFile, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', after]);
-        if (originalStillVisible(fs.readFileSync(before), fs.readFileSync(after), frameW, frameH, list[i].box)) bad.push(i);
+    const readings = new Map<string, Reading | null>();
+    let blocks = plan.blocks;
+    let issues: CoverIssue[] = [];
+    for (let round = 0; round < 3; round++) {
+      const built = buildCoverAss(cues, blocks, frameW, frameH, srcDur);
+      blocks = built.blocks;
+      fs.writeFileSync(path.join(workDir, 'subs.ass'), built.ass);
+      try {
+        await run(FFMPEG, ['-y', '-i', base, '-vf', `ass=subs.ass:fontsdir=${fonts}`,
+          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy',
+          '-movflags', '+faststart', finalFile],
+          { cwd: workDir });
+      } catch (e) {
+        throw new Error(`Subtitles were not burned, so the video was not published. ${(e as Error).message}`);
       }
-      return bad;
-    };
-    let missed = await uncovered(placed);
-    if (missed.length) {
-      placed = placed.map((s, i) => missed.includes(i) ? {
-        ...s,
-        box: {
-          left: Math.max(0, s.box.left - 0.03),
-          top: Math.max(0, s.box.top - 0.02),
-          width: Math.min(1, s.box.width + 0.06),
-          height: Math.min(0.5, s.box.height + 0.04),
-        },
-      } : s);
-      writeAss(placed);
-      await run(FFMPEG, ['-y', '-i', base, '-vf', `ass=subs.ass${fontArg}`,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '22', '-c:a', 'copy',
-        '-movflags', '+faststart', finalFile],
-        { cwd: workDir });
-      missed = await uncovered(placed);
+      issues = await checkCover(base, finalFile, blocks, built.plates, cues, plan.hints, frameW, frameH, workDir, readings);
+      log(`cover check round ${round}: ${issues.length} issue(s)`);
+      if (!issues.length) break;
+      blocks = applyFixes(blocks, issues, frameW, frameH);
     }
-    if (missed.length) {
-      throw new Error(`Original subtitles still show in ${missed.length} scene${missed.length === 1 ? '' : 's'}. Video was not published.`);
+    if (issues.length) {
+      const at = [...new Set(issues.map((x) => x.t.toFixed(1)))].slice(0, 5).join('s, ');
+      throw new Error(`Original subtitles still show at ${at}s. Video was not published.`);
     }
 
     const thumb = path.join(workDir, 'thumb.jpg');
