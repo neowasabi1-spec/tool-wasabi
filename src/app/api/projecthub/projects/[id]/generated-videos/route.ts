@@ -31,5 +31,16 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const { data, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
+  if (sp.get('withJobs') === '1') {
+    const { data: jobs } = await supabaseAdmin
+      .from('video_build_jobs')
+      .select('id, status, error, brand_id, created_at')
+      .eq('project_id', id)
+      .in('status', ['pending', 'processing', 'error'])
+      .order('created_at', { ascending: false })
+      .limit(8);
+    return NextResponse.json({ videos: data || [], jobs: jobs || [] });
+  }
+
   return NextResponse.json(data || []);
 }

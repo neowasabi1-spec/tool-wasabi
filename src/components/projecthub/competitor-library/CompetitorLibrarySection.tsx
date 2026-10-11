@@ -5255,6 +5255,7 @@ function CustomVideoModal({
 function GeneratedVideosView({ projectId }: { projectId: string }) {
   const { toast } = useToast();
   const [videos, setVideos] = useState<GeneratedVideo[]>([]);
+  const [jobs, setJobs] = useState<Array<{ id: number; status: string; error?: string | null }>>([]);
   const [brandNames, setBrandNames] = useState<Record<number, string>>({});
   const [loading, setLoading] = useState(true);
   const [playing, setPlaying] = useState<GeneratedVideo | null>(null);
@@ -5279,11 +5280,17 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
     if (!quiet) setLoading(true);
     try {
       const [vr, br] = await Promise.all([
-        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/generated-videos`),
+        fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/generated-videos?withJobs=1`),
         fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`),
       ]);
       const vj = await vr.json().catch(() => []);
-      setVideos(Array.isArray(vj) ? vj : []);
+      if (Array.isArray(vj)) {
+        setVideos(vj);
+        setJobs([]);
+      } else {
+        setVideos(Array.isArray(vj?.videos) ? vj.videos : []);
+        setJobs(Array.isArray(vj?.jobs) ? vj.jobs : []);
+      }
       const bj = await br.json().catch(() => []);
       const map: Record<number, string> = {};
       for (const b of Array.isArray(bj) ? bj : []) map[b.id] = b.name;
@@ -5320,6 +5327,21 @@ function GeneratedVideosView({ projectId }: { projectId: string }) {
 
       {loading ? (
         <div className="py-16 text-center text-sm text-muted-foreground">Loading…</div>
+      ) : videos.length === 0 && jobs.length > 0 ? (
+        <div className="space-y-2">
+          {jobs.map((job) => (
+            <div key={job.id} className="rounded-xl border border-border bg-card px-4 py-3 text-sm">
+              <p className="font-semibold text-foreground">
+                {job.status === "error" ? "Video build failed" : "Building the video"}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {job.status === "error"
+                  ? (job.error || "The build stopped before a file was saved.")
+                  : "It is still running. The file appears here when it finishes."}
+              </p>
+            </div>
+          ))}
+        </div>
       ) : videos.length === 0 ? (
         <div className="py-20 text-center border-2 border-dashed border-border rounded-2xl">
           <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-3" />
@@ -6456,10 +6478,37 @@ function CloneTray({ projectId }: { projectId: string }) {
               script,
             }),
           });
-          if (buildRes.ok) videos += 1;
-          else {
+          if (!buildRes.ok) {
             const j = await buildRes.json().catch(() => ({})) as { error?: string };
             problems.push(j.error || "Video build failed");
+          } else {
+            setStep("Building the new video. It shows up in NEW CREATIVE when the file is ready.");
+            const deadline = Date.now() + 8 * 60_000;
+            let nudged = false;
+            let ready = false;
+            while (Date.now() < deadline) {
+              await new Promise((r) => setTimeout(r, 5000));
+              const st = await fetch(`${base}/build-video`).then((r) => r.json()).catch(() => ({})) as {
+                job?: { status?: string; error?: string };
+                videos?: unknown[];
+              };
+              const status = st.job?.status || "";
+              if (status === "done" || (Array.isArray(st.videos) && st.videos.length > 0)) { ready = true; break; }
+              if (status === "error" || status === "canceled") {
+                problems.push(st.job?.error || "Video build failed");
+                break;
+              }
+              if (status === "pending" && !nudged) {
+                nudged = true;
+                await fetch(`${base}/build-video`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ mode: "localize", voice: "alloy", copySource: "custom", script }),
+                });
+              }
+            }
+            if (ready) videos += 1;
+            else if (!problems.length) problems.push("The video is still building. Open NEW CREATIVE in a minute.");
           }
         } else if (!productImageUrl) {
           continue;
