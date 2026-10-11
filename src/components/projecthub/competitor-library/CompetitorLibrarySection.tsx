@@ -6316,6 +6316,7 @@ function CloneTray({ projectId }: { projectId: string }) {
   const bag = useCloneBag();
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);
+  const [step, setStep] = useState("");
   if (!bag.ads.length && !bag.landings.length) return null;
 
   const run = async () => {
@@ -6324,29 +6325,8 @@ function CloneTray({ projectId }: { projectId: string }) {
       return;
     }
     setBusy(true);
+    setStep(bag.landings.length ? "Swiping the landings. New pages open in Front-end Funnel." : "Starting the creative swipe.");
     try {
-      for (const ad of bag.ads) {
-        downloadCreative(ad);
-        await new Promise((r) => setTimeout(r, 350));
-      }
-      for (const l of bag.landings) {
-        if (!l.html_url) continue;
-        try {
-          const res = await fetch(l.html_url);
-          if (!res.ok) continue;
-          const html = await res.text();
-          const blob = new Blob([html], { type: "text/html" });
-          const a = document.createElement("a");
-          a.href = URL.createObjectURL(blob);
-          a.download = `${(l.name || "landing").replace(/[^\w.-]+/g, "-").slice(0, 80)}.html`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-          await new Promise((r) => setTimeout(r, 350));
-        } catch { /* next file */ }
-      }
-
       const brief = bag.landings.length
         ? await coherenceFromLandings(bag.landings)
         : "No landing was chosen. Keep the original video's promise and rewrite it onto our product.";
@@ -6430,33 +6410,7 @@ function CloneTray({ projectId }: { projectId: string }) {
       for (const ad of bag.ads) {
         const base = `/api/projecthub/projects/${projectId}/competitor-library/${ad.brandId}/ads/${ad.id}`;
         if (ad.media_type === "video") {
-          const cleanNow = await fetch(`${base}/clean-video`).then((r) => r.json()).catch(() => ({})) as { status?: string; cleanPath?: string };
-          if (!(cleanNow.status === "done" && cleanNow.cleanPath)) {
-            const queued = await fetch(`${base}/clean-video`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ mode: "clean" }),
-            });
-            if (!queued.ok) {
-              const j = await queued.json().catch(() => ({})) as { error?: string };
-              problems.push(j.error || "Video clean did not start");
-            } else {
-            const deadline = Date.now() + 12 * 60_000;
-            let ready = false;
-            while (Date.now() < deadline) {
-              await new Promise((r) => setTimeout(r, 5000));
-              const st = await fetch(`${base}/clean-video`).then((r) => r.json()).catch(() => ({})) as { status?: string; cleanPath?: string; error?: string };
-              if (st.status === "done" && st.cleanPath) { ready = true; break; }
-              if (st.status === "error") {
-                problems.push(st.error || "Video clean failed");
-                break;
-              }
-            }
-            if (!ready && (!problems.length || !/clean/i.test(problems[problems.length - 1] || ""))) {
-              problems.push("Video clean is still running");
-            }
-            }
-          }
+          setStep("Reading the video, then writing a new voice. The new file shows up in NEW CREATIVE.");
           let heard = await fetch(`${base}/transcribe`).then((r) => r.json()).catch(() => ({})) as { transcript?: string; status?: string; error?: string };
           if (String(heard.transcript || "").trim().length < 20) {
             const started = await fetch(`${base}/transcribe`, { method: "POST" });
@@ -6506,6 +6460,7 @@ function CloneTray({ projectId }: { projectId: string }) {
         } else if (!productImageUrl) {
           continue;
         } else {
+          setStep("Swiping the image onto the product photo. The new picture shows up in NEW CREATIVE.");
           const r = await fetch(`${base}/remake-image`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -6529,12 +6484,15 @@ function CloneTray({ projectId }: { projectId: string }) {
         description: [
           pageIds.length ? `${pageIds.length} landing${pageIds.length === 1 ? "" : "s"} in the landing swipe.` : "",
           images ? `${images} image swipe${images === 1 ? "" : "s"}.` : "",
-          videos ? `${videos} video script${videos === 1 ? "" : "s"}.` : "",
+          videos ? `${videos} video${videos === 1 ? "" : "s"} rewriting. Open NEW CREATIVE when it finishes.` : "",
           problems[0] || "",
         ].filter(Boolean).join(" "),
       });
+    } catch (err) {
+      toast({ title: err instanceof Error ? err.message : "Clone failed", variant: "destructive" });
     } finally {
       setBusy(false);
+      setStep("");
     }
   };
 
@@ -6544,6 +6502,7 @@ function CloneTray({ projectId }: { projectId: string }) {
       <p className="text-sm text-foreground">
         <span className="font-semibold">Clone</span>
         <span className="text-muted-foreground"> · {bag.ads.length} creative{bag.ads.length === 1 ? "" : "s"} · {bag.landings.length} landing{bag.landings.length === 1 ? "" : "s"}</span>
+        {step && <span className="block text-xs text-primary mt-0.5">{step}</span>}
       </p>
       <div className="ml-auto flex items-center gap-2">
         <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={bag.clear}>Clear</Button>
