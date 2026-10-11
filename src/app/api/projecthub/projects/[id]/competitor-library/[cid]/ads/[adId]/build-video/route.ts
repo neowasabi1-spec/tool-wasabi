@@ -10,6 +10,30 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 120;
 
+/** Background functions die at 15 min; a job still processing after that never finishes. */
+const STALE_MS = 16 * 60 * 1000;
+
+async function openJob(adId: number): Promise<{ id: number; status: string } | null> {
+  const { data } = await supabaseAdmin
+    .from('video_build_jobs')
+    .select('id, status, started_at, created_at')
+    .eq('ad_id', adId)
+    .in('status', ['pending', 'processing'])
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  const since = Date.parse(data.started_at || data.created_at || '');
+  if (data.status === 'processing' && Number.isFinite(since) && Date.now() - since > STALE_MS) {
+    await supabaseAdmin
+      .from('video_build_jobs')
+      .update({ status: 'error', error: 'The server stopped before the video was finished. Try again.', finished_at: new Date().toISOString() })
+      .eq('id', data.id);
+    return null;
+  }
+  return { id: data.id, status: data.status };
+}
+
 /**
  * Enqueue a video for one creative.
  *
@@ -86,12 +110,7 @@ export async function POST(
       }, { status: 400 });
     }
 
-    const { data: active } = await supabaseAdmin
-      .from('video_build_jobs')
-      .select('id, status')
-      .eq('ad_id', adIdNum)
-      .in('status', ['pending', 'processing'])
-      .maybeSingle();
+    const active = await openJob(adIdNum);
     if (active?.id) {
       if (active.status === 'pending') {
         await triggerBuildBackground(new URL(req.url).origin, {
@@ -142,12 +161,7 @@ export async function POST(
     );
   }
 
-  const { data: active } = await supabaseAdmin
-    .from('video_build_jobs')
-    .select('id, status')
-    .eq('ad_id', adIdNum)
-    .in('status', ['pending', 'processing'])
-    .maybeSingle();
+  const active = await openJob(adIdNum);
   if (active?.id) {
     if (active.status === 'pending') {
       await triggerBuildBackground(new URL(req.url).origin, {

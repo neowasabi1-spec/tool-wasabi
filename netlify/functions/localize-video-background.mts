@@ -20,6 +20,8 @@ import {
  * Body: { jobId, projectId, brandId, adId }
  */
 
+const COVER_BUDGET_MS = 10 * 60 * 1000;
+
 function spokenOnly(raw: string): string {
   let s = String(raw || '').replace(/\r/g, '');
   const block = /SCRIPT\s*:\s*([\s\S]*?)(?=\b(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
@@ -88,7 +90,9 @@ export default async (req: Request) => {
   if (!jobId || !projectId) return new Response('missing fields', { status: 400 });
 
   const supabase = getSupabase();
-  const log = (...a: unknown[]) => console.log('[localize-bg]', `job#${jobId}`, ...a);
+  const startedAt = Date.now();
+  const elapsed = () => `${Math.round((Date.now() - startedAt) / 1000)}s`;
+  const log = (...a: unknown[]) => console.log('[localize-bg]', `job#${jobId}`, elapsed(), ...a);
 
   const { data: claimed } = await supabase
     .from('video_build_jobs')
@@ -185,6 +189,11 @@ export default async (req: Request) => {
     let blocks = plan.blocks;
     let issues: CoverIssue[] = [];
     for (let round = 0; round < 3; round++) {
+      // Background functions are killed at 15 min, which would leave the job
+      // stuck in processing; stop early with an error instead.
+      if (round > 0 && Date.now() - startedAt > COVER_BUDGET_MS) {
+        throw new Error(`Ran out of time checking the captions (${elapsed()}), old subtitles still show. Video was not published.`);
+      }
       const built = buildCoverAss(cues, blocks, frameW, frameH, srcDur);
       blocks = built.blocks;
       fs.writeFileSync(path.join(workDir, 'subs.ass'), built.ass);

@@ -776,9 +776,35 @@ export function coverFontsDir(workDir: string): string | null {
 
 // -------------------------------------------------------------- verification
 
-async function grayFrame(file: string, t: number, dest: string): Promise<Buffer> {
-  await run(FFMPEG, ['-y', '-ss', t.toFixed(3), '-i', file, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'gray', dest]);
-  return fs.readFileSync(dest);
+/**
+ * One decode of the video for all check times (seeking once per frame costs
+ * seconds each on a function): a gray frame for the pixels and a small JPEG
+ * for the LLM, keyed by frame index at 30 fps.
+ */
+async function grabFrames(
+  file: string, frames: number[], W: number, H: number, workDir: string, tag: string,
+): Promise<{ gray: Map<number, Buffer>; jpg: Map<number, string> }> {
+  const list = [...new Set(frames)].sort((a, b) => a - b);
+  const gray = new Map<number, Buffer>();
+  const jpg = new Map<number, string>();
+  if (!list.length) return { gray, jpg };
+  const dir = path.join(workDir, `frames-${tag}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const sel = list.map((n) => `eq(n\\,${n})`).join('+');
+  fs.writeFileSync(path.join(dir, 'graph.txt'),
+    `[0:v]fps=30,select='${sel}',split=2[g][j];[g]format=gray[go];[j]scale=540:-2[jo]`);
+  await run(FFMPEG, ['-y', '-v', 'error', '-i', file, '-filter_complex_script', path.join(dir, 'graph.txt'),
+    '-map', '[go]', '-vsync', '0', '-f', 'rawvideo', path.join(dir, 'gray.raw'),
+    '-map', '[jo]', '-vsync', '0', '-q:v', '3', path.join(dir, 'f-%04d.jpg')]);
+  const raw = fs.readFileSync(path.join(dir, 'gray.raw'));
+  const size = W * H;
+  list.forEach((n, i) => {
+    if ((i + 1) * size <= raw.length) gray.set(n, raw.subarray(i * size, (i + 1) * size));
+    const f = path.join(dir, `f-${String(i + 1).padStart(4, '0')}.jpg`);
+    if (fs.existsSync(f)) jpg.set(n, f);
+  });
+  return { gray, jpg };
 }
 
 function words(text: string): string[] {
@@ -870,18 +896,22 @@ export async function checkCover(
     for (const t of ts) jobs.push({ block: i, t: Math.round(t * 100) / 100 });
   });
   const issues: CoverIssue[] = await scanLeaks(base, final, blocks, plates, hints, W, H);
+  const frameOf = (t: number) => Math.round(t * 30);
+  const [bf, af] = await Promise.all([
+    grabFrames(base, jobs.map((j) => frameOf(j.t)), W, H, workDir, 'b'),
+    grabFrames(final, jobs.map((j) => frameOf(j.t)), W, H, workDir, 'a'),
+  ]);
   const vis = hasVision();
-  const read = async (file: string, t: number, tag: 'b' | 'a'): Promise<Reading | null> => {
+  const read = async (t: number, tag: 'b' | 'a'): Promise<Reading | null> => {
     const key = `${tag}:${t}`;
     if (tag === 'b' && cache.has(key)) return cache.get(key) || null;
-    const jpg = path.join(workDir, `chk-${tag}-${t.toFixed(2)}.jpg`);
-    await run(FFMPEG, ['-y', '-ss', t.toFixed(3), '-i', file, '-frames:v', '1', '-vf', 'scale=540:-2', '-q:v', '3', jpg]);
-    const r = await readCaption(jpg, W, H);
+    const jpg = (tag === 'b' ? bf : af).jpg.get(frameOf(t));
+    const r = jpg ? await readCaption(jpg, W, H) : null;
     if (tag === 'b') cache.set(key, r);
     return r;
   };
   const readings = vis
-    ? await pool(jobs, 8, async (j) => Promise.all([read(base, j.t, 'b'), read(final, j.t, 'a')]))
+    ? await pool(jobs, 8, async (j) => Promise.all([read(j.t, 'b'), read(j.t, 'a')]))
     : jobs.map(() => [null, null] as Array<Reading | null>);
 
   for (let n = 0; n < jobs.length; n++) {
@@ -892,9 +922,9 @@ export async function checkCover(
     const near = (r: Rect) => !b.lines.length || b.ghost ||
       (centerY(r) >= Math.min(...b.lines.map((l) => l.y0)) - 0.05 * H && centerY(r) <= Math.max(...b.lines.map((l) => l.y1)) + 0.05 * H);
     const was = wasRaw && b.style === 'stroke' ? { ...wasRaw, lines: wasRaw.lines.filter((l) => near(l.box)) } : wasRaw;
-    const before = await grayFrame(base, j.t, path.join(workDir, 'cb.gray'));
-    const after = await grayFrame(final, j.t, path.join(workDir, 'ca.gray'));
-    if (before.length < W * H || after.length < W * H) continue;
+    const before = bf.gray.get(frameOf(j.t));
+    const after = af.gray.get(frameOf(j.t));
+    if (!before || !after) continue;
     const live = plates.filter((p) => j.t >= p.start && j.t < p.end).map((p) => p.rect);
 
     // Pixels: re-measure the original lines on this exact frame (where the LLM
