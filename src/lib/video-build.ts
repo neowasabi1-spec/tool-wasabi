@@ -93,11 +93,11 @@ export async function splitScriptToScenes(
 /** Drop HOOK / SCRIPT / CTA labels. Captions and the voice get only the spoken lines. */
 export function spokenOnly(raw: string): string {
   let s = String(raw || '').replace(/\r/g, '');
-  const block = /SCRIPT:\s*([\s\S]*?)(?=\n\s*(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
+  const block = /SCRIPT\s*:\s*([\s\S]*?)(?=\b(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
   if (block) s = block[1];
   s = s
-    .replace(/^(?:HOOK|SCRIPT|CTA)\s*:\s*/gim, '')
-    .replace(/^ON-SCREEN(?:\s*\/\s*B-ROLL)?\s*:\s*.*$/gim, '')
+    .replace(/\b(?:HOOK|SCRIPT|CTA)\s*:\s*/gi, '')
+    .replace(/\bON-SCREEN(?:\s*\/\s*B-ROLL)?\s*:\s*/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
   return s;
@@ -105,14 +105,15 @@ export function spokenOnly(raw: string): string {
 
 function naiveBeats(script: string, maxBeats = 24): BuildScene[] {
   const chunks: string[] = [];
-  const sentences = spokenOnly(script)
+  const clean = spokenOnly(script);
+  const sentences = clean
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 2);
   const parts = sentences.length > 1
     ? sentences
-    : script.split(/,\s+|(?<=;)\s+/).map((s) => s.trim()).filter((s) => s.length > 2);
-  const source = parts.length ? parts : [script.trim()].filter(Boolean);
+    : clean.split(/,\s+|(?<=;)\s+/).map((s) => s.trim()).filter((s) => s.length > 2);
+  const source = parts.length ? parts : [clean].filter(Boolean);
   for (const p of source) {
     if (p.length <= 220) {
       chunks.push(p);

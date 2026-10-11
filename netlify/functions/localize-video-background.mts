@@ -24,11 +24,11 @@ const SUB_BAND = 0.66;
 
 function spokenOnly(raw: string): string {
   let s = String(raw || '').replace(/\r/g, '');
-  const block = /SCRIPT:\s*([\s\S]*?)(?=\n\s*(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
+  const block = /SCRIPT\s*:\s*([\s\S]*?)(?=\b(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
   if (block) s = block[1];
   return s
-    .replace(/^(?:HOOK|SCRIPT|CTA)\s*:\s*/gim, '')
-    .replace(/^ON-SCREEN(?:\s*\/\s*B-ROLL)?\s*:\s*.*$/gim, '')
+    .replace(/\b(?:HOOK|SCRIPT|CTA)\s*:\s*/gi, '')
+    .replace(/\bON-SCREEN(?:\s*\/\s*B-ROLL)?\s*:\s*/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
