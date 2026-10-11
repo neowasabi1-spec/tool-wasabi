@@ -18,9 +18,20 @@ import {
  */
 
 const CAPTION_FONT = 'Anton';
-// Localized subtitles sit low, where short-form captions usually live. The
-// original burned-in caption (if any) is the user's call to clean in Shots.
-const SUB_BAND = 0.82;
+// Sit on the original burned-in line (around the chest, not the bottom)
+// so the black box covers it instead of adding a second caption.
+const SUB_BAND = 0.66;
+
+function spokenOnly(raw: string): string {
+  let s = String(raw || '').replace(/\r/g, '');
+  const block = /SCRIPT:\s*([\s\S]*?)(?=\n\s*(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
+  if (block) s = block[1];
+  return s
+    .replace(/^(?:HOOK|SCRIPT|CTA)\s*:\s*/gim, '')
+    .replace(/^ON-SCREEN(?:\s*\/\s*B-ROLL)?\s*:\s*.*$/gim, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function findCaptionFont(): string | null {
   const candidates = [
@@ -108,7 +119,7 @@ function buildAss(
   cues: { start: number; end: number; text: string }[],
   W: number, H: number,
 ): string {
-  const fontSize = Math.max(48, Math.round(Math.min(W, H) * 0.09));
+  const fontSize = Math.max(36, Math.round(H * 0.034));
   const maxChars = Math.max(12, Math.min(18, Math.round(14 * (W / 1080))));
   const header = [
     '[Script Info]',
@@ -122,8 +133,8 @@ function buildAss(
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, ' +
       'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
       'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: Default,${CAPTION_FONT},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H96000000,` +
-      '1,0,0,0,100,100,0,0,1,6,3,5,60,60,60,1',
+    `Style: Default,${CAPTION_FONT},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,` +
+      '1,0,0,0,100,100,0,0,3,16,0,5,40,40,40,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -157,8 +168,8 @@ export default async (req: Request) => {
   if (!claimed) { log('not pending — skipping'); return new Response('skip', { status: 200 }); }
 
   const scenes: string[] = (Array.isArray(claimed.scenes) ? claimed.scenes : [])
-    .map((s: { text?: string }) => (s && typeof s.text === 'string' ? s.text.trim() : ''))
-    .filter(Boolean);
+    .map((s: { text?: string }) => (s && typeof s.text === 'string' ? spokenOnly(s.text) : ''))
+    .filter((s) => s.length > 2);
   const voice = claimed.voice || 'alloy';
   const language = (claimed as { language?: string | null }).language || null;
   const sourcePath = (claimed as { source_path?: string | null }).source_path || '';

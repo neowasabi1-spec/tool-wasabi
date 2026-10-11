@@ -90,9 +90,22 @@ export async function splitScriptToScenes(
   return naive();
 }
 
+/** Drop HOOK / SCRIPT / CTA labels. Captions and the voice get only the spoken lines. */
+export function spokenOnly(raw: string): string {
+  let s = String(raw || '').replace(/\r/g, '');
+  const block = /SCRIPT:\s*([\s\S]*?)(?=\n\s*(?:ON-SCREEN|CTA)\b|$)/i.exec(s);
+  if (block) s = block[1];
+  s = s
+    .replace(/^(?:HOOK|SCRIPT|CTA)\s*:\s*/gim, '')
+    .replace(/^ON-SCREEN(?:\s*\/\s*B-ROLL)?\s*:\s*.*$/gim, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s;
+}
+
 function naiveBeats(script: string, maxBeats = 24): BuildScene[] {
   const chunks: string[] = [];
-  const sentences = script
+  const sentences = spokenOnly(script)
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 2);
