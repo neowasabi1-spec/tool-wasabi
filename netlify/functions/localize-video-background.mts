@@ -18,8 +18,8 @@ import {
  */
 
 const CAPTION_FONT = 'Anton';
-// Sit on the original burned-in line (around the chest, not the bottom)
-// so the black box covers it instead of adding a second caption.
+// White letters with a black stroke, on the original line, so the new
+// caption covers the burned-in one. No background box.
 const SUB_BAND = 0.66;
 
 function spokenOnly(raw: string): string {
@@ -134,7 +134,7 @@ function buildAss(
       'Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, ' +
       'Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
     `Style: Default,${CAPTION_FONT},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,` +
-      '1,0,0,0,100,100,0,0,3,16,0,5,40,40,40,1',
+      '1,0,0,0,100,100,0,0,1,6,2,5,60,60,60,1',
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
@@ -262,22 +262,31 @@ export default async (req: Request) => {
     }
 
     const checkAt = Math.min(Math.max(0.4, cues[0].start + 0.15), Math.max(0.4, srcDur - 0.2));
-    const rawFrame = path.join(workDir, 'check.raw');
-    await run(FFMPEG, ['-y', '-ss', checkAt.toFixed(2), '-i', finalFile, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', rawFrame]);
-    const rgb = fs.readFileSync(rawFrame);
-    const y0 = Math.max(0, Math.round(SUB_BAND * frameH) - 36);
-    const y1 = Math.min(frameH, y0 + 72);
-    let dark = 0;
-    let seen = 0;
-    for (let y = y0; y < y1; y++) {
-      for (let x = 0; x < frameW; x += 3) {
+    const before = path.join(workDir, 'before.raw');
+    const after = path.join(workDir, 'after.raw');
+    const dump = (src: string, dest: string) => run(FFMPEG, ['-y', '-ss', checkAt.toFixed(2), '-i', src, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', dest]);
+    await dump(base, before);
+    await dump(finalFile, after);
+    const a = fs.readFileSync(before);
+    const b = fs.readFileSync(after);
+    const y0 = Math.round(frameH * 0.45);
+    const y1 = Math.round(frameH * 0.85);
+    let ink = 0;
+    let still = 0;
+    for (let y = y0; y < y1; y += 2) {
+      for (let x = 4; x < frameW - 4; x += 2) {
         const i = (y * frameW + x) * 3;
-        seen++;
-        if (rgb[i] + rgb[i + 1] + rgb[i + 2] < 90) dark++;
+        const lum = a[i] + a[i + 1] + a[i + 2];
+        if (lum < 700) continue;
+        const n = (y * frameW + x + 3) * 3;
+        if (a[n] + a[n + 1] + a[n + 2] > 120) continue;
+        ink++;
+        const diff = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+        if (diff < 40) still++;
       }
     }
-    if (seen === 0 || dark / seen < 0.18) {
-      throw new Error('The caption box does not cover the original line. Video was not published.');
+    if (ink > 40 && still / ink > 0.45) {
+      throw new Error('The original subtitles are still visible. Video was not published.');
     }
 
     const thumb = path.join(workDir, 'thumb.jpg');
