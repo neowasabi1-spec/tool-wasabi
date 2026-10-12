@@ -209,7 +209,8 @@ export default async (req: Request) => {
       } catch (e) {
         throw new Error(`Subtitles were not burned, so the video was not published. ${(e as Error).message}`);
       }
-      issues = await checkCover(base, finalFile, blocks, built.plates, cues, plan.hints, frameW, frameH, workDir, readings);
+      log(`burned round ${round}`);
+      issues = await checkCover(base, finalFile, blocks, built.plates, cues, plan.hints, frameW, frameH, workDir, readings, log);
       log(`cover check round ${round}: ${issues.length} issue(s)`);
       if (!issues.length) break;
       blocks = applyFixes(blocks, issues, frameW, frameH);

@@ -526,8 +526,9 @@ function buildBlocks(samplesIn: Sample[], dur: number, W: number, H: number): Co
 export async function planCover(
   file: string, dur: number, W: number, H: number, workDir: string,
   log: (...a: unknown[]) => void = () => {},
+  knownHints?: Hint[],
 ): Promise<CoverPlan> {
-  const hints = await readHints(file, dur, W, H, workDir);
+  const hints = knownHints || await readHints(file, dur, W, H, workDir);
   log(`caption hints: ${hints.map((h) => `${h.t.toFixed(1)}:${h.style[0]}${h.lines.length}`).join(' ')}`);
   const samples = await measureAll(file, W, H, hints);
   const blocks = buildBlocks(samples, dur, W, H);
@@ -781,6 +782,8 @@ export function coverFontsDir(workDir: string): string | null {
  * seconds each on a function): a gray frame for the pixels and a small JPEG
  * for the LLM, keyed by frame index at 30 fps.
  */
+const baseFrames = new Map<string, { gray: Map<number, Buffer>; jpg: Map<number, string> }>();
+
 async function grabFrames(
   file: string, frames: number[], W: number, H: number, workDir: string, tag: string,
 ): Promise<{ gray: Map<number, Buffer>; jpg: Map<number, string> }> {
@@ -817,13 +820,28 @@ function words(text: string): string[] {
  * (in the rows the LLM read around that time) are measured again; letters
  * left unchanged and outside every plate are leaks.
  */
+/** A box the model drew over two lines (or a line and the packaging under it) is cut into line-high bands. */
+function lineBands(bands: Rect[], lineH: number): Rect[] {
+  if (!lineH) return bands;
+  return bands.flatMap((r) => {
+    const n = Math.max(1, Math.round((r.y1 - r.y0) / lineH));
+    const h = (r.y1 - r.y0) / n;
+    return Array.from({ length: n }, (_, i) => ({ ...r, y0: Math.round(r.y0 + i * h), y1: Math.round(r.y0 + (i + 1) * h) }));
+  });
+}
+
+function medianLineH(blocks: CoverBlock[]): number {
+  const hs = blocks.flatMap((b) => b.ghost ? [] : b.lines.map((l) => l.y1 - l.y0)).sort((a, b) => a - b);
+  return hs.length ? hs[Math.floor(hs.length / 2)] : 0;
+}
+
 async function scanLeaks(
   base: string, final: string, blocks: CoverBlock[], plates: CoverPlate[], hints: Hint[], W: number, H: number,
 ): Promise<CoverIssue[]> {
   const k = W / 720;
   const ds = [3, 5, 7].map((d) => Math.max(2, Math.round(d * k)));
-  const hs = blocks.flatMap((b) => b.ghost ? [] : b.lines.map((l) => l.y1 - l.y0)).sort((a, b) => a - b);
-  const minH = hs.length ? 0.6 * hs[Math.floor(hs.length / 2)] : 0;
+  const lineH = medianLineH(blocks);
+  const minH = 0.6 * lineH;
   const issues: CoverIssue[] = [];
   const a = Buffer.alloc(W * H);
   const b = Buffer.alloc(W * H);
@@ -835,7 +853,7 @@ async function scanLeaks(
       f.copy(a, y * W, y * 2 * W, y * 2 * W + W);
       f.copy(b, y * W, y * 2 * W + W, y * 2 * W + 2 * W);
     }
-    const bands = bandsAround(hints, t);
+    const bands = lineBands(bandsAround(hints, t), lineH);
     const live = plates.filter((p) => t >= p.start && t < p.end).map((p) => p.rect);
     for (const band of bands) {
       const area = measureLine(a, W, H, band);
@@ -885,7 +903,10 @@ async function scanLeaks(
 export async function checkCover(
   base: string, final: string, blocks: CoverBlock[], plates: CoverPlate[], cues: CaptionCue[], hints: Hint[],
   W: number, H: number, workDir: string, cache: Map<string, Reading | null> = new Map(),
+  log: (...a: unknown[]) => void = () => {},
 ): Promise<CoverIssue[]> {
+  const t0 = Date.now();
+  const took = () => `${((Date.now() - t0) / 1000).toFixed(0)}s`;
   const k = W / 720;
   const ds = [3, 5, 7].map((d) => Math.max(2, Math.round(d * k)));
   const jobs: Array<{ block: number; t: number }> = [];
@@ -896,11 +917,16 @@ export async function checkCover(
     for (const t of ts) jobs.push({ block: i, t: Math.round(t * 100) / 100 });
   });
   const issues: CoverIssue[] = await scanLeaks(base, final, blocks, plates, hints, W, H);
+  log(`check: frame scan ${took()}, ${issues.length} leak(s)`);
   const frameOf = (t: number) => Math.round(t * 30);
+  const frames = jobs.map((j) => frameOf(j.t));
+  // The source does not change between rounds; decode its frames once.
+  const baseKey = `${base}|${[...new Set(frames)].sort((a, b) => a - b).join(',')}`;
   const [bf, af] = await Promise.all([
-    grabFrames(base, jobs.map((j) => frameOf(j.t)), W, H, workDir, 'b'),
-    grabFrames(final, jobs.map((j) => frameOf(j.t)), W, H, workDir, 'a'),
+    baseFrames.get(baseKey) || grabFrames(base, frames, W, H, workDir, 'b').then((r) => { baseFrames.clear(); baseFrames.set(baseKey, r); return r; }),
+    grabFrames(final, frames, W, H, workDir, 'a'),
   ]);
+  log(`check: frames ${took()}`);
   const vis = hasVision();
   const read = async (t: number, tag: 'b' | 'a'): Promise<Reading | null> => {
     const key = `${tag}:${t}`;
@@ -911,8 +937,10 @@ export async function checkCover(
     return r;
   };
   const readings = vis
-    ? await pool(jobs, 8, async (j) => Promise.all([read(j.t, 'b'), read(j.t, 'a')]))
+    ? await pool(jobs, 16, async (j) => Promise.all([read(j.t, 'b'), read(j.t, 'a')]))
     : jobs.map(() => [null, null] as Array<Reading | null>);
+  log(`check: ${jobs.length} phrase reads ${took()}`);
+  const lineH = medianLineH(blocks);
 
   for (let n = 0; n < jobs.length; n++) {
     const j = jobs[n];
@@ -930,7 +958,7 @@ export async function checkCover(
     // Pixels: re-measure the original lines on this exact frame (where the LLM
     // read them, else where the plan put them) and look for uncovered letters.
     const isCard = b.style === 'card' && !!b.card;
-    const bands = was && was.lines.length ? was.lines.map((l) => l.box) : (isCard ? [] : b.lines);
+    const bands = lineBands(was && was.lines.length ? was.lines.map((l) => l.box) : (isCard ? [] : b.lines), lineH);
     const areas = isCard
       ? [measureCard(before, W, H, { ...pad(b.card as Rect, 0, 0.03 * H, W, H), x0: 0, x1: W })].filter((r): r is Rect => !!r)
       : bands.map((r) => measureLine(before, W, H, r)).filter((r): r is Rect => !!r);
