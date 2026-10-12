@@ -642,81 +642,109 @@ const EDITOR_SCRIPT = `
       p=p.parentElement;
     }
   }
-  /* Blocchi che abbiamo già allungato in questa sessione: se la foto
-     torna più piccola, l'altezza minima scende con lei. */
-  var rzGrown=[];
   var rzPushBase=typeof WeakMap==='function'?new WeakMap():null;
-  /* La foto è spesso assoluta, o chiusa in un riquadro con altezza /
-     padding-bottom fissi. Il riquadro non cresce e la foto copre il testo.
-     Allunga ogni contenitore fino al bordo basso della foto, così il
-     resto della pagina scende. */
+  /* Una foto absolute non occupa spazio: il riquadro resta basso e il
+     testo non si sposta. La riportiamo nel flusso. */
+  function flowMedia(el){
+    if(!el)return;
+    var r=el.getBoundingClientRect();
+    if(r.width<160||r.height<70)return;
+    var cs=getComputedStyle(el);
+    if(cs.position==='absolute'||cs.position==='fixed'){
+      el.style.setProperty('position','relative','important');
+      el.style.setProperty('top','auto','important');
+      el.style.setProperty('right','auto','important');
+      el.style.setProperty('bottom','auto','important');
+      el.style.setProperty('left','auto','important');
+    }
+    var mb=parseFloat(cs.marginBottom)||0;
+    if(mb<0)el.style.setProperty('margin-bottom','0','important');
+  }
+  /* Sblocca i riquadri (altezza fissa, overflow hidden, padding-bottom)
+     che tagliano la foto o la lasciano uscire sul testo. */
   function growContainers(el){
     var p=el.parentElement,guard=0;
-    while(p&&p!==document.body&&p!==document.documentElement&&guard++<8){
-      var known=false;
-      for(var gi=0;gi<rzGrown.length;gi++)if(rzGrown[gi]===p)known=true;
+    while(p&&p!==document.body&&p!==document.documentElement&&guard++<20){
       var er=el.getBoundingClientRect();
       var pr=p.getBoundingClientRect();
-      var shortfall=er.bottom-pr.bottom;
-      if(shortfall<=2 && !known){
-        /* Questo livello contiene già la foto. Se un avo più in alto
-           è ancora corto, continua: è quello che lascia la foto sul testo. */
+      var cs=getComputedStyle(p);
+      var clips=cs.overflow==='hidden'||cs.overflowY==='hidden'||cs.overflowX==='hidden'||cs.maxHeight!=='none';
+      var sticks=er.bottom>pr.bottom+1||er.right>pr.right+1;
+      var frame=pr.height<=er.height+90;
+      var padB=parseFloat(cs.paddingBottom)||0;
+      var boxH=parseFloat(cs.height);
+      if(isNaN(boxH))boxH=pr.height;
+      var aspectHack=padB>40&&boxH<2;
+      if(!sticks&&!clips&&!aspectHack){
         var up=p.parentElement;
         if(!up||up===document.body||up===document.documentElement)break;
         var ur=up.getBoundingClientRect();
-        if(er.bottom<=ur.bottom+2)break;
+        var ucs=getComputedStyle(up);
+        var upClips=ucs.overflow==='hidden'||ucs.overflowY==='hidden'||ucs.maxHeight!=='none';
+        if(er.bottom<=ur.bottom+1&&er.right<=ur.right+1&&!upClips)break;
         p=up;
         continue;
       }
-      var cs=getComputedStyle(p);
-      var padB=parseFloat(cs.paddingBottom)||0;
-      var boxH=parseFloat(cs.height)||0;
-      if(padB>48 && boxH<2)p.style.setProperty('padding-bottom','0','important');
-      er=el.getBoundingClientRect();
-      pr=p.getBoundingClientRect();
-      shortfall=er.bottom-pr.bottom;
-      var needed=Math.ceil(pr.height+(shortfall>2?shortfall:(known&&shortfall<0?shortfall:0)));
-      if(needed<20)needed=20;
+      if(clips&&!sticks&&!frame&&!aspectHack){
+        p=p.parentElement;
+        continue;
+      }
+      if(aspectHack)p.style.setProperty('padding-bottom','0','important');
       p.style.setProperty('height','auto','important');
       p.style.setProperty('max-height','none','important');
-      p.style.setProperty('min-height',needed+'px','important');
+      p.style.setProperty('overflow','visible','important');
       p.style.removeProperty('aspect-ratio');
+      var pmb=parseFloat(getComputedStyle(p).marginBottom)||0;
+      if(pmb<0)p.style.setProperty('margin-bottom','0','important');
       er=el.getBoundingClientRect();
       pr=p.getBoundingClientRect();
-      if(er.bottom>pr.bottom+2){
+      if(er.bottom>pr.bottom+1){
         p.style.setProperty('min-height',Math.ceil(pr.height+(er.bottom-pr.bottom))+'px','important');
+        er=el.getBoundingClientRect();
+        pr=p.getBoundingClientRect();
+        if(er.bottom>pr.bottom+1)p.style.setProperty('min-height',Math.ceil(pr.height+(er.bottom-pr.bottom))+'px','important');
       }
-      if(!known)rzGrown.push(p);
       p=p.parentElement;
     }
   }
-  /* Se il testo sotto ha un margin negativo, resta sopra la foto anche
-     dopo che il blocco si è allungato. Lo spinge appena sotto il bordo. */
+  /* Il testo sotto resta sopra la foto (margin negativo o position).
+     Lo spinge sotto il bordo, anche se non è il fratello diretto. */
   function pushFollowers(el){
+    if(!document.elementsFromPoint)return;
     var er=el.getBoundingClientRect();
-    var n=el,guard=0;
-    while(n&&n!==document.body&&guard++<8){
-      var sib=n.nextElementSibling;
-      while(sib&&isEditorUi(sib))sib=sib.nextElementSibling;
-      if(sib){
-        var sr=sib.getBoundingClientRect();
-        var overlap=er.bottom-sr.top;
-        if(overlap>3 || (rzPushBase&&rzPushBase.has(sib))){
-          var mt=parseFloat(getComputedStyle(sib).marginTop)||0;
-          if(rzPushBase&&!rzPushBase.has(sib))rzPushBase.set(sib,mt);
-          var base=rzPushBase?rzPushBase.get(sib):mt;
-          var next=mt+overlap;
-          if(next<base)next=base;
-          if(Math.abs(next-mt)>1)sib.style.setProperty('margin-top',Math.round(next)+'px','important');
-          return;
-        }
-      }
-      var par=n.parentElement;
-      if(!par||par===document.body)return;
-      var pr=par.getBoundingClientRect();
-      if(er.bottom<=pr.bottom+2)return;
-      n=par;
+    var x=Math.round(er.left+Math.min(er.width/2,Math.max(er.width-40,20)));
+    var y=Math.round(er.bottom-10);
+    var stack=[];
+    try{stack=document.elementsFromPoint(x,y)||[];}catch(e){return;}
+    var hit=null;
+    for(var i=0;i<stack.length;i++){
+      var node=stack[i];
+      if(!node||node===el||node.nodeType!==1||isEditorUi(node))continue;
+      if(el.contains(node)||node.contains(el))continue;
+      var nr=node.getBoundingClientRect();
+      if(nr.height<8||nr.width<40)continue;
+      var overlapY=er.bottom-nr.top;
+      var overlapX=Math.min(er.right,nr.right)-Math.max(er.left,nr.left);
+      if(overlapY>8&&overlapX>40&&nr.top>er.top+24){hit=node;break;}
     }
+    if(!hit)return;
+    var block=hit;
+    while(block.parentElement&&block.parentElement!==document.body&&block.parentElement!==document.documentElement){
+      var up=block.parentElement;
+      if(up.contains(el))break;
+      var ur=up.getBoundingClientRect();
+      if(ur.top<er.top+er.height*0.45)break;
+      if(er.bottom-ur.top<8)break;
+      block=up;
+    }
+    var mt=parseFloat(getComputedStyle(block).marginTop)||0;
+    if(rzPushBase&&!rzPushBase.has(block))rzPushBase.set(block,mt);
+    var base=rzPushBase?rzPushBase.get(block):mt;
+    var br=block.getBoundingClientRect();
+    var overlap=er.bottom-br.top+8;
+    var next=mt+overlap;
+    if(next<base)next=base;
+    if(Math.abs(next-mt)>1)block.style.setProperty('margin-top',Math.round(next)+'px','important');
   }
 
   var resizing=false,rzAxis='',rzStartLeft=0,rzStartTop=0,rzParentW=0,rzStartW=0,rzStartH=0,rzIsMedia=false;
@@ -735,6 +763,7 @@ const EDITOR_SCRIPT = `
     var tag=(el.tagName||'').toLowerCase();
     rzIsMedia=(tag==='img'||tag==='video');
     if(rzIsMedia){
+      flowMedia(el);
       el.style.setProperty('max-width','100%','important');
       if(axis==='se'){
         /* Angolo su media = scala l'intera immagine mantenendo il rapporto
