@@ -301,7 +301,6 @@ const EDITOR_SCRIPT = `
       var ps=p.style;
       ps.setProperty('height','auto','important');
       ps.setProperty('max-height','none','important');
-      ps.setProperty('min-height','0','important');
       ps.removeProperty('aspect-ratio');
       p=p.parentElement;d++;
     }
@@ -639,9 +638,84 @@ const EDITOR_SCRIPT = `
       if(pr.height>er.height+24)break;
       p.style.setProperty('height','auto','important');
       p.style.setProperty('max-height','none','important');
-      p.style.setProperty('min-height','0','important');
       p.style.removeProperty('aspect-ratio');
       p=p.parentElement;
+    }
+  }
+  /* Blocchi che abbiamo già allungato in questa sessione: se la foto
+     torna più piccola, l'altezza minima scende con lei. */
+  var rzGrown=[];
+  var rzPushBase=typeof WeakMap==='function'?new WeakMap():null;
+  /* La foto è spesso assoluta, o chiusa in un riquadro con altezza /
+     padding-bottom fissi. Il riquadro non cresce e la foto copre il testo.
+     Allunga ogni contenitore fino al bordo basso della foto, così il
+     resto della pagina scende. */
+  function growContainers(el){
+    var p=el.parentElement,guard=0;
+    while(p&&p!==document.body&&p!==document.documentElement&&guard++<8){
+      var known=false;
+      for(var gi=0;gi<rzGrown.length;gi++)if(rzGrown[gi]===p)known=true;
+      var er=el.getBoundingClientRect();
+      var pr=p.getBoundingClientRect();
+      var shortfall=er.bottom-pr.bottom;
+      if(shortfall<=2 && !known){
+        /* Questo livello contiene già la foto. Se un avo più in alto
+           è ancora corto, continua: è quello che lascia la foto sul testo. */
+        var up=p.parentElement;
+        if(!up||up===document.body||up===document.documentElement)break;
+        var ur=up.getBoundingClientRect();
+        if(er.bottom<=ur.bottom+2)break;
+        p=up;
+        continue;
+      }
+      var cs=getComputedStyle(p);
+      var padB=parseFloat(cs.paddingBottom)||0;
+      var boxH=parseFloat(cs.height)||0;
+      if(padB>48 && boxH<2)p.style.setProperty('padding-bottom','0','important');
+      er=el.getBoundingClientRect();
+      pr=p.getBoundingClientRect();
+      shortfall=er.bottom-pr.bottom;
+      var needed=Math.ceil(pr.height+(shortfall>2?shortfall:(known&&shortfall<0?shortfall:0)));
+      if(needed<20)needed=20;
+      p.style.setProperty('height','auto','important');
+      p.style.setProperty('max-height','none','important');
+      p.style.setProperty('min-height',needed+'px','important');
+      p.style.removeProperty('aspect-ratio');
+      er=el.getBoundingClientRect();
+      pr=p.getBoundingClientRect();
+      if(er.bottom>pr.bottom+2){
+        p.style.setProperty('min-height',Math.ceil(pr.height+(er.bottom-pr.bottom))+'px','important');
+      }
+      if(!known)rzGrown.push(p);
+      p=p.parentElement;
+    }
+  }
+  /* Se il testo sotto ha un margin negativo, resta sopra la foto anche
+     dopo che il blocco si è allungato. Lo spinge appena sotto il bordo. */
+  function pushFollowers(el){
+    var er=el.getBoundingClientRect();
+    var n=el,guard=0;
+    while(n&&n!==document.body&&guard++<8){
+      var sib=n.nextElementSibling;
+      while(sib&&isEditorUi(sib))sib=sib.nextElementSibling;
+      if(sib){
+        var sr=sib.getBoundingClientRect();
+        var overlap=er.bottom-sr.top;
+        if(overlap>3 || (rzPushBase&&rzPushBase.has(sib))){
+          var mt=parseFloat(getComputedStyle(sib).marginTop)||0;
+          if(rzPushBase&&!rzPushBase.has(sib))rzPushBase.set(sib,mt);
+          var base=rzPushBase?rzPushBase.get(sib):mt;
+          var next=mt+overlap;
+          if(next<base)next=base;
+          if(Math.abs(next-mt)>1)sib.style.setProperty('margin-top',Math.round(next)+'px','important');
+          return;
+        }
+      }
+      var par=n.parentElement;
+      if(!par||par===document.body)return;
+      var pr=par.getBoundingClientRect();
+      if(er.bottom<=pr.bottom+2)return;
+      n=par;
     }
   }
 
@@ -736,6 +810,8 @@ const EDITOR_SCRIPT = `
         resizeTarget.style.setProperty('height',Math.round(newH)+'px','important');
       }
     }
+    growContainers(resizeTarget);
+    pushFollowers(resizeTarget);
     positionResize(sel);
     positionPlus();positionDel(sel);
   }
