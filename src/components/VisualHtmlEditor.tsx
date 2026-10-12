@@ -598,6 +598,53 @@ const EDITOR_SCRIPT = `
   }
   function hideResize(){for(var i=0;i<rzHandles.length;i++)rzHandles[i].style.display='none';resizeTarget=null;}
 
+  /* Un contenitore in riga (flex orizzontale o grid) non va stirato:
+     allargarlo farebbe scavalcare le colonne accanto. */
+  function isRowParent(p){
+    if(!p)return false;
+    var cs;try{cs=getComputedStyle(p);}catch(e){return false;}
+    var d=cs.display;
+    if(d==='flex'||d==='inline-flex'){
+      var fd=cs.flexDirection;
+      return fd!=='column'&&fd!=='column-reverse';
+    }
+    return d==='grid'||d==='inline-grid';
+  }
+  /* La foto/sezione è spesso chiusa in un wrapper largo quanto lei
+     (max-width fisso, width in px). La maniglia si fermava lì, anche se
+     la colonna del testo è più larga. I wrapper stretti, uno sopra
+     l'altro, diventano larghi quanto quella colonna. */
+  function widenToColumn(el){
+    var p=el.parentElement,guard=0;
+    while(p&&p.parentElement&&p!==document.body&&p!==document.documentElement&&guard++<8){
+      var er=el.getBoundingClientRect();
+      var pr=p.getBoundingClientRect();
+      if(pr.width>er.width+12)break;
+      if(isRowParent(p.parentElement))break;
+      p.style.setProperty('width','100%','important');
+      p.style.setProperty('max-width','none','important');
+      p.style.setProperty('min-width','0','important');
+      p=p.parentElement;
+    }
+    var par=el.parentElement;
+    return par?(par.clientWidth||par.getBoundingClientRect().width)||1:1;
+  }
+  /* Un wrapper alto quanto il blocco (altezza fissa) taglia l'ingrandimento.
+     Lo lasciamo crescere col contenuto, senza toccare i contenitori più alti. */
+  function releaseHeight(el){
+    var p=el.parentElement,guard=0;
+    while(p&&p!==document.body&&p!==document.documentElement&&guard++<6){
+      var er=el.getBoundingClientRect();
+      var pr=p.getBoundingClientRect();
+      if(pr.height>er.height+24)break;
+      p.style.setProperty('height','auto','important');
+      p.style.setProperty('max-height','none','important');
+      p.style.setProperty('min-height','0','important');
+      p.style.removeProperty('aspect-ratio');
+      p=p.parentElement;
+    }
+  }
+
   var resizing=false,rzAxis='',rzStartLeft=0,rzStartTop=0,rzParentW=0,rzStartW=0,rzStartH=0,rzIsMedia=false;
   function startResize(e,axis,h){
     var el=pickResizeTarget(sel);
@@ -648,6 +695,14 @@ const EDITOR_SCRIPT = `
     if(rzAxis==='e'||rzAxis==='se'){
       var newW=e.clientX-rzStartLeft;
       if(newW<40)newW=40;
+      if(newW>rzParentW+1){
+        /* Tieni la misura attuale mentre i wrapper si allargano, così
+           la foto non scatta a tutta colonna al primo pixel. */
+        resizeTarget.style.setProperty('width',Math.round(Math.min(rzStartW,newW))+'px','important');
+        resizeTarget.style.setProperty('max-width','none','important');
+        var grown=widenToColumn(resizeTarget);
+        if(grown>rzParentW)rzParentW=grown;
+      }
       if(newW>rzParentW)newW=rzParentW;
       var pct=newW/rzParentW*100;if(pct>100)pct=100;
       /* Larghezza in % → responsive su desktop e mobile. */
@@ -661,6 +716,7 @@ const EDITOR_SCRIPT = `
       }
     }
     if(rzAxis==='s'||rzAxis==='se'){
+      releaseHeight(resizeTarget);
       if(rzIsMedia){
         if(rzAxis==='se'){
           /* Angolo su media: rapporto naturale (nessun aspect-ratio forzato). */
