@@ -53,13 +53,16 @@ async function translateBatchWithClaude(params: {
       type: 'text',
       text:
         `Sei un traduttore professionista specializzato in copy persuasivo e marketing. ` +
-        `Traduci ogni testo in ${targetLanguage} mantenendo: ` +
+        `Traduci OGNI testo in ${targetLanguage}. Nessuna frase può restare nella lingua originale, ` +
+        `nemmeno titoli, bullet, disclaimer, recensioni o microcopy. ` +
+        `Mantieni: ` +
         `(1) il tono e l'intento del testo originale (titoli punchy restano punchy, CTA restano CTA brevi); ` +
         `(2) la lunghezza approssimativa (entro ±30%); ` +
         `(3) eventuali placeholder come {{NAME}}, [CITY], {price}, $X, %d, %s — copia tali e quali; ` +
         `(4) numeri, valute, simboli — mantieni o convertili in modo naturale per la lingua target ` +
         `(es. $ → € per italiano se appropriato, ma non forzare se il prezzo e' un riferimento concreto); ` +
         `(5) maiuscole stilistiche del titolo se presenti. ` +
+        `(6) l'id deve essere lo stesso numero ricevuto, non una stringa. ` +
         `Restituisci SOLO un JSON array di oggetti { "id": number, "translated": "..." }, niente prosa, niente markdown.`,
       cache_control: { type: 'ephemeral' },
     },
@@ -150,11 +153,12 @@ async function translateBatchWithClaude(params: {
   if (!Array.isArray(parsed)) return []
   const items: TranslatedItem[] = []
   for (const row of parsed as Array<Record<string, unknown>>) {
-    if (typeof row?.id !== 'number') continue
+    const idNum = typeof row?.id === 'number' ? row.id : Number(row?.id)
+    if (!Number.isFinite(idNum)) continue
     if (typeof row?.translated !== 'string') continue
     const trimmed = row.translated.trim()
     if (!trimmed) continue
-    items.push({ id: row.id, translated: trimmed })
+    items.push({ id: idNum, translated: trimmed })
   }
   return items
 }

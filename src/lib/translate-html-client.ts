@@ -82,10 +82,29 @@ function cleanText(s: string): string {
   return decodeHtmlEntities(s).replace(/\s+/g, ' ').trim();
 }
 
+/** Spezza un testo lungo sui punti, così un paragrafo non viene
+ *  saltato né tronca la risposta del modello. */
+function splitForTranslate(clean: string, max = 700): string[] {
+  if (clean.length <= max) return [clean];
+  const parts: string[] = [];
+  let rest = clean;
+  while (rest.length > max) {
+    const window = rest.slice(0, max);
+    const punct = Math.max(window.lastIndexOf('. '), window.lastIndexOf('! '), window.lastIndexOf('? '));
+    let cut = punct > max * 0.35 ? punct + 1 : window.lastIndexOf(' ');
+    if (cut < 40) cut = max;
+    const piece = rest.slice(0, cut).trim();
+    if (piece) parts.push(piece);
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) parts.push(rest);
+  return parts;
+}
+
 function isTranslatableText(s: string): boolean {
   const t = s.trim();
   if (t.length < 2) return false;
-  if (t.length > 4000) return false;
+  if (t.length > 20000) return false;
   if (/^[\s\d.,$€£¥%+\-/*()[\]{}|\\!?:;<>="'#@&_]+$/.test(t)) return false;
   if (/^\s*\{\{[\s\S]*\}\}\s*$/.test(t)) return false;
   if (/^\s*\{%[\s\S]*%\}\s*$/.test(t)) return false;
@@ -151,10 +170,10 @@ export function buildTranslateContext(html: string): TranslateContext {
   const doctypeMatch = html.match(/^\s*<!DOCTYPE[^>]*>/i);
   const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
 
-  type TextRefBase = { id: number; clean: string; tag: string };
+  type Segment = { id: number; clean: string };
   type TextRef =
-    | (TextRefBase & { type: 'text'; node: Text })
-    | (TextRefBase & { type: 'attr'; node: Element; attrName: string });
+    | { type: 'text'; node: Text; segments: Segment[]; tag: string }
+    | { type: 'attr'; node: Element; attrName: string; id: number; clean: string; tag: string };
 
   const refs: TextRef[] = [];
   const cleanToId = new Map<string, number>();
@@ -188,10 +207,13 @@ export function buildTranslateContext(html: string): TranslateContext {
           const raw = textNode.data;
           const clean = cleanText(raw);
           if (isTranslatableText(clean)) {
-            const id = getId(clean, parentTag);
-            if (id !== null) {
-              refs.push({ type: 'text', node: textNode, clean, tag: parentTag, id });
+            const segments: Segment[] = [];
+            for (const part of splitForTranslate(clean)) {
+              const id = getId(part, parentTag);
+              if (id === null) break;
+              segments.push({ id, clean: part });
             }
+            if (segments.length) refs.push({ type: 'text', node: textNode, segments, tag: parentTag });
           }
         }
       }
@@ -246,14 +268,20 @@ export function buildTranslateContext(html: string): TranslateContext {
     let missed = 0;
 
     for (const ref of refs) {
-      const translated = translations.get(ref.id);
-      if (!translated || translated.trim() === ref.clean) {
-        missed += 1;
-        continue;
-      }
-      const trimmed = translated.trim();
-
       if (ref.type === 'text') {
+        let any = false;
+        const joined = ref.segments.map((seg) => {
+          const t = translations.get(seg.id)?.trim();
+          if (t && t !== seg.clean) {
+            any = true;
+            return t;
+          }
+          return seg.clean;
+        }).join(' ');
+        if (!any) {
+          missed += 1;
+          continue;
+        }
         // Preserva eventuali whitespace di leading/trailing del text node:
         // serve a non distruggere la formattazione (es. spazio tra
         // "<strong>X</strong> y" che e' un text node " y" iniziale).
@@ -262,9 +290,14 @@ export function buildTranslateContext(html: string): TranslateContext {
         const trailMatch = data.match(/\s*$/);
         const leading = leadMatch ? leadMatch[0] : '';
         const trailing = trailMatch ? trailMatch[0] : '';
-        ref.node.data = leading + trimmed + trailing;
+        ref.node.data = leading + joined + trailing;
       } else {
-        ref.node.setAttribute(ref.attrName, trimmed);
+        const translated = translations.get(ref.id);
+        if (!translated || translated.trim() === ref.clean) {
+          missed += 1;
+          continue;
+        }
+        ref.node.setAttribute(ref.attrName, translated.trim());
       }
       replacements += 1;
     }

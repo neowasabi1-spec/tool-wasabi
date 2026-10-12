@@ -5581,10 +5581,87 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
           throw new Error('No translatable texts found in HTML');
         }
 
-        const TRANSLATE_CHUNK = 12;
-        const totalBatches = Math.ceil(extracted.length / TRANSLATE_CHUNK);
+        // Batch piccoli a caratteri, non a numero fisso: un paragrafo lungo
+        // in un batch da 12 testi faceva troncare la risposta e quel blocco
+        // restava in inglese. I testi non tornati si rispezzano e si riprovano.
+        const batches: ExtractedText[][] = [];
+        {
+          let cur: ExtractedText[] = [];
+          let chars = 0;
+          for (const t of extracted) {
+            if (cur.length && (cur.length >= 4 || chars + t.text.length > 1400)) {
+              batches.push(cur);
+              cur = [];
+              chars = 0;
+            }
+            cur.push(t);
+            chars += t.text.length;
+          }
+          if (cur.length) batches.push(cur);
+        }
+        const totalBatches = batches.length;
         const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000001';
         const idToTranslated = new Map<number, string>();
+        const targetIsEnglish = /^\s*(en|english)\b/i.test(targetLang);
+        const acceptRow = (row: { id?: unknown; translated?: unknown }, source: string) => {
+          const id = typeof row?.id === 'number' ? row.id : Number(row?.id);
+          if (!Number.isFinite(id) || typeof row?.translated !== 'string') return false;
+          const trimmed = row.translated.trim();
+          if (!trimmed) return false;
+          const words = source.trim().split(/\s+/).length;
+          if (!targetIsEnglish && words > 4 && trimmed.toLowerCase() === source.trim().toLowerCase()) return false;
+          idToTranslated.set(id, trimmed);
+          return true;
+        };
+        const callBatch = async (slice: ExtractedText[], label: string) => {
+          const res = await fetch('/api/clone-funnel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              cloneMode: 'translate',
+              mode: 'batch',
+              texts: slice,
+              targetLanguage: targetLang,
+              userId: DEFAULT_USER_ID,
+            }),
+          });
+          const data = await parseJsonResponseOrThrow<{
+            translations?: Array<{ id: number; translated: string }>;
+            error?: string;
+          }>(res, label);
+          if (!res.ok || data.error) throw new Error(data.error || `${label} failed`);
+          const byId = new Map(slice.map((t) => [t.id, t.text]));
+          let got = 0;
+          for (const row of data.translations || []) {
+            const src = byId.get(typeof row?.id === 'number' ? row.id : Number(row?.id)) || '';
+            if (acceptRow(row, src)) got += 1;
+          }
+          return got;
+        };
+        const translateSlice = async (slice: ExtractedText[], depth: number, label: string) => {
+          let attempt = 0;
+          let lastErr: string | null = null;
+          while (attempt < 2) {
+            attempt += 1;
+            try {
+              await callBatch(slice, label);
+              lastErr = null;
+              break;
+            } catch (err) {
+              lastErr = err instanceof Error ? err.message : String(err);
+              console.warn(`[translate] ${label} attempt ${attempt} failed:`, lastErr);
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 1200));
+            }
+          }
+          const missing = slice.filter((t) => !idToTranslated.has(t.id));
+          if (!missing.length || slice.length === 1 || depth >= 4) {
+            if (lastErr && missing.length) console.error(`[translate] ${label} incomplete: ${lastErr}`);
+            return;
+          }
+          const mid = Math.ceil(missing.length / 2);
+          await translateSlice(missing.slice(0, mid), depth + 1, `${label}a`);
+          if (mid < missing.length) await translateSlice(missing.slice(mid), depth + 1, `${label}b`);
+        };
 
         setCloneProgress({
           phase: 'translating',
@@ -5594,48 +5671,7 @@ Restituisci SOLO un JSON array: [{"id": N, "rewritten": "..."}, ...].`;
         });
 
         for (let bi = 0; bi < totalBatches; bi++) {
-          const slice = extracted.slice(bi * TRANSLATE_CHUNK, (bi + 1) * TRANSLATE_CHUNK);
-          let attempt = 0;
-          let lastErr: string | null = null;
-          while (attempt < 2) {
-            attempt += 1;
-            try {
-              const res = await fetch('/api/clone-funnel', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  cloneMode: 'translate',
-                  mode: 'batch',
-                  texts: slice,
-                  targetLanguage: targetLang,
-                  userId: DEFAULT_USER_ID,
-                }),
-              });
-              const data = await parseJsonResponseOrThrow<{
-                translations?: Array<{ id: number; translated: string }>;
-                error?: string;
-              }>(res, `[translate batch ${bi + 1}]`);
-              if (!res.ok || data.error) throw new Error(data.error || `Batch ${bi + 1} failed`);
-              for (const row of data.translations || []) {
-                if (typeof row?.id === 'number' && typeof row?.translated === 'string') {
-                  const trimmed = row.translated.trim();
-                  if (trimmed) idToTranslated.set(row.id, trimmed);
-                }
-              }
-              lastErr = null;
-              break;
-            } catch (err) {
-              lastErr = err instanceof Error ? err.message : String(err);
-              console.warn(`[translate] batch ${bi + 1}/${totalBatches} attempt ${attempt} failed:`, lastErr);
-              if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
-            }
-          }
-          if (lastErr) {
-            // Non interrompiamo l'intero job: i testi non tradotti restano
-            // come originali. Cosi' una pagina di 500 testi non muore per
-            // un singolo batch andato storto.
-            console.error(`[translate] batch ${bi + 1}/${totalBatches} skipped after retry: ${lastErr}`);
-          }
+          await translateSlice(batches[bi], 0, `[translate batch ${bi + 1}/${totalBatches}]`);
           setCloneProgress({
             phase: 'translating',
             totalTexts: extracted.length,

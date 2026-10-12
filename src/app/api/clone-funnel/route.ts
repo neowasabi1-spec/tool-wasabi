@@ -1640,9 +1640,7 @@ export async function POST(request: NextRequest) {
     // ephemeral). Only meaningful for AI rewrite/translate phases — for other
     // calls (extract, status checks) it's harmless extra payload, so we only
     // add it when the call is actually going to hit Claude.
-    const willCallClaude =
-      (body.cloneMode === 'rewrite' && body.phase === 'process') ||
-      body.cloneMode === 'translate';
+    const willCallClaude = body.cloneMode === 'rewrite' && body.phase === 'process';
 
     const enrichedBody: Record<string, unknown> = { ...body };
     if (willCallClaude) {
