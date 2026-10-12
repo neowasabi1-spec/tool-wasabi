@@ -119,10 +119,12 @@ const MODELS: Record<string, ModelDef> = {
   'nano-banana-2-edit': {
     endpoint: 'fal-ai/nano-banana-2/edit',
     mediaType: 'image',
-    buildInput: ({ prompt, imageUrl, secondaryImageUrl, extraImageUrls }) => ({
+    buildInput: ({ prompt, aspectRatio, imageUrl, secondaryImageUrl, extraImageUrls }) => ({
       prompt,
       // Nano Banana 2 edit accetta piu' immagini: [sorgente, prodotto, ...collage].
       image_urls: [imageUrl, secondaryImageUrl, ...(extraImageUrls || [])].filter(Boolean) as string[],
+      // "auto" keeps the source crop. An explicit ratio (16:9, 9:16, …) reframes it.
+      aspect_ratio: aspectRatio === 'auto' ? 'auto' : aspectRatio,
       num_images: 1,
       output_format: 'png',
     }),
@@ -142,10 +144,10 @@ const MODELS: Record<string, ModelDef> = {
   'gpt-image-2-edit': {
     endpoint: 'openai/gpt-image-2/edit',
     mediaType: 'image',
-    buildInput: ({ prompt, imageUrl, secondaryImageUrl, extraImageUrls }) => ({
+    buildInput: ({ prompt, aspectRatio, imageUrl, secondaryImageUrl, extraImageUrls }) => ({
       prompt,
       image_urls: [imageUrl, secondaryImageUrl, ...(extraImageUrls || [])].filter(Boolean) as string[],
-      image_size: 'auto',
+      image_size: aspectRatio === 'auto' ? 'auto' : aspectRatioToFluxSize(aspectRatio),
       quality: 'medium',
       num_images: 1,
       output_format: 'png',

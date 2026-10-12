@@ -2892,6 +2892,15 @@ function CompetitorMediaLibrary({
   );
 }
 
+/** Ratio written in an edit prompt ("16:9", "formato 16:9", "orizzontale"). */
+function aspectFromEditPrompt(prompt: string): '1792x1024' | '1024x1792' | '1024x1024' | null {
+  const p = prompt.toLowerCase();
+  if (/9\s*[:/x×]\s*16/.test(p)) return '1024x1792';
+  if (/16\s*[:/x×]\s*9/.test(p) || /widescreen|landscape|orizzontal|panoramic/.test(p)) return '1792x1024';
+  if (/1\s*[:/x×]\s*1/.test(p) || /formato\s+quadrato|square\s+format/.test(p)) return '1024x1024';
+  return null;
+}
+
 export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSave, onSaveToProject, onClose, pageTitle, productContext, sourceUrl, availableProducts, currentProductId, onProductChange, quizNav, checkoutMode }: VisualHtmlEditorProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [mode, setMode] = useState<EditorMode>('visual');
@@ -3011,7 +3020,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
   const [aiMode, setAiMode] = useState<AiMode>('text2image');
   const [aiModel, setAiModel] = useState<string>('gpt-image-2');
   const [aiPrompt, setAiPrompt] = useState('');
-  const [aiSize, setAiSize] = useState<'1024x1024' | '1792x1024' | '1024x1792'>('1024x1024');
+  const [aiSize, setAiSize] = useState<'auto' | '1024x1024' | '1792x1024' | '1024x1792'>('1024x1024');
   const [aiStyle, setAiStyle] = useState<'vivid' | 'natural'>('vivid');
   const [aiSourceImage, setAiSourceImage] = useState<string>('');
   const [aiSourceUploading, setAiSourceUploading] = useState(false);
@@ -3780,6 +3789,20 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
       return;
     }
 
+    // Edit used to ignore format: the dropdown was hidden and the model was
+    // told to keep the source crop. A 16:9 / 9:16 written in the prompt, or
+    // picked in the format menu, has to win over that.
+    const asked = aiMode === 'image2image' ? aspectFromEditPrompt(finalPrompt) : null;
+    const sizeForRequest: 'auto' | '1024x1024' | '1792x1024' | '1024x1792' =
+      asked || (aiMode === 'text2image' && aiSize === 'auto' ? '1024x1024' : aiSize);
+    if (aiMode === 'image2image' && sizeForRequest === '1792x1024') {
+      finalPrompt += '\n\nReframe the whole image onto a 16:9 landscape canvas. Change the aspect ratio; do not keep the original portrait or square crop.';
+    } else if (aiMode === 'image2image' && sizeForRequest === '1024x1792') {
+      finalPrompt += '\n\nReframe the whole image onto a 9:16 portrait canvas. Change the aspect ratio; do not keep the original landscape or square crop.';
+    } else if (aiMode === 'image2image' && sizeForRequest === '1024x1024' && asked) {
+      finalPrompt += '\n\nReframe the whole image onto a square 1:1 canvas.';
+    }
+
     setAiGenerating(true);
     setAiError('');
     setAiRevisedPrompt('');
@@ -3818,7 +3841,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
           mode: aiMode,
           model: aiModel,
           prompt: finalPrompt,
-          size: aiSize,
+          size: sizeForRequest,
           style: aiStyle,
           imageUrl,
           secondaryImageUrl,
@@ -7004,7 +7027,12 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 return (
                   <button
                     key={tab.id}
-                    onClick={() => !aiGenerating && setAiMode(tab.id)}
+                    onClick={() => {
+                      if (aiGenerating) return;
+                      if (tab.id === 'image2image' && aiMode !== 'image2image') setAiSize('auto');
+                      if (tab.id !== 'image2image' && aiSize === 'auto') setAiSize('1024x1024');
+                      setAiMode(tab.id);
+                    }}
                     disabled={aiGenerating}
                     className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-semibold transition-colors disabled:opacity-50 ${
                       active
@@ -7445,7 +7473,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                     aiMode === 'text2image'
                       ? (aiContextText ? 'Leave empty to generate from the context above, or describe the image...' : 'Describe the image you want to generate...')
                       : aiMode === 'image2image'
-                        ? 'E.g.: change the background to a tropical beach, add sunglasses...'
+                        ? 'E.g.: change the background, or make it 16:9...'
                         : aiMode === 'text2video'
                           ? 'E.g.: medium shot of a woman on the couch wearing Metabolic Wave headphones, warm light, 5s slow push-in, cinematic, no text, no audio.'
                           : 'E.g.: the person smiles and winks, slight zoom in...'
@@ -7456,23 +7484,25 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                 />
               </div>
 
-              {/* Format + style for text2image */}
-              {aiMode === 'text2image' && (
+              {/* Format for generate and edit. Edit defaults to the source crop
+                  unless the prompt (or this menu) asks for another ratio. */}
+              {(aiMode === 'text2image' || aiMode === 'image2image') && (
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="text-[10px] text-violet-500 font-medium mb-1 block">Format</label>
                     <select
-                      value={aiSize}
+                      value={aiMode === 'image2image' ? aiSize : (aiSize === 'auto' ? '1024x1024' : aiSize)}
                       onChange={(e) => setAiSize(e.target.value as typeof aiSize)}
                       className="w-full px-2.5 py-2 text-xs text-slate-900 border border-violet-200 rounded-lg focus:border-violet-400 outline-none bg-white"
                       disabled={aiGenerating}
                     >
+                      {aiMode === 'image2image' && <option value="auto">Keep original</option>}
                       <option value="1024x1024">Square (1:1)</option>
                       <option value="1792x1024">Landscape (16:9)</option>
                       <option value="1024x1792">Portrait (9:16)</option>
                     </select>
                   </div>
-                  <div>
+                  {aiMode === 'text2image' && <div>
                     <label className="text-[10px] text-violet-500 font-medium mb-1 block">Style</label>
                     <select
                       value={aiStyle}
@@ -7483,7 +7513,7 @@ export default function VisualHtmlEditor({ initialHtml, initialMobileHtml, onSav
                       <option value="vivid">Vivid (intense colors)</option>
                       <option value="natural">Natural (photorealistic)</option>
                     </select>
-                  </div>
+                  </div>}
                 </div>
               )}
 
