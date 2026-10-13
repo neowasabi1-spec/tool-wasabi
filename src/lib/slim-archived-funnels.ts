@@ -4,6 +4,7 @@
  */
 
 import { supabaseAdmin } from './supabase-admin';
+import { expandStoredHtml, isHtmlStoragePointer, readPageHtml } from './page-html-persist';
 
 /** Netlify stops the Next handler at 300s. Reads wait until just under that. */
 const DB_WAIT_MS = 280_000;
@@ -1019,4 +1020,260 @@ export async function loadSlimArchivedFunnels(
   const cap = Math.max(1, Math.min(limit, 2000));
   if (projectId) return loadViaProjectRpc(projectId, cap);
   return loadTemplateArchives(cap);
+}
+
+export type ArchiveCard = {
+  id: string;
+  name: string;
+  type: string;
+  link: string;
+  previewUrl: string;
+  editorUrl: string;
+  section: string | null;
+  source_url: string | null;
+  created_at: string | null;
+  total_steps: number | null;
+  project_id: string | null;
+};
+
+const ARCHIVE_CARD_COLS =
+  'id, name, created_at, total_steps, project_id, section, list_page_type, list_html_url, list_source_url';
+
+function archiveCardFromRow(raw: Record<string, unknown>, origin: string): ArchiveCard {
+  const id = String(raw.id || '');
+  const total = asTotalSteps(raw.total_steps, 1);
+  const type =
+    String(raw.list_page_type || '').trim() ||
+    String(raw.section || '').trim() ||
+    (total > 1 ? 'funnel' : 'landing');
+  const stored = String(raw.list_html_url || '').trim();
+  const previewPath = stored || `/api/funnel-html?pageId=${encodeURIComponent(id)}&kind=cloned&variant=desktop`;
+  const previewUrl = /^https?:\/\//i.test(previewPath)
+    ? previewPath
+    : `${origin}${previewPath.startsWith('/') ? '' : '/'}${previewPath}`;
+  return {
+    id,
+    name: String(raw.name || ''),
+    type,
+    link: previewUrl,
+    previewUrl,
+    editorUrl: `${origin}/edit/${id}`,
+    section: typeof raw.section === 'string' ? raw.section : null,
+    source_url: String(raw.list_source_url || '').trim() || null,
+    created_at: raw.created_at ? String(raw.created_at) : null,
+    total_steps: total,
+    project_id: raw.project_id ? String(raw.project_id) : null,
+  };
+}
+
+/**
+ * Name, type and links only. Never selects `steps` — that column still holds
+ * the page HTML, and reading it is what made Netlify return Inactivity Timeout
+ * before any byte was sent.
+ */
+export async function listArchiveCards(opts: {
+  origin: string;
+  pageType?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ pages: ArchiveCard[]; count: number; limit: number; offset: number }> {
+  const limit = Math.max(1, Math.min(Math.floor(opts.limit ?? 100) || 100, 200));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0) || 0);
+  const pageType = (opts.pageType || '').trim();
+  const origin = opts.origin.replace(/\/$/, '');
+
+  const run = (cols: string, typed: boolean) => {
+    let q = supabaseAdmin
+      .from('archived_funnels')
+      .select(cols, { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1)
+      .abortSignal(AbortSignal.timeout(12_000));
+    if (pageType && typed) q = q.ilike('list_page_type', pageType);
+    else if (pageType) q = q.ilike('section', pageType);
+    return q;
+  };
+
+  let result = await run(ARCHIVE_CARD_COLS, true);
+  if (result.error && /list_page_type|list_html_url|list_source_url|column/i.test(result.error.message || '')) {
+    result = await run(META_COLS, false);
+  }
+  if (result.error) throw new Error(result.error.message);
+
+  const pages = (Array.isArray(result.data) ? result.data : [])
+    .map((raw) => archiveCardFromRow(raw as Record<string, unknown>, origin))
+    .filter((p) => p.id);
+  return { pages, count: result.count ?? pages.length, limit, offset };
+}
+
+export type SavedPageHtml = {
+  id: string;
+  name: string;
+  type: string;
+  stepName: string;
+  stepIndex: number;
+  stepCount: number;
+  html: string;
+  link: string;
+  editorUrl: string;
+};
+
+/**
+ * One saved page, HTML included. The whole archive is too big to read in one
+ * shot: Netlify closes the connection after ~30s with no bytes ("Inactivity
+ * Timeout"). One page returns well inside that window. `next` is the cursor
+ * for the following page.
+ */
+export async function loadOneSavedPage(opts: {
+  origin: string;
+  pageType?: string;
+  offset?: number;
+  step?: number;
+}): Promise<{
+  count: number;
+  offset: number;
+  step: number;
+  next: { offset: number; step: number } | null;
+  page: SavedPageHtml | null;
+}> {
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0) || 0);
+  const step = Math.max(0, Math.floor(opts.step ?? 0) || 0);
+  const pageType = (opts.pageType || '').trim();
+  const origin = opts.origin.replace(/\/$/, '');
+  const deadline = Date.now() + 22_000;
+  const left = () => Math.max(1_500, deadline - Date.now());
+
+  const metaCols = `${META_COLS}, list_page_type`;
+  const runMeta = (cols: string, typed: boolean) => {
+    let q = supabaseAdmin
+      .from('archived_funnels')
+      .select(cols, { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset)
+      .abortSignal(AbortSignal.timeout(left()));
+    if (pageType && typed) q = q.ilike('list_page_type', pageType);
+    else if (pageType) q = q.ilike('section', pageType);
+    return q;
+  };
+
+  let meta = await runMeta(metaCols, true);
+  if (meta.error && /list_page_type|column/i.test(meta.error.message || '')) {
+    meta = await runMeta(META_COLS, false);
+  }
+  if (meta.error) throw new Error(meta.error.message);
+
+  const count = meta.count ?? 0;
+  const raw = (Array.isArray(meta.data) ? meta.data[0] : null) as Record<string, unknown> | null;
+  if (!raw?.id) {
+    return { count, offset, step, next: null, page: null };
+  }
+
+  const id = String(raw.id);
+  const name = String(raw.name || '');
+  const stepCount = asTotalSteps(raw.total_steps, 1);
+  let type = String(raw.list_page_type || raw.section || '').trim() || (stepCount > 1 ? 'funnel' : 'landing');
+  let stepName = name;
+  let pageId = id;
+  let html = '';
+
+  if (step === 0) {
+    html = await readHtmlWithin(pageId, left());
+  }
+
+  // Touch `steps` only when this page's HTML is not already stored under the
+  // row id. That column still holds every step's HTML, so reading it for the
+  // whole archive is what sat silent past 30s.
+  if (!html || step > 0) {
+    try {
+      const light = await supabaseAdmin
+        .from('archived_funnels')
+        .select(
+          [
+            `step_page_id:steps->${step}->>page_id`,
+            `step_name:steps->${step}->>name`,
+            `step_type:steps->${step}->>page_type`,
+            `alt_type:steps->${step}->>step_type`,
+          ].join(', '),
+        )
+        .eq('id', id)
+        .abortSignal(AbortSignal.timeout(left()))
+        .maybeSingle();
+      if (!light.error && light.data) {
+        const s = light.data as Record<string, unknown>;
+        if (typeof s.step_page_id === 'string' && s.step_page_id) pageId = s.step_page_id;
+        if (typeof s.step_name === 'string' && s.step_name) stepName = s.step_name;
+        const stepType = String(s.step_type || s.alt_type || '').trim();
+        if (stepType) type = stepType;
+      }
+    } catch {
+      /* one row was too heavy; return whatever HTML we already have */
+    }
+    if (!html || pageId !== id) {
+      const fromStore = await readHtmlWithin(pageId, left());
+      if (fromStore) html = fromStore;
+    }
+  }
+
+  if (html.length < 80 && Date.now() < deadline) {
+    try {
+      const heavy = await supabaseAdmin
+        .from('archived_funnels')
+        .select(`step_html:steps->${step}->cloned_data->>html`)
+        .eq('id', id)
+        .abortSignal(AbortSignal.timeout(left()))
+        .maybeSingle();
+      if (!heavy.error && heavy.data) {
+        const inline = String((heavy.data as { step_html?: string }).step_html || '');
+        html = isHtmlStoragePointer(inline) ? await expandStoredHtml(supabaseAdmin, inline) : inline;
+      }
+    } catch {
+      /* same budget: answer before the 30s inactivity cutoff */
+    }
+  }
+
+  const next =
+    step + 1 < stepCount
+      ? { offset, step: step + 1 }
+      : offset + 1 < count
+        ? { offset: offset + 1, step: 0 }
+        : null;
+
+  const previewPath = `/api/funnel-html?pageId=${encodeURIComponent(pageId)}&kind=cloned&variant=desktop`;
+  return {
+    count,
+    offset,
+    step,
+    next,
+    page: {
+      id,
+      name,
+      type,
+      stepName,
+      stepIndex: step,
+      stepCount,
+      html,
+      link: `${origin}${previewPath}`,
+      editorUrl: `${origin}/edit/${id}`,
+    },
+  };
+}
+
+async function readHtmlWithin(pageId: string, ms: number): Promise<string> {
+  if (!pageId) return '';
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      readPageHtml(supabaseAdmin, pageId, 'cloned', 'desktop').then(async (html) => {
+        if (html.length >= 80) return html;
+        return readPageHtml(supabaseAdmin, pageId, 'swiped', 'desktop');
+      }),
+      new Promise<string>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('html read timed out')), ms);
+      }),
+    ]);
+  } catch {
+    return '';
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

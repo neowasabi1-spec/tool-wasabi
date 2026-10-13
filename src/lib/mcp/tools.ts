@@ -15,6 +15,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { getBaseUrl } from './base-url';
+import { loadOneSavedPage } from '@/lib/slim-archived-funnels';
 import { currentApiKey } from './context';
 import {
   getAsset,
@@ -279,24 +280,34 @@ export async function listTemplates(): Promise<{ count: number; templates: unkno
   return { count: res.templates?.length ?? 0, templates: res.templates || [] };
 }
 
-/** List saved pages / funnels in My Archive (the "By Type" / Template section). */
-export async function listSavedPages(): Promise<{
+/**
+ * One saved page per call, HTML included. Reading the whole archive at once
+ * sits silent for more than 30s and Netlify closes the connection. `next`
+ * is the cursor for the following page.
+ */
+export async function listSavedPages(opts: { pageType?: string; offset?: number; step?: number } = {}): Promise<{
   count: number;
-  pages: Array<{ id: string; name: string; section?: string; total_steps?: number; project_id?: string | null; created_at?: string }>;
+  offset: number;
+  step: number;
+  next: { offset: number; step: number } | null;
+  page: {
+    id: string;
+    name: string;
+    type: string;
+    stepName: string;
+    stepIndex: number;
+    stepCount: number;
+    html: string;
+    link: string;
+    editorUrl: string;
+  } | null;
 }> {
-  const res = await v1<{ archived_funnels: Array<Record<string, unknown>> }>('GET', '/api/v1/archive');
-  const rows = res.archived_funnels || [];
-  return {
-    count: rows.length,
-    pages: rows.map((r) => ({
-      id: String(r.id),
-      name: String(r.name ?? ''),
-      section: r.section as string | undefined,
-      total_steps: r.total_steps as number | undefined,
-      project_id: (r.project_id as string | null) ?? null,
-      created_at: r.created_at as string | undefined,
-    })),
-  };
+  return loadOneSavedPage({
+    origin: getBaseUrl(),
+    pageType: opts.pageType,
+    offset: opts.offset,
+    step: opts.step,
+  });
 }
 
 export interface SavePageResult {

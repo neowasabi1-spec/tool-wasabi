@@ -221,8 +221,15 @@ const TOOLS = [
   {
     name: 'list_saved_pages',
     description:
-      'List the pages/funnels saved in My Archive (the "By Type" / Template section), including quizzes.',
-    inputSchema: { type: 'object', properties: {} },
+      'Read My Archive (My Template) one page at a time, WITH the full HTML in page.html. One page per call so the request finishes before Netlify closes it at 30 seconds. If next is not null, call this tool again immediately with next.offset and next.step to get the next page HTML. Optional pageType filter (landing, advertorial, quiz, …).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageType: { type: 'string', description: 'Optional type filter, e.g. landing, advertorial, vsl, quiz, checkout.' },
+        offset: { type: 'number', description: 'Archive row to read. Use next.offset from the previous call. Default 0.' },
+        step: { type: 'number', description: 'Step inside that row (0-based). Use next.step from the previous call. Default 0.' },
+      },
+    },
   },
   {
     name: 'save_page_to_archive',
@@ -490,7 +497,11 @@ async function callTool(
     case 'list_templates':
       return listTemplates();
     case 'list_saved_pages':
-      return listSavedPages();
+      return listSavedPages({
+        pageType: args.pageType !== undefined ? String(args.pageType) : args.type !== undefined ? String(args.type) : undefined,
+        offset: args.offset !== undefined ? Number(args.offset) : undefined,
+        step: args.step !== undefined ? Number(args.step) : undefined,
+      });
     case 'save_page_to_archive':
       return savePageToArchive({
         name: String(args.name || ''),
