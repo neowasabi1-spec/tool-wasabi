@@ -16,7 +16,7 @@ import { loadSlimArchivedFunnels } from '@/lib/slim-archived-funnels';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 interface ValchiriaFunnelRow {
   id: string;

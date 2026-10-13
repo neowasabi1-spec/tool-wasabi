@@ -5,6 +5,9 @@
 
 import { supabaseAdmin } from './supabase-admin';
 
+/** Netlify stops the Next handler at 300s. Reads wait until just under that. */
+const DB_WAIT_MS = 280_000;
+
 export type SlimArchiveStep = {
   name?: string;
   page_type?: string;
@@ -496,7 +499,7 @@ async function hydrateViaJsonPaths(
 
   for (let i = 0; i < ids.length && Date.now() < deadline; i += PATH_BATCH) {
     const slice = ids.slice(i, i + PATH_BATCH);
-    const ms = Math.max(800, Math.min(6_000, deadline - Date.now()));
+    const ms = Math.max(800, Math.min(DB_WAIT_MS, deadline - Date.now()));
     try {
       const { data, error } = await supabaseAdmin
         .from('archived_funnels')
@@ -538,7 +541,7 @@ async function loadTemplateRpc(
   const pageSize = 80;
   for (let offset = 0; offset < cap && Date.now() < deadline; offset += pageSize) {
     const take = Math.min(pageSize, cap - offset, TEMPLATE_RPC_MAX);
-    const ms = Math.max(800, Math.min(8_000, deadline - Date.now()));
+    const ms = Math.max(800, Math.min(DB_WAIT_MS, deadline - Date.now()));
     try {
       const { data, error } = await supabaseAdmin.rpc(
         fn,
@@ -633,7 +636,7 @@ async function hydrateFunnelSteps(rows: SlimArchiveRow[], deadline: number): Pro
   for (const row of todo) {
     if (Date.now() >= deadline) break;
     const count = Math.max(2, Math.min(MAX_FUNNEL_STEPS, asTotalSteps(row.total_steps, 2)));
-    const ms = Math.max(800, Math.min(6_000, deadline - Date.now()));
+    const ms = Math.max(800, Math.min(DB_WAIT_MS, deadline - Date.now()));
     try {
       const { data, error } = await supabaseAdmin
         .from('archived_funnels')
@@ -728,7 +731,7 @@ export async function loadFunnelStepShells(id: string): Promise<SlimArchiveStep[
     const { data, error } = await supabaseAdmin.rpc(
       'slim_funnel_step_shells',
       { p_id: id },
-      { abortSignal: AbortSignal.timeout(12_000) },
+      { abortSignal: AbortSignal.timeout(DB_WAIT_MS) },
     );
     if (!error && data != null) {
       const steps = asSteps(data).map((s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep);
@@ -739,7 +742,7 @@ export async function loadFunnelStepShells(id: string): Promise<SlimArchiveStep[
       const retry = await supabaseAdmin.rpc(
         'slim_funnel_step_shells',
         { p_id: id },
-        { abortSignal: AbortSignal.timeout(12_000) },
+        { abortSignal: AbortSignal.timeout(DB_WAIT_MS) },
       );
       if (!retry.error && retry.data != null) {
         const steps = asSteps(retry.data).map((s) => slimOneStep(s as Record<string, unknown>) as SlimArchiveStep);
@@ -765,7 +768,7 @@ export async function loadFunnelStepShells(id: string): Promise<SlimArchiveStep[
       .from('archived_funnels')
       .select(funnelShellSelect(count))
       .eq('id', id)
-      .abortSignal(AbortSignal.timeout(12_000))
+      .abortSignal(AbortSignal.timeout(DB_WAIT_MS))
       .maybeSingle();
     if (error || !data) {
       console.warn('[slim-archived-funnels] step shells path:', error?.message);
@@ -812,12 +815,12 @@ async function loadViaProjectRpc(
 ): Promise<{ rows: SlimArchiveRow[]; error: string | null }> {
   const args = { p_project_id: projectId, p_limit: cap };
   let { data, error } = await supabaseAdmin.rpc('slim_archived_funnels', args, {
-    abortSignal: AbortSignal.timeout(10_000),
+    abortSignal: AbortSignal.timeout(DB_WAIT_MS),
   });
   if (error && /does not exist|42883/i.test(error.message || '')) {
     await ensureSlimFn();
     const retry = await supabaseAdmin.rpc('slim_archived_funnels', args, {
-      abortSignal: AbortSignal.timeout(10_000),
+      abortSignal: AbortSignal.timeout(DB_WAIT_MS),
     });
     data = retry.data;
     error = retry.error;
@@ -828,7 +831,7 @@ async function loadViaProjectRpc(
     const rows = await loadMeta(projectId, cap);
     const stepsById = await hydrateViaJsonPaths(
       rows.map((r) => r.id),
-      Date.now() + 10_000,
+      Date.now() + DB_WAIT_MS,
     );
     for (const r of rows) {
       const steps = stepsById.get(r.id);
@@ -948,7 +951,7 @@ async function loadListCards(cap: number): Promise<{ rows: SlimArchiveRow[]; unt
     const rpc = await supabaseAdmin.rpc(
       'template_list_cards',
       { p_limit: cap },
-      { abortSignal: AbortSignal.timeout(15_000) },
+      { abortSignal: AbortSignal.timeout(DB_WAIT_MS) },
     );
     if (!rpc.error && rpc.data) return mapRows(rpc.data);
   } catch (e) {
@@ -961,7 +964,7 @@ async function loadListCards(cap: number): Promise<{ rows: SlimArchiveRow[]; unt
       .is('project_id', null)
       .order('created_at', { ascending: false })
       .limit(cap)
-      .abortSignal(AbortSignal.timeout(15_000));
+      .abortSignal(AbortSignal.timeout(DB_WAIT_MS));
     if (error) {
       console.warn('[slim-archived-funnels] list cards:', error.message);
       return null;
@@ -996,13 +999,13 @@ async function loadTemplateArchives(cap: number): Promise<{ rows: SlimArchiveRow
   // One admin SELECT. Do not wait on exec_sql / RPC create — that is what
   // returned an empty Template list when the DB was slow.
   try {
-    const listed = await selectArchiveLight(LIST_COLS, cap, 8_000);
+    const listed = await selectArchiveLight(LIST_COLS, cap, DB_WAIT_MS);
     if (listed.rows.length || !listed.error) return listed;
   } catch (e) {
     console.warn('[slim-archived-funnels] list cols select:', e instanceof Error ? e.message : e);
   }
   try {
-    return await selectArchiveLight(META_COLS, cap, 8_000);
+    return await selectArchiveLight(META_COLS, cap, DB_WAIT_MS);
   } catch (e) {
     return { rows: [], error: e instanceof Error ? e.message : String(e) };
   }
