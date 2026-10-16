@@ -19,7 +19,7 @@ import {
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { getUploadUrl } from "@/lib/projecthub-storage";
+import { getUploadUrl, registerUploadUrls } from "@/lib/projecthub-storage";
 import { createFunnelPage } from "@/lib/supabase-operations";
 import { confirmDialog } from "@/components/ui/confirm";
 import { authFetch } from "@/lib/auth/client-fetch";
@@ -72,6 +72,14 @@ function isAutoPruned(b: { notes?: string | null }): boolean {
   return String(b.notes || "").startsWith("auto_pruned_not_same_product");
 }
 
+function rememberMedia(rows: Array<{ file_path?: string | null; media_url?: string | null; previews?: { file_path?: string; media_url?: string }[] }>) {
+  registerUploadUrls(rows.flatMap((row) => {
+    const own = row.file_path && row.media_url ? [{ path: row.file_path, url: row.media_url }] : [];
+    const previews = (row.previews || []).filter((p) => p.file_path && p.media_url).map((p) => ({ path: p.file_path, url: p.media_url }));
+    return [...own, ...previews];
+  }));
+}
+
 type CompetitorWithStats = {
   id: number;
   project_id: string;
@@ -95,7 +103,7 @@ type CompetitorWithStats = {
   new_count?: number;
   preview_path?: string;
   preview_type?: string;
-  previews?: { file_path: string; media_type: string }[];
+  previews?: { file_path: string; media_type: string; media_url?: string }[];
 };
 
 type CompetitorAd = {
@@ -103,6 +111,8 @@ type CompetitorAd = {
   project_id: string;
   brand_id: number;
   file_path: string;
+  /** Direct storage URL. When present, the card does not go through the file proxy. */
+  media_url?: string;
   media_type: string;
   name: string;
   headline: string;
@@ -2202,9 +2212,11 @@ function CompetitorList({ projectId, onSelect }: { projectId: string; onSelect: 
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`);
       if (r.ok) {
         const all = await r.json();
-        setCompetitors(Array.isArray(all)
+        const list = Array.isArray(all)
           ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c) && !isAutoPruned(c))
-          : []);
+          : [];
+        rememberMedia(list);
+        setCompetitors(list);
       }
     } finally { if (!silent) setLoading(false); }
   };
@@ -2696,6 +2708,7 @@ function CompetitorDetail({ projectId, competitor, onBack, onOpenCreated }: { pr
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/${competitor.id}/ads`);
       if (!r.ok) return;
       const list: CompetitorAd[] = await r.json();
+      rememberMedia(list);
       setAds(list);
       const arrived = list.filter(a => a.is_new).map(a => a.id);
       if (arrived.length) {
@@ -3284,7 +3297,11 @@ function AllCreativesView({ projectId, onOpenCreated }: { projectId: string; onO
     if (!silent) setLoading(true);
     try {
       const r = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library/creatives`);
-      if (r.ok) setCreatives(await r.json());
+      if (r.ok) {
+        const list: CreativeWithBrand[] = await r.json();
+        rememberMedia(list);
+        setCreatives(list);
+      }
       const rc = await fetch(`${BASE_URL}/api/projecthub/projects/${projectId}/competitor-library`);
       if (rc.ok) {
         const comps: CompetitorWithStats[] = await rc.json();
@@ -5718,9 +5735,15 @@ function SectorOverview({ projectId, onOpenBrand, onOpenCreated }: { projectId: 
         if (!alive) return;
         if (rb.ok) {
           const all = await rb.json();
-          setBrands(Array.isArray(all) ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c)) : []);
+          const list = Array.isArray(all) ? all.filter((c: CompetitorWithStats) => !isVideoSaveFolder(c)) : [];
+          rememberMedia(list);
+          setBrands(list);
         }
-        if (rc.ok) setCreatives(await rc.json());
+        if (rc.ok) {
+          const list: CreativeWithBrand[] = await rc.json();
+          rememberMedia(list);
+          setCreatives(list);
+        }
         if (rl.ok) setLandings(await rl.json());
       } finally {
         if (alive) setLoading(false);

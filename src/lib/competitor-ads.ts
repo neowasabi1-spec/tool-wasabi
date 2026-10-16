@@ -383,3 +383,44 @@ export async function insertCompetitorAd(opts: {
 
   return { ok: true, ad: data };
 }
+
+/** Browser-ready URL for each stored file. The grid used to load every
+ *  image and video through /api/projecthub/file-proxy, one serverless call
+ *  per file. Those calls sit silent while the file is read and Netlify
+ *  closes them, so the thumbnails never appear. A signed URL lets the
+ *  browser fetch the bytes from storage directly. */
+export async function withMediaUrls<T extends { file_path?: string | null }>(
+  rows: T[],
+): Promise<Array<T & { media_url: string }>> {
+  const urls = await signStoredFileUrls(rows.map((r) => String(r.file_path || '')));
+  return rows.map((r) => {
+    const path = String(r.file_path || '').trim();
+    const media_url = /^https?:\/\//i.test(path) ? path : urls.get(path) || '';
+    return { ...r, media_url };
+  });
+}
+
+export async function signStoredFileUrls(paths: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(
+    paths
+      .map((p) => String(p || '').trim())
+      .filter((p) => p && !/^https?:\/\//i.test(p) && !p.includes('..') && !p.startsWith('/')),
+  )];
+  const out = new Map<string, string>();
+  for (let i = 0; i < unique.length; i += 80) {
+    const chunk = unique.slice(i, i + 80);
+    try {
+      const { data, error } = await supabaseAdmin.storage.from(BUCKET).createSignedUrls(chunk, 60 * 60 * 6);
+      if (error || !data) continue;
+      data.forEach((row, idx) => {
+        const url = row.signedUrl || '';
+        if (!url) return;
+        if (row.path) out.set(row.path, url);
+        if (chunk[idx]) out.set(chunk[idx], url);
+      });
+    } catch {
+      /* leave these paths unsigned; the file proxy remains the fallback */
+    }
+  }
+  return out;
+}

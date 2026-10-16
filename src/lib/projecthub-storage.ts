@@ -17,6 +17,18 @@ import { getSupabaseBrowser } from './supabase-browser';
 
 export const PROJECTHUB_BUCKET = 'project-files';
 
+/** Signed storage URLs handed back with a list response. getUploadUrl
+ *  prefers these so an <img>/<video> does not open a serverless proxy. */
+const directUrls = new Map<string, string>();
+
+export function registerUploadUrls(entries: Array<{ path?: string | null; url?: string | null }>): void {
+  for (const entry of entries) {
+    const path = String(entry.path || '').trim();
+    const url = String(entry.url || '').trim();
+    if (path && url) directUrls.set(path, url);
+  }
+}
+
 export interface UploadedFile {
   /** Storage object key (use `getPublicUrlForFile` to get a URL) */
   filePath: string;
@@ -110,6 +122,8 @@ export function getPublicUrlForFile(filePath: string): string | null {
  */
 export function getUploadUrl(filePath?: string | null): string {
   if (!filePath) return '';
+  const known = directUrls.get(filePath);
+  if (known) return known;
   if (/^https?:\/\//i.test(filePath)) return filePath;
   // Legacy synthetic paths produced by `legacyFilesForProject` resolve to a
   // server route that streams the inlined text content as a download

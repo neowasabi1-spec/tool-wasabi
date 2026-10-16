@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { seedCompetitorBrandsFromResearch } from '@/lib/seed-competitors-from-research';
+import { signStoredFileUrls } from '@/lib/competitor-ads';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -147,6 +148,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const previews = paths.map((file_path, i) => ({
       file_path,
       media_type: types[i] || 'image',
+      media_url: '',
     }));
     const preview = previews.find((p) => p.media_type !== 'video') || previews[0] || null;
     return {
@@ -186,6 +188,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       const first = brand.previews[0];
       brand.preview_path = first?.file_path || '';
       brand.preview_type = first?.media_type || '';
+    }
+  }
+
+  const signed = await signStoredFileUrls(result.flatMap((b) => (b.previews || []).map((p) => p.file_path)));
+  for (const brand of result) {
+    for (const preview of brand.previews || []) {
+      const path = preview.file_path;
+      preview.media_url = /^https?:\/\//i.test(path) ? path : signed.get(path) || '';
     }
   }
 

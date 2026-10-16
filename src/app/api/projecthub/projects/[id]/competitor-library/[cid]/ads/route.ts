@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
-import { insertCompetitorAd, mediaTypeForContentType } from '@/lib/competitor-ads';
+import { insertCompetitorAd, mediaTypeForContentType, withMediaUrls } from '@/lib/competitor-ads';
 import { loadSeenAt, tagNewAds } from '@/lib/competitor-seen';
 
 export const dynamic = 'force-dynamic';
@@ -56,14 +56,16 @@ export async function GET(
         .limit(500);
       if (lean.error) return NextResponse.json({ error: lean.error.message }, { status: 500 });
       return NextResponse.json(
-        tagNewAds((lean.data || []) as { brand_id: number; created_at?: string }[], seenAt),
+        await withMediaUrls(tagNewAds((lean.data || []) as { brand_id: number; created_at?: string; file_path?: string | null }[], seenAt)),
       );
     }
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
   // is_new lets the grid badge whatever the daily scrape added since the last
   // visit; the client stamps the brand as seen once it has rendered them.
-  return NextResponse.json(tagNewAds((data || []) as { brand_id: number; created_at?: string }[], seenAt));
+  return NextResponse.json(
+    await withMediaUrls(tagNewAds((data || []) as { brand_id: number; created_at?: string; file_path?: string | null }[], seenAt)),
+  );
 }
 
 export async function POST(

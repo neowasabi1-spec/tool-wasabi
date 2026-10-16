@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canAccessProject } from '@/lib/auth/project-access';
 import { loadSeenAt, tagNewAds } from '@/lib/competitor-seen';
+import { withMediaUrls } from '@/lib/competitor-ads';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,15 +17,36 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const { allowed } = await canAccessProject(req, id);
   if (!allowed) return NextResponse.json({ error: 'Not found' }, { status: 404 });
 
-  const [{ data: ads, error }, { data: brands }, seenAt] = await Promise.all([
-    supabaseAdmin
-      .from('competitor_ads')
-      .select('*')
-      .eq('project_id', id)
-      .order('created_at', { ascending: false }),
-    supabaseAdmin.from('competitor_brands').select('id, name, ads_library_url, notes, is_active').eq('project_id', id),
-    loadSeenAt(id),
+  const CREATIVE_COLS =
+    'id, project_id, brand_id, name, headline, hook, body_text, transcript, landing_url, media_type, file_path, is_winner, ad_active, ad_started_at, ad_variants, spend, impressions, reach, rewritten_script, external_id, source, relevance_score, relevance_label, relevance_why, created_at';
+  const LEAN_COLS =
+    'id, project_id, brand_id, name, headline, hook, body_text, media_type, file_path, is_winner, ad_active, ad_started_at, spend, impressions, created_at';
+
+  const brandsQuery = supabaseAdmin.from('competitor_brands').select('id, name, ads_library_url, notes, is_active').eq('project_id', id);
+  const seenQuery = loadSeenAt(id);
+  let adsQuery = supabaseAdmin
+    .from('competitor_ads')
+    .select(CREATIVE_COLS)
+    .eq('project_id', id)
+    .order('created_at', { ascending: false })
+    .limit(800);
+
+  let [{ data: ads, error }, { data: brands }, seenAt] = await Promise.all([
+    adsQuery,
+    brandsQuery,
+    seenQuery,
   ]);
+
+  if (error && /42703|PGRST204|column/i.test(error.message || '')) {
+    const lean = await supabaseAdmin
+      .from('competitor_ads')
+      .select(LEAN_COLS)
+      .eq('project_id', id)
+      .order('created_at', { ascending: false })
+      .limit(800);
+    ads = lean.data;
+    error = lean.error;
+  }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
@@ -54,5 +76,5 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     return true;
   });
 
-  return NextResponse.json(result);
+  return NextResponse.json(await withMediaUrls(result));
 }
